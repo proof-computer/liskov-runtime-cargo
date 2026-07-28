@@ -1,0 +1,415 @@
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value, json};
+use thiserror::Error;
+
+use crate::bridge::{Bridge, BridgeError};
+
+pub const RUNTIME_BOOTSTRAP_REQUEST_DOMAIN_V2: &str = "proof.liskov.runtime-bootstrap-request.v2";
+pub const RUNTIME_BOOTSTRAP_RESPONSE_DOMAIN_V2: &str = "proof.liskov.runtime-bootstrap-response.v2";
+pub const RUNTIME_BOOTSTRAP_TTL_MS: u64 = 60_000;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeIdentity {
+    pub job_id: String,
+    pub processor_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnsignedRuntimeBootstrapRequest {
+    pub domain: &'static str,
+    pub job_id: String,
+    pub processor_id: String,
+    pub nonce: String,
+    pub issued_at_ms: u64,
+    pub expires_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignedRuntimeBootstrapRequest {
+    pub domain: &'static str,
+    pub job_id: String,
+    pub processor_id: String,
+    pub nonce: String,
+    pub issued_at_ms: u64,
+    pub expires_at_ms: u64,
+    pub signature: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeBootstrapResponse {
+    pub ok: bool,
+    pub domain: String,
+    pub application_uid: String,
+    pub application_id: String,
+    pub policy_digest: String,
+    pub deployment_id: String,
+    pub job_id: String,
+    pub processor_id: String,
+    pub runtime_instance_id: String,
+    pub slipway_url: String,
+}
+
+#[derive(Debug, Error)]
+pub enum ProtocolError {
+    #[error("bridge call failed")]
+    Bridge(#[from] BridgeError),
+    #[error("deployment identity was missing or invalid")]
+    InvalidDeploymentIdentity,
+    #[error("deployment Ed25519 public key was missing or invalid")]
+    InvalidPublicKey,
+    #[error("deployment identity did not match exactly one assigned processor")]
+    ProcessorMatchCount,
+    #[error("Ed25519 signature was missing or invalid")]
+    InvalidSignature,
+    #[error("request timestamp overflowed")]
+    TimestampOverflow,
+    #[error("request serialization failed")]
+    Serialization(#[from] serde_json::Error),
+    #[error("runtime bootstrap response was invalid")]
+    InvalidResponse,
+    #[error("runtime bootstrap response binding did not match the request")]
+    ResponseBinding,
+}
+
+pub fn discover_runtime_identity(bridge: &dyn Bridge) -> Result<RuntimeIdentity, ProtocolError> {
+    let deployment = bridge.call("deployment_id", json!([]))?;
+    deployment
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .ok_or(ProtocolError::InvalidDeploymentIdentity)?;
+    deployment
+        .get("origin")
+        .filter(|origin| origin.is_object())
+        .ok_or(ProtocolError::InvalidDeploymentIdentity)?;
+    let job_id = serde_json::to_string(&sort_json(deployment.clone()))?;
+
+    let public_keys = bridge.call("deployment_publicKeys", json!([]))?;
+    let current_key = public_keys
+        .get("publicKeys")
+        .and_then(|keys| keys.get("ed25519"))
+        .and_then(Value::as_str)
+        .and_then(|key| normalize_hex_exact(key, 32))
+        .ok_or(ProtocolError::InvalidPublicKey)?;
+
+    let assigned = bridge.call("deployment_assignedProcessors", json!([]))?;
+    let processors = assigned
+        .get("processors")
+        .and_then(Value::as_object)
+        .ok_or(ProtocolError::ProcessorMatchCount)?;
+    let matches: Vec<&str> = processors
+        .iter()
+        .filter_map(|(address, keys)| {
+            keys.get("ed25519")
+                .and_then(Value::as_str)
+                .and_then(|key| normalize_hex_exact(key, 32))
+                .filter(|key| key == &current_key)
+                .map(|_| address.as_str())
+        })
+        .collect();
+    let [processor_id] = matches.as_slice() else {
+        return Err(ProtocolError::ProcessorMatchCount);
+    };
+    if processor_id.is_empty() {
+        return Err(ProtocolError::ProcessorMatchCount);
+    }
+
+    Ok(RuntimeIdentity {
+        job_id,
+        processor_id: (*processor_id).to_owned(),
+    })
+}
+
+pub fn build_unsigned_request(
+    identity: RuntimeIdentity,
+    nonce: String,
+    issued_at_ms: u64,
+) -> Result<UnsignedRuntimeBootstrapRequest, ProtocolError> {
+    let expires_at_ms = issued_at_ms
+        .checked_add(RUNTIME_BOOTSTRAP_TTL_MS)
+        .ok_or(ProtocolError::TimestampOverflow)?;
+    Ok(UnsignedRuntimeBootstrapRequest {
+        domain: RUNTIME_BOOTSTRAP_REQUEST_DOMAIN_V2,
+        job_id: identity.job_id,
+        processor_id: identity.processor_id,
+        nonce,
+        issued_at_ms,
+        expires_at_ms,
+    })
+}
+
+pub fn canonical_unsigned_request_bytes(
+    request: &UnsignedRuntimeBootstrapRequest,
+) -> Result<Vec<u8>, ProtocolError> {
+    let value = serde_json::to_value(request)?;
+    Ok(serde_json::to_vec(&sort_json(value))?)
+}
+
+pub fn sign_request(
+    bridge: &dyn Bridge,
+    unsigned: UnsignedRuntimeBootstrapRequest,
+) -> Result<SignedRuntimeBootstrapRequest, ProtocolError> {
+    let message = canonical_unsigned_request_bytes(&unsigned)?;
+    let result = bridge.call(
+        "signer_sign",
+        json!([{
+            "curve": "ed25519",
+            "bytes": hex::encode(message),
+        }]),
+    )?;
+    let signature = result
+        .get("bytes")
+        .and_then(Value::as_str)
+        .and_then(|value| normalize_hex_exact(value, 64))
+        .ok_or(ProtocolError::InvalidSignature)?;
+    Ok(SignedRuntimeBootstrapRequest {
+        domain: unsigned.domain,
+        job_id: unsigned.job_id,
+        processor_id: unsigned.processor_id,
+        nonce: unsigned.nonce,
+        issued_at_ms: unsigned.issued_at_ms,
+        expires_at_ms: unsigned.expires_at_ms,
+        signature: format!("0x{signature}"),
+    })
+}
+
+pub fn validate_response(
+    request: &SignedRuntimeBootstrapRequest,
+    body: &[u8],
+) -> Result<RuntimeBootstrapResponse, ProtocolError> {
+    let response: RuntimeBootstrapResponse =
+        serde_json::from_slice(body).map_err(|_| ProtocolError::InvalidResponse)?;
+    if !response.ok
+        || response.domain != RUNTIME_BOOTSTRAP_RESPONSE_DOMAIN_V2
+        || response.application_uid.is_empty()
+        || response.application_id.is_empty()
+        || response.policy_digest.is_empty()
+        || response.deployment_id.is_empty()
+        || response.slipway_url.is_empty()
+    {
+        return Err(ProtocolError::InvalidResponse);
+    }
+    if response.job_id != request.job_id
+        || response.processor_id != request.processor_id
+        || response.runtime_instance_id != request.nonce
+    {
+        return Err(ProtocolError::ResponseBinding);
+    }
+    Ok(response)
+}
+
+fn normalize_hex_exact(value: &str, bytes: usize) -> Option<String> {
+    let value = value
+        .strip_prefix("0x")
+        .unwrap_or(value)
+        .to_ascii_lowercase();
+    (value.len() == bytes * 2 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .then_some(value)
+}
+
+fn sort_json(value: Value) -> Value {
+    match value {
+        Value::Array(items) => Value::Array(items.into_iter().map(sort_json).collect()),
+        Value::Object(items) => {
+            let sorted: BTreeMap<String, Value> = items
+                .into_iter()
+                .map(|(key, value)| (key, sort_json(value)))
+                .collect();
+            Value::Object(Map::from_iter(sorted))
+        }
+        value => value,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
+
+    use super::*;
+
+    struct FakeBridge {
+        replies: Mutex<VecDeque<Value>>,
+        calls: Mutex<Vec<(String, Value)>>,
+    }
+
+    impl FakeBridge {
+        fn new(replies: Vec<Value>) -> Self {
+            Self {
+                replies: Mutex::new(replies.into()),
+                calls: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl Bridge for FakeBridge {
+        fn call(&self, method: &str, params: Value) -> Result<Value, BridgeError> {
+            self.calls.lock().unwrap().push((method.to_owned(), params));
+            Ok(self.replies.lock().unwrap().pop_front().unwrap())
+        }
+    }
+
+    fn identity_replies(processors: Value) -> Vec<Value> {
+        vec![
+            json!({
+                "id": "7",
+                "origin": {"source": "abcd", "kind": "Acurast"}
+            }),
+            json!({"publicKeys": {"ed25519": format!("0x{}", "ab".repeat(32))}}),
+            json!({"processors": processors}),
+        ]
+    }
+
+    fn signed_request() -> SignedRuntimeBootstrapRequest {
+        SignedRuntimeBootstrapRequest {
+            domain: RUNTIME_BOOTSTRAP_REQUEST_DOMAIN_V2,
+            job_id: "job-1".to_owned(),
+            processor_id: "processor-1".to_owned(),
+            nonce: "07".repeat(16),
+            issued_at_ms: 1_000,
+            expires_at_ms: 61_000,
+            signature: format!("0x{}", "11".repeat(64)),
+        }
+    }
+
+    #[test]
+    fn canonical_request_bytes_match_the_existing_contract() {
+        let request = build_unsigned_request(
+            RuntimeIdentity {
+                job_id: "job-1".to_owned(),
+                processor_id: "processor-1".to_owned(),
+            },
+            "runtime-nonce".to_owned(),
+            1_000,
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(canonical_unsigned_request_bytes(&request).unwrap()).unwrap(),
+            "{\"domain\":\"proof.liskov.runtime-bootstrap-request.v2\",\"expiresAtMs\":61000,\"issuedAtMs\":1000,\"jobId\":\"job-1\",\"nonce\":\"runtime-nonce\",\"processorId\":\"processor-1\"}"
+        );
+    }
+
+    #[test]
+    fn discovers_the_single_processor_matching_the_current_key() {
+        let bridge = FakeBridge::new(identity_replies(json!({
+            "processor-other": {"ed25519": "cd".repeat(32)},
+            "processor-match": {"ed25519": "AB".repeat(32)}
+        })));
+        let identity = discover_runtime_identity(&bridge).unwrap();
+        assert_eq!(
+            identity.job_id,
+            r#"{"id":"7","origin":{"kind":"Acurast","source":"abcd"}}"#
+        );
+        assert_eq!(identity.processor_id, "processor-match");
+    }
+
+    #[test]
+    fn rejects_zero_and_ambiguous_processor_matches() {
+        let zero = FakeBridge::new(identity_replies(json!({
+            "processor-other": {"ed25519": "cd".repeat(32)}
+        })));
+        assert!(matches!(
+            discover_runtime_identity(&zero),
+            Err(ProtocolError::ProcessorMatchCount)
+        ));
+
+        let ambiguous = FakeBridge::new(identity_replies(json!({
+            "processor-a": {"ed25519": "ab".repeat(32)},
+            "processor-b": {"ed25519": format!("0x{}", "AB".repeat(32))}
+        })));
+        assert!(matches!(
+            discover_runtime_identity(&ambiguous),
+            Err(ProtocolError::ProcessorMatchCount)
+        ));
+    }
+
+    #[test]
+    fn signs_the_canonical_bytes_and_normalizes_the_signature() {
+        let bridge = FakeBridge::new(vec![json!({"bytes": "AA".repeat(64)})]);
+        let unsigned = build_unsigned_request(
+            RuntimeIdentity {
+                job_id: "job-1".to_owned(),
+                processor_id: "processor-1".to_owned(),
+            },
+            "runtime-nonce".to_owned(),
+            1_000,
+        )
+        .unwrap();
+        let expected_message = canonical_unsigned_request_bytes(&unsigned).unwrap();
+        let signed = sign_request(&bridge, unsigned).unwrap();
+        assert_eq!(signed.signature, format!("0x{}", "aa".repeat(64)));
+
+        let calls = bridge.calls.lock().unwrap();
+        assert_eq!(calls[0].0, "signer_sign");
+        assert_eq!(calls[0].1[0]["curve"], "ed25519");
+        assert_eq!(calls[0].1[0]["bytes"], hex::encode(expected_message));
+    }
+
+    #[test]
+    fn rejects_domain_and_all_identity_binding_mismatches() {
+        let request = signed_request();
+        let valid = json!({
+            "ok": true,
+            "domain": RUNTIME_BOOTSTRAP_RESPONSE_DOMAIN_V2,
+            "applicationUid": "app-uid-1",
+            "applicationId": "app-1",
+            "policyDigest": "ab",
+            "deploymentId": "dep-1",
+            "jobId": request.job_id,
+            "processorId": request.processor_id,
+            "runtimeInstanceId": request.nonce,
+            "slipwayUrl": "https://liskov.example"
+        });
+        assert!(validate_response(&request, &serde_json::to_vec(&valid).unwrap()).is_ok());
+
+        for (field, value) in [
+            (
+                "domain",
+                json!("proof.liskov.runtime-bootstrap-response.v1"),
+            ),
+            ("jobId", json!("wrong-job")),
+            ("processorId", json!("wrong-processor")),
+            ("runtimeInstanceId", json!("wrong-instance")),
+        ] {
+            let mut mutated = valid.clone();
+            mutated[field] = value;
+            assert!(validate_response(&request, &serde_json::to_vec(&mutated).unwrap()).is_err());
+        }
+    }
+
+    #[test]
+    fn rejects_empty_application_policy_deployment_and_slipway_fields() {
+        let request = signed_request();
+        let valid = json!({
+            "ok": true,
+            "domain": RUNTIME_BOOTSTRAP_RESPONSE_DOMAIN_V2,
+            "applicationUid": "app-uid-1",
+            "applicationId": "app-1",
+            "policyDigest": "ab",
+            "deploymentId": "dep-1",
+            "jobId": request.job_id,
+            "processorId": request.processor_id,
+            "runtimeInstanceId": request.nonce,
+            "slipwayUrl": "https://liskov.example"
+        });
+        for field in [
+            "applicationUid",
+            "applicationId",
+            "policyDigest",
+            "deploymentId",
+            "slipwayUrl",
+        ] {
+            let mut mutated = valid.clone();
+            mutated[field] = json!("");
+            assert!(matches!(
+                validate_response(&request, &serde_json::to_vec(&mutated).unwrap()),
+                Err(ProtocolError::InvalidResponse)
+            ));
+        }
+    }
+}

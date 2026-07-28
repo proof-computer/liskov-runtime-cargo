@@ -1,0 +1,497 @@
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use serde::Deserialize;
+use thiserror::Error;
+use url::Url;
+
+use crate::bridge::{Bridge, UnixBridge};
+use crate::http::{HttpClient, HttpError, HttpResponse, UreqHttpClient};
+use crate::protocol::{
+    ProtocolError, RuntimeBootstrapResponse, build_unsigned_request, discover_runtime_identity,
+    sign_request, validate_response,
+};
+
+pub const DEFAULT_CORE_URL: &str = "https://liskov.proof.computer";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i32)]
+pub enum ExitCategory {
+    Configuration = 2,
+    Protocol = 70,
+    TemporaryFailure = 75,
+}
+
+#[derive(Debug, Error)]
+pub enum ContactError {
+    #[error("invalid configuration: {0}")]
+    Configuration(&'static str),
+    #[error("runtime contact protocol failed")]
+    Protocol(#[from] ProtocolError),
+    #[error("runtime randomness was unavailable")]
+    Randomness,
+    #[error("runtime clock was unavailable")]
+    Clock,
+    #[error("runtime contact was permanently rejected")]
+    PermanentServerRejection,
+    #[error("runtime contact retry budget was exhausted")]
+    RetryExhausted,
+}
+
+impl ContactError {
+    pub fn exit_category(&self) -> ExitCategory {
+        match self {
+            Self::Configuration(_) => ExitCategory::Configuration,
+            Self::RetryExhausted => ExitCategory::TemporaryFailure,
+            Self::Protocol(_) | Self::Randomness | Self::Clock | Self::PermanentServerRejection => {
+                ExitCategory::Protocol
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct RetryPolicy {
+    pub initial_delay: Duration,
+    pub interval: Duration,
+    pub max_elapsed: Duration,
+    pub max_attempts: usize,
+}
+
+impl Default for RetryPolicy {
+    fn default() -> Self {
+        Self {
+            initial_delay: Duration::from_millis(250),
+            interval: Duration::from_secs(2),
+            max_elapsed: Duration::from_secs(60),
+            max_attempts: 30,
+        }
+    }
+}
+
+pub trait ContactRuntime {
+    fn unix_time_ms(&self) -> Result<u64, ContactError>;
+    fn elapsed(&self) -> Duration;
+    fn fill_random(&self, bytes: &mut [u8]) -> Result<(), ContactError>;
+    fn sleep(&self, duration: Duration);
+}
+
+#[derive(Debug)]
+pub struct SystemRuntime {
+    started: Instant,
+}
+
+impl Default for SystemRuntime {
+    fn default() -> Self {
+        Self {
+            started: Instant::now(),
+        }
+    }
+}
+
+impl ContactRuntime for SystemRuntime {
+    fn unix_time_ms(&self) -> Result<u64, ContactError> {
+        let millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| ContactError::Clock)?
+            .as_millis();
+        u64::try_from(millis).map_err(|_| ContactError::Clock)
+    }
+
+    fn elapsed(&self) -> Duration {
+        self.started.elapsed()
+    }
+
+    fn fill_random(&self, bytes: &mut [u8]) -> Result<(), ContactError> {
+        getrandom::fill(bytes).map_err(|_| ContactError::Randomness)
+    }
+
+    fn sleep(&self, duration: Duration) {
+        thread::sleep(duration);
+    }
+}
+
+pub fn validate_core_url(raw: &str) -> Result<Url, ContactError> {
+    let url = Url::parse(raw).map_err(|_| ContactError::Configuration("invalid core URL"))?;
+    if url.scheme() != "https"
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(ContactError::Configuration(
+            "core URL must be HTTPS without user information, query, or fragment",
+        ));
+    }
+    Ok(url)
+}
+
+pub fn establish_runtime_contact(
+    core_url: &str,
+    bridge_socket: &str,
+) -> Result<RuntimeBootstrapResponse, ContactError> {
+    let bridge = UnixBridge::new(bridge_socket)
+        .map_err(ProtocolError::from)
+        .map_err(ContactError::from)?;
+    let http = UreqHttpClient::default();
+    let runtime = SystemRuntime::default();
+    establish_runtime_contact_with(core_url, &bridge, &http, &runtime, RetryPolicy::default())
+}
+
+pub fn establish_runtime_contact_with(
+    core_url: &str,
+    bridge: &dyn Bridge,
+    http: &dyn HttpClient,
+    runtime: &dyn ContactRuntime,
+    retry: RetryPolicy,
+) -> Result<RuntimeBootstrapResponse, ContactError> {
+    let endpoint = validate_core_url(core_url)?
+        .join("/api/jobs/runtime-bootstrap")
+        .map_err(|_| ContactError::Configuration("invalid core URL"))?;
+    let identity = discover_runtime_identity(bridge)?;
+    let mut nonce = [0_u8; 16];
+    runtime.fill_random(&mut nonce)?;
+    let unsigned = build_unsigned_request(identity, hex::encode(nonce), runtime.unix_time_ms()?)?;
+    let signed = sign_request(bridge, unsigned)?;
+    let body = serde_json::to_vec(&signed).map_err(ProtocolError::from)?;
+
+    let mut attempt = 0_usize;
+    let mut next_delay = retry.initial_delay;
+    loop {
+        attempt += 1;
+        match attempt_contact(http, endpoint.as_str(), &body, &signed) {
+            Ok(response) => return Ok(response),
+            Err(AttemptError::Permanent) => {
+                return Err(ContactError::PermanentServerRejection);
+            }
+            Err(AttemptError::Protocol(error)) => return Err(ContactError::Protocol(error)),
+            Err(AttemptError::Retryable) => {
+                if attempt >= retry.max_attempts
+                    || runtime
+                        .elapsed()
+                        .checked_add(next_delay)
+                        .is_none_or(|elapsed| elapsed > retry.max_elapsed)
+                {
+                    return Err(ContactError::RetryExhausted);
+                }
+                eprintln!(
+                    "liskov-runtime-contact: runtime contact unavailable; retrying ({attempt}/{})",
+                    retry.max_attempts
+                );
+                runtime.sleep(next_delay);
+                next_delay = retry.interval;
+            }
+        }
+    }
+}
+
+enum AttemptError {
+    Retryable,
+    Permanent,
+    Protocol(ProtocolError),
+}
+
+fn attempt_contact(
+    http: &dyn HttpClient,
+    endpoint: &str,
+    body: &[u8],
+    request: &crate::protocol::SignedRuntimeBootstrapRequest,
+) -> Result<RuntimeBootstrapResponse, AttemptError> {
+    let response = match http.post(endpoint, body) {
+        Ok(response) => response,
+        Err(HttpError::Transport) => return Err(AttemptError::Retryable),
+        Err(HttpError::ResponseTooLarge) => {
+            return Err(AttemptError::Protocol(ProtocolError::InvalidResponse));
+        }
+    };
+    if (200..300).contains(&response.status) {
+        return validate_response(request, &response.body).map_err(AttemptError::Protocol);
+    }
+    if response_is_retryable(&response) {
+        Err(AttemptError::Retryable)
+    } else {
+        Err(AttemptError::Permanent)
+    }
+}
+
+#[derive(Deserialize)]
+struct ServerErrorEnvelope {
+    #[serde(default, alias = "code")]
+    error: Option<String>,
+    #[serde(default)]
+    retryable: Option<bool>,
+}
+
+fn response_is_retryable(response: &HttpResponse) -> bool {
+    let envelope = serde_json::from_slice::<ServerErrorEnvelope>(&response.body).ok();
+    if envelope.as_ref().and_then(|body| body.retryable) == Some(true) {
+        return true;
+    }
+    if envelope.as_ref().and_then(|body| body.retryable) == Some(false) {
+        return false;
+    }
+    if envelope
+        .as_ref()
+        .and_then(|body| body.error.as_deref())
+        .is_some_and(|code| code.ends_with("_not_found"))
+    {
+        return true;
+    }
+    matches!(
+        response.status,
+        404 | 409 | 425 | 429 | 500 | 502 | 503 | 504
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
+
+    use serde_json::{Value, json};
+
+    use super::*;
+    use crate::bridge::BridgeError;
+
+    struct FakeBridge {
+        replies: Mutex<VecDeque<Value>>,
+        calls: Mutex<Vec<(String, Value)>>,
+    }
+
+    impl FakeBridge {
+        fn successful() -> Self {
+            Self {
+                replies: Mutex::new(
+                    vec![
+                        json!({
+                            "id": "83124",
+                            "origin": {"kind": "Acurast", "source": "abcd"}
+                        }),
+                        json!({"publicKeys": {"ed25519": "ab".repeat(32)}}),
+                        json!({"processors": {"processor-1": {"ed25519": "ab".repeat(32)}}}),
+                        json!({"bytes": "11".repeat(64)}),
+                    ]
+                    .into(),
+                ),
+                calls: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl Bridge for FakeBridge {
+        fn call(&self, method: &str, params: Value) -> Result<Value, BridgeError> {
+            self.calls.lock().unwrap().push((method.to_owned(), params));
+            Ok(self.replies.lock().unwrap().pop_front().unwrap())
+        }
+    }
+
+    enum FakeHttpReply {
+        Response(u16, Value),
+        Transport,
+    }
+
+    struct FakeHttp {
+        replies: Mutex<VecDeque<FakeHttpReply>>,
+        bodies: Mutex<Vec<Vec<u8>>>,
+    }
+
+    impl FakeHttp {
+        fn new(replies: Vec<FakeHttpReply>) -> Self {
+            Self {
+                replies: Mutex::new(replies.into()),
+                bodies: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl HttpClient for FakeHttp {
+        fn post(&self, _: &str, body: &[u8]) -> Result<HttpResponse, HttpError> {
+            self.bodies.lock().unwrap().push(body.to_vec());
+            match self.replies.lock().unwrap().pop_front().unwrap() {
+                FakeHttpReply::Response(status, value) => Ok(HttpResponse {
+                    status,
+                    body: serde_json::to_vec(&value).unwrap(),
+                }),
+                FakeHttpReply::Transport => Err(HttpError::Transport),
+            }
+        }
+    }
+
+    struct FakeRuntime {
+        elapsed: Mutex<Duration>,
+        sleeps: Mutex<Vec<Duration>>,
+    }
+
+    impl FakeRuntime {
+        fn new() -> Self {
+            Self {
+                elapsed: Mutex::new(Duration::ZERO),
+                sleeps: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl ContactRuntime for FakeRuntime {
+        fn unix_time_ms(&self) -> Result<u64, ContactError> {
+            Ok(1_000)
+        }
+
+        fn elapsed(&self) -> Duration {
+            *self.elapsed.lock().unwrap()
+        }
+
+        fn fill_random(&self, bytes: &mut [u8]) -> Result<(), ContactError> {
+            bytes.fill(7);
+            Ok(())
+        }
+
+        fn sleep(&self, duration: Duration) {
+            self.sleeps.lock().unwrap().push(duration);
+            *self.elapsed.lock().unwrap() += duration;
+        }
+    }
+
+    fn success_response() -> Value {
+        json!({
+            "ok": true,
+            "domain": "proof.liskov.runtime-bootstrap-response.v2",
+            "applicationUid": "app-uid-1",
+            "applicationId": "app-1",
+            "policyDigest": "ab",
+            "deploymentId": "dep-1",
+            "jobId": "{\"id\":\"83124\",\"origin\":{\"kind\":\"Acurast\",\"source\":\"abcd\"}}",
+            "processorId": "processor-1",
+            "runtimeInstanceId": "07".repeat(16),
+            "slipwayUrl": "https://liskov.example"
+        })
+    }
+
+    #[test]
+    fn validates_https_core_urls() {
+        assert!(validate_core_url("https://liskov.example/base").is_ok());
+        for invalid in [
+            "http://liskov.example",
+            "https://user@liskov.example",
+            "https://liskov.example?query=1",
+            "https://liskov.example#fragment",
+        ] {
+            assert!(matches!(
+                validate_core_url(invalid),
+                Err(ContactError::Configuration(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn retries_transport_status_not_found_and_explicit_retryable_with_identical_body() {
+        let bridge = FakeBridge::successful();
+        let http = FakeHttp::new(vec![
+            FakeHttpReply::Transport,
+            FakeHttpReply::Response(404, json!({"error": "runtime_bootstrap_job_not_found"})),
+            FakeHttpReply::Response(418, json!({"error": "warming", "retryable": true})),
+            FakeHttpReply::Response(200, success_response()),
+        ]);
+        let runtime = FakeRuntime::new();
+        let response = establish_runtime_contact_with(
+            "https://liskov.example",
+            &bridge,
+            &http,
+            &runtime,
+            RetryPolicy {
+                max_elapsed: Duration::from_secs(10),
+                ..RetryPolicy::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(response.application_uid, "app-uid-1");
+
+        let bodies = http.bodies.lock().unwrap();
+        assert_eq!(bodies.len(), 4);
+        assert!(bodies.windows(2).all(|pair| pair[0] == pair[1]));
+        let request: Value = serde_json::from_slice(&bodies[0]).unwrap();
+        assert_eq!(request["nonce"], "07".repeat(16));
+        assert_eq!(request["signature"], format!("0x{}", "11".repeat(64)));
+        assert_eq!(request["issuedAtMs"], 1_000);
+        assert_eq!(
+            *runtime.sleeps.lock().unwrap(),
+            vec![
+                Duration::from_millis(250),
+                Duration::from_secs(2),
+                Duration::from_secs(2)
+            ]
+        );
+        assert_eq!(
+            bridge
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(method, _)| method == "signer_sign")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn explicit_non_retryable_verdict_wins_over_retryable_status() {
+        let bridge = FakeBridge::successful();
+        let http = FakeHttp::new(vec![FakeHttpReply::Response(
+            503,
+            json!({"error": "permanent", "retryable": false}),
+        )]);
+        let error = establish_runtime_contact_with(
+            "https://liskov.example",
+            &bridge,
+            &http,
+            &FakeRuntime::new(),
+            RetryPolicy::default(),
+        )
+        .unwrap_err();
+        assert!(matches!(error, ContactError::PermanentServerRejection));
+        assert_eq!(error.exit_category(), ExitCategory::Protocol);
+    }
+
+    #[test]
+    fn retry_classification_covers_the_established_status_and_error_contract() {
+        for status in [404, 409, 425, 429, 500, 502, 503, 504] {
+            assert!(response_is_retryable(&HttpResponse {
+                status,
+                body: b"{}".to_vec(),
+            }));
+        }
+        assert!(response_is_retryable(&HttpResponse {
+            status: 418,
+            body: br#"{"error":"runtime_bootstrap_job_not_found"}"#.to_vec(),
+        }));
+        assert!(response_is_retryable(&HttpResponse {
+            status: 418,
+            body: br#"{"error":"warming","retryable":true}"#.to_vec(),
+        }));
+        assert!(!response_is_retryable(&HttpResponse {
+            status: 401,
+            body: br#"{"error":"runtime_bootstrap_bad_signature"}"#.to_vec(),
+        }));
+    }
+
+    #[test]
+    fn retry_exhaustion_is_temporary_failure() {
+        let bridge = FakeBridge::successful();
+        let http = FakeHttp::new(vec![FakeHttpReply::Transport, FakeHttpReply::Transport]);
+        let error = establish_runtime_contact_with(
+            "https://liskov.example",
+            &bridge,
+            &http,
+            &FakeRuntime::new(),
+            RetryPolicy {
+                initial_delay: Duration::ZERO,
+                interval: Duration::ZERO,
+                max_elapsed: Duration::from_secs(1),
+                max_attempts: 2,
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(error, ContactError::RetryExhausted));
+        assert_eq!(error.exit_category(), ExitCategory::TemporaryFailure);
+    }
+}

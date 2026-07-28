@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: ["main"]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust 1.85 gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust components
+        run: rustup component add rustfmt clippy
+      - name: Check formatting
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
+      - name: Build
+        run: cargo build --workspace --all-targets --locked
+      - name: Test
+        run: cargo test --workspace --all-features --locked
+
+  aarch64-static:
+    name: Native AArch64 static artifact
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust target and inspection tools
+        run: |
+          rustup target add aarch64-unknown-linux-musl
+          sudo apt-get update
+          sudo apt-get install --yes binutils file musl-tools
+      - name: Build release helper
+        run: cargo build --release --locked --target aarch64-unknown-linux-musl --bin liskov-runtime-contact
+      - name: Verify executable and static ELF
+        run: |
+          artifact=target/aarch64-unknown-linux-musl/release/liskov-runtime-contact
+          "$artifact" --version
+          file "$artifact" | tee /tmp/liskov-runtime-contact-file.txt
+          grep -q 'ELF 64-bit LSB.*ARM aarch64' /tmp/liskov-runtime-contact-file.txt
+          readelf -h "$artifact" | grep -q 'Machine:.*AArch64'
+          if readelf -l "$artifact" | grep -q 'Requesting program interpreter'; then
+            echo "artifact unexpectedly contains a dynamic interpreter" >&2
+            exit 1
+          fi
+

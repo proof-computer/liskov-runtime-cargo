@@ -1,0 +1,60 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Publish static AArch64 release
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust target and inspection tools
+        run: |
+          rustup target add aarch64-unknown-linux-musl
+          sudo apt-get update
+          sudo apt-get install --yes binutils file musl-tools
+      - name: Build release helper
+        run: cargo build --release --locked --target aarch64-unknown-linux-musl --bin liskov-runtime-contact
+      - name: Verify executable and static ELF
+        run: |
+          artifact=target/aarch64-unknown-linux-musl/release/liskov-runtime-contact
+          "$artifact" --version
+          file "$artifact" | tee /tmp/liskov-runtime-contact-file.txt
+          grep -q 'ELF 64-bit LSB.*ARM aarch64' /tmp/liskov-runtime-contact-file.txt
+          readelf -h "$artifact" | grep -q 'Machine:.*AArch64'
+          if readelf -l "$artifact" | grep -q 'Requesting program interpreter'; then
+            echo "artifact unexpectedly contains a dynamic interpreter" >&2
+            exit 1
+          fi
+      - name: Package release
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          name="liskov-runtime-contact-${TAG}-aarch64-unknown-linux-musl"
+          mkdir -p "dist/${name}"
+          install -m 0755 target/aarch64-unknown-linux-musl/release/liskov-runtime-contact "dist/${name}/"
+          install -m 0644 README.md LICENSE "dist/${name}/"
+          tar --sort=name --owner=0 --group=0 --numeric-owner -C dist -czf "dist/${name}.tar.gz" "${name}"
+          cd dist
+          sha256sum "${name}.tar.gz" > SHA256SUMS
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          archive="dist/liskov-runtime-contact-${TAG}-aarch64-unknown-linux-musl.tar.gz"
+          gh release create "$TAG" "$archive" dist/SHA256SUMS \
+            --verify-tag \
+            --title "$TAG" \
+            --notes "Static AArch64 first-contact helper for Liskov-managed Acurast Cargo/PRoot workloads."
+

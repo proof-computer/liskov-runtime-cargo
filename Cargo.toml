@@ -1,0 +1,36 @@
+[package]
+name = "liskov-runtime-cargo"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Static first-contact helper for Liskov-managed Acurast Cargo/PRoot workloads"
+license = "Apache-2.0"
+repository = "https://github.com/proof-computer/liskov-runtime-cargo"
+readme = "README.md"
+keywords = ["liskov", "acurast", "proot", "runtime"]
+categories = ["command-line-utilities"]
+publish = false
+
+[lib]
+name = "liskov_runtime_cargo"
+path = "src/lib.rs"
+
+[[bin]]
+name = "liskov-runtime-contact"
+path = "src/bin/liskov-runtime-contact.rs"
+
+[dependencies]
+clap = { version = "4.5.40", features = ["derive"] }
+getrandom = "0.3.3"
+hex = "0.4.3"
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
+thiserror = "2.0.12"
+ureq = { version = "2.12.1", default-features = false, features = ["tls"] }
+url = "2.5.4"
+
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true
+
