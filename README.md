@@ -55,6 +55,26 @@ identity, or the customer command.
 After a successful `exec`, the customer process has normal process and exit
 behavior.
 
+For bounded release canaries whose Shell host does not retain stderr,
+`--diagnostic-exit-codes` replaces status `70`/`75` with a non-secret stage
+code. This flag is an internal canary interface, not a customer compatibility
+surface:
+
+| Status | Stage |
+| --- | --- |
+| `80`–`82` | Bridge setup or deployment identity |
+| `83`–`84` | Deployment public key |
+| `85`–`86` | Assigned-processor binding |
+| `87`–`88` | Deployment signing |
+| `89` | Request construction |
+| `90` | Permanent server rejection |
+| `91`–`92` | Response validation or binding |
+| `93`–`94` | Runtime randomness or clock |
+| `95` | Retry exhaustion |
+
+The flag changes only failure reporting: contact remains fail closed and the
+customer command is never started after an error.
+
 ## Retry boundary
 
 The helper signs once per process and reuses the exact serialized request for
@@ -90,4 +110,3 @@ cargo test --workspace --all-features --locked
 ```
 
 Bootstrap ZIP integration is intentionally not part of this first slice.
-

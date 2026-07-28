@@ -17,6 +17,10 @@ struct Cli {
     #[arg(long, value_name = "URL")]
     core_url: Option<String>,
 
+    /// Emit canary-only stage exit codes instead of the stable public categories
+    #[arg(long, hide = true)]
+    diagnostic_exit_codes: bool,
+
     /// Customer command and arguments; must follow `--`
     #[arg(last = true, required = true, num_args = 1.., allow_hyphen_values = true)]
     command: Vec<OsString>,
@@ -47,7 +51,12 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(RunError::Contact(error)) => {
             eprintln!("liskov-runtime-contact: {error}");
-            ExitCode::from(error.exit_category() as u8)
+            let status = if cli.diagnostic_exit_codes {
+                error.diagnostic_exit_code()
+            } else {
+                error.exit_category() as u8
+            };
+            ExitCode::from(status)
         }
         Err(RunError::Exec(_)) => {
             eprintln!("liskov-runtime-contact: customer command could not be executed");

@@ -56,14 +56,22 @@ pub struct RuntimeBootstrapResponse {
 
 #[derive(Debug, Error)]
 pub enum ProtocolError {
-    #[error("bridge call failed")]
-    Bridge(#[from] BridgeError),
+    #[error("bridge setup failed")]
+    BridgeSetup(#[source] BridgeError),
+    #[error("deployment identity bridge call failed")]
+    DeploymentIdentityBridge(#[source] BridgeError),
     #[error("deployment identity was missing or invalid")]
     InvalidDeploymentIdentity,
+    #[error("deployment public-key bridge call failed")]
+    PublicKeyBridge(#[source] BridgeError),
     #[error("deployment Ed25519 public key was missing or invalid")]
     InvalidPublicKey,
+    #[error("assigned-processors bridge call failed")]
+    AssignedProcessorsBridge(#[source] BridgeError),
     #[error("deployment identity did not match exactly one assigned processor")]
     ProcessorMatchCount,
+    #[error("deployment signing bridge call failed")]
+    SignerBridge(#[source] BridgeError),
     #[error("Ed25519 signature was missing or invalid")]
     InvalidSignature,
     #[error("request timestamp overflowed")]
@@ -77,7 +85,9 @@ pub enum ProtocolError {
 }
 
 pub fn discover_runtime_identity(bridge: &dyn Bridge) -> Result<RuntimeIdentity, ProtocolError> {
-    let deployment = bridge.call("deployment_id", json!([]))?;
+    let deployment = bridge
+        .call("deployment_id", json!([]))
+        .map_err(ProtocolError::DeploymentIdentityBridge)?;
     deployment
         .get("id")
         .and_then(Value::as_str)
@@ -89,7 +99,9 @@ pub fn discover_runtime_identity(bridge: &dyn Bridge) -> Result<RuntimeIdentity,
         .ok_or(ProtocolError::InvalidDeploymentIdentity)?;
     let job_id = serde_json::to_string(&sort_json(deployment.clone()))?;
 
-    let public_keys = bridge.call("deployment_publicKeys", json!([]))?;
+    let public_keys = bridge
+        .call("deployment_publicKeys", json!([]))
+        .map_err(ProtocolError::PublicKeyBridge)?;
     let current_key = public_keys
         .get("publicKeys")
         .and_then(|keys| keys.get("ed25519"))
@@ -97,7 +109,9 @@ pub fn discover_runtime_identity(bridge: &dyn Bridge) -> Result<RuntimeIdentity,
         .and_then(|key| normalize_hex_exact(key, 32))
         .ok_or(ProtocolError::InvalidPublicKey)?;
 
-    let assigned = bridge.call("deployment_assignedProcessors", json!([]))?;
+    let assigned = bridge
+        .call("deployment_assignedProcessors", json!([]))
+        .map_err(ProtocolError::AssignedProcessorsBridge)?;
     let processors = assigned
         .get("processors")
         .and_then(Value::as_object)
@@ -155,13 +169,15 @@ pub fn sign_request(
     unsigned: UnsignedRuntimeBootstrapRequest,
 ) -> Result<SignedRuntimeBootstrapRequest, ProtocolError> {
     let message = canonical_unsigned_request_bytes(&unsigned)?;
-    let result = bridge.call(
-        "signer_sign",
-        json!([{
-            "curve": "ed25519",
-            "bytes": hex::encode(message),
-        }]),
-    )?;
+    let result = bridge
+        .call(
+            "signer_sign",
+            json!([{
+                "curve": "ed25519",
+                "bytes": hex::encode(message),
+            }]),
+        )
+        .map_err(ProtocolError::SignerBridge)?;
     let signature = result
         .get("bytes")
         .and_then(Value::as_str)

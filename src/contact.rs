@@ -26,7 +26,7 @@ pub enum ExitCategory {
 pub enum ContactError {
     #[error("invalid configuration: {0}")]
     Configuration(&'static str),
-    #[error("runtime contact protocol failed")]
+    #[error("runtime contact protocol failed: {0}")]
     Protocol(#[from] ProtocolError),
     #[error("runtime randomness was unavailable")]
     Randomness,
@@ -46,6 +46,32 @@ impl ContactError {
             Self::Protocol(_) | Self::Randomness | Self::Clock | Self::PermanentServerRejection => {
                 ExitCategory::Protocol
             }
+        }
+    }
+
+    /// Canary-only stage code used when stderr is unavailable in the Acurast
+    /// Shell runtime. The public/default exit categories remain unchanged.
+    pub fn diagnostic_exit_code(&self) -> u8 {
+        match self {
+            Self::Configuration(_) => 2,
+            Self::Protocol(ProtocolError::BridgeSetup(_)) => 80,
+            Self::Protocol(ProtocolError::DeploymentIdentityBridge(_)) => 81,
+            Self::Protocol(ProtocolError::InvalidDeploymentIdentity) => 82,
+            Self::Protocol(ProtocolError::PublicKeyBridge(_)) => 83,
+            Self::Protocol(ProtocolError::InvalidPublicKey) => 84,
+            Self::Protocol(ProtocolError::AssignedProcessorsBridge(_)) => 85,
+            Self::Protocol(ProtocolError::ProcessorMatchCount) => 86,
+            Self::Protocol(ProtocolError::SignerBridge(_)) => 87,
+            Self::Protocol(ProtocolError::InvalidSignature) => 88,
+            Self::Protocol(ProtocolError::TimestampOverflow | ProtocolError::Serialization(_)) => {
+                89
+            }
+            Self::PermanentServerRejection => 90,
+            Self::Protocol(ProtocolError::InvalidResponse) => 91,
+            Self::Protocol(ProtocolError::ResponseBinding) => 92,
+            Self::Randomness => 93,
+            Self::Clock => 94,
+            Self::RetryExhausted => 95,
         }
     }
 }
@@ -132,7 +158,7 @@ pub fn establish_runtime_contact(
     bridge_socket: &str,
 ) -> Result<RuntimeBootstrapResponse, ContactError> {
     let bridge = UnixBridge::new(bridge_socket)
-        .map_err(ProtocolError::from)
+        .map_err(ProtocolError::BridgeSetup)
         .map_err(ContactError::from)?;
     let http = UreqHttpClient::default();
     let runtime = SystemRuntime::default();
@@ -493,5 +519,56 @@ mod tests {
         .unwrap_err();
         assert!(matches!(error, ContactError::RetryExhausted));
         assert_eq!(error.exit_category(), ExitCategory::TemporaryFailure);
+    }
+
+    #[test]
+    fn canary_diagnostic_codes_distinguish_non_secret_contact_stages() {
+        let cases = [
+            (
+                ContactError::Protocol(ProtocolError::DeploymentIdentityBridge(
+                    BridgeError::RpcError,
+                )),
+                81,
+            ),
+            (
+                ContactError::Protocol(ProtocolError::InvalidDeploymentIdentity),
+                82,
+            ),
+            (
+                ContactError::Protocol(ProtocolError::PublicKeyBridge(BridgeError::RpcError)),
+                83,
+            ),
+            (ContactError::Protocol(ProtocolError::InvalidPublicKey), 84),
+            (
+                ContactError::Protocol(ProtocolError::AssignedProcessorsBridge(
+                    BridgeError::RpcError,
+                )),
+                85,
+            ),
+            (
+                ContactError::Protocol(ProtocolError::ProcessorMatchCount),
+                86,
+            ),
+            (
+                ContactError::Protocol(ProtocolError::SignerBridge(BridgeError::RpcError)),
+                87,
+            ),
+            (ContactError::Protocol(ProtocolError::InvalidSignature), 88),
+            (ContactError::PermanentServerRejection, 90),
+            (ContactError::Protocol(ProtocolError::InvalidResponse), 91),
+            (ContactError::Protocol(ProtocolError::ResponseBinding), 92),
+            (ContactError::RetryExhausted, 95),
+        ];
+        for (error, expected) in cases {
+            assert_eq!(error.diagnostic_exit_code(), expected);
+            assert_eq!(
+                error.exit_category(),
+                if matches!(error, ContactError::RetryExhausted) {
+                    ExitCategory::TemporaryFailure
+                } else {
+                    ExitCategory::Protocol
+                }
+            );
+        }
     }
 }
