@@ -77,10 +77,12 @@ customer command is never started after an error.
 
 ## Retry boundary
 
-The helper signs once per process and reuses the exact serialized request for
-all HTTP attempts. Retryable transport and server failures use a 250 ms first
-delay, then 2-second intervals, with at most 30 attempts, 60 seconds elapsed,
-and a 10-second timeout per HTTP attempt.
+Retryable bridge failures and incomplete identity replies use a 250 ms first
+delay and then 2-second intervals before the helper generates its nonce and
+timestamp. The helper signs once per process and reuses the exact serialized
+request for all HTTP attempts. Identity discovery and HTTP contact each allow
+at most 30 attempts, share one 60-second elapsed-time ceiling, and each HTTP
+attempt has a 10-second timeout.
 
 ## Release
 

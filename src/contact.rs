@@ -175,7 +175,7 @@ pub fn establish_runtime_contact_with(
     let endpoint = validate_core_url(core_url)?
         .join("/api/jobs/runtime-bootstrap")
         .map_err(|_| ContactError::Configuration("invalid core URL"))?;
-    let identity = discover_runtime_identity(bridge)?;
+    let identity = discover_runtime_identity_with_retry(bridge, runtime, retry)?;
     let mut nonce = [0_u8; 16];
     runtime.fill_random(&mut nonce)?;
     let unsigned = build_unsigned_request(identity, hex::encode(nonce), runtime.unix_time_ms()?)?;
@@ -210,6 +210,50 @@ pub fn establish_runtime_contact_with(
             }
         }
     }
+}
+
+fn discover_runtime_identity_with_retry(
+    bridge: &dyn Bridge,
+    runtime: &dyn ContactRuntime,
+    retry: RetryPolicy,
+) -> Result<crate::protocol::RuntimeIdentity, ContactError> {
+    let mut attempt = 0_usize;
+    let mut next_delay = retry.initial_delay;
+    loop {
+        attempt += 1;
+        match discover_runtime_identity(bridge) {
+            Ok(identity) => return Ok(identity),
+            Err(error) if identity_error_is_retryable(&error) => {
+                if attempt >= retry.max_attempts
+                    || runtime
+                        .elapsed()
+                        .checked_add(next_delay)
+                        .is_none_or(|elapsed| elapsed > retry.max_elapsed)
+                {
+                    return Err(ContactError::Protocol(error));
+                }
+                eprintln!(
+                    "liskov-runtime-contact: runtime identity unavailable; retrying ({attempt}/{})",
+                    retry.max_attempts
+                );
+                runtime.sleep(next_delay);
+                next_delay = retry.interval;
+            }
+            Err(error) => return Err(ContactError::Protocol(error)),
+        }
+    }
+}
+
+fn identity_error_is_retryable(error: &ProtocolError) -> bool {
+    matches!(
+        error,
+        ProtocolError::DeploymentIdentityBridge(_)
+            | ProtocolError::InvalidDeploymentIdentity
+            | ProtocolError::PublicKeyBridge(_)
+            | ProtocolError::InvalidPublicKey
+            | ProtocolError::AssignedProcessorsBridge(_)
+            | ProtocolError::ProcessorMatchCount
+    )
 }
 
 enum AttemptError {
@@ -309,6 +353,38 @@ mod tests {
         fn call(&self, method: &str, params: Value) -> Result<Value, BridgeError> {
             self.calls.lock().unwrap().push((method.to_owned(), params));
             Ok(self.replies.lock().unwrap().pop_front().unwrap())
+        }
+    }
+
+    struct DelayedIdentityBridge {
+        bridge: FakeBridge,
+        remaining_failures: Mutex<usize>,
+    }
+
+    impl DelayedIdentityBridge {
+        fn new(remaining_failures: usize) -> Self {
+            Self {
+                bridge: FakeBridge::successful(),
+                remaining_failures: Mutex::new(remaining_failures),
+            }
+        }
+    }
+
+    impl Bridge for DelayedIdentityBridge {
+        fn call(&self, method: &str, params: Value) -> Result<Value, BridgeError> {
+            if method == "deployment_id" {
+                let mut remaining = self.remaining_failures.lock().unwrap();
+                if *remaining > 0 {
+                    *remaining -= 1;
+                    self.bridge
+                        .calls
+                        .lock()
+                        .unwrap()
+                        .push((method.to_owned(), params));
+                    return Err(BridgeError::RpcError);
+                }
+            }
+            self.bridge.call(method, params)
         }
     }
 
@@ -457,6 +533,76 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn retries_identity_before_generating_one_signed_request() {
+        let bridge = DelayedIdentityBridge::new(2);
+        let http = FakeHttp::new(vec![FakeHttpReply::Response(200, success_response())]);
+        let runtime = FakeRuntime::new();
+        establish_runtime_contact_with(
+            "https://liskov.example",
+            &bridge,
+            &http,
+            &runtime,
+            RetryPolicy {
+                max_elapsed: Duration::from_secs(10),
+                ..RetryPolicy::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            *runtime.sleeps.lock().unwrap(),
+            vec![Duration::from_millis(250), Duration::from_secs(2)]
+        );
+        let calls = bridge.bridge.calls.lock().unwrap();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|(method, _)| method == "deployment_id")
+                .count(),
+            3
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|(method, _)| method == "signer_sign")
+                .count(),
+            1
+        );
+        assert_eq!(http.bodies.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn identity_retry_exhaustion_preserves_the_failing_stage() {
+        let bridge = DelayedIdentityBridge::new(2);
+        let http = FakeHttp::new(Vec::new());
+        let runtime = FakeRuntime::new();
+        let error = establish_runtime_contact_with(
+            "https://liskov.example",
+            &bridge,
+            &http,
+            &runtime,
+            RetryPolicy {
+                max_attempts: 2,
+                max_elapsed: Duration::from_secs(10),
+                ..RetryPolicy::default()
+            },
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            ContactError::Protocol(ProtocolError::DeploymentIdentityBridge(
+                BridgeError::RpcError
+            ))
+        ));
+        assert_eq!(
+            *runtime.sleeps.lock().unwrap(),
+            vec![Duration::from_millis(250)]
+        );
+        assert!(http.bodies.lock().unwrap().is_empty());
     }
 
     #[test]
