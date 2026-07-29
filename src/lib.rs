@@ -4,6 +4,8 @@ pub mod bridge;
 pub mod contact;
 pub mod handoff;
 pub mod http;
+pub mod precontact;
+pub mod probe;
 pub mod protocol;
 
 pub use contact::{

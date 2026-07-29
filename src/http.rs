@@ -22,15 +22,21 @@ pub struct UreqHttpClient {
     max_response_bytes: usize,
 }
 
-impl Default for UreqHttpClient {
-    fn default() -> Self {
+impl UreqHttpClient {
+    pub fn with_limits(timeout: Duration, max_response_bytes: usize) -> Self {
         Self {
             agent: ureq::AgentBuilder::new()
-                .timeout(HTTP_ATTEMPT_TIMEOUT)
+                .timeout(timeout)
                 .redirects(0)
                 .build(),
-            max_response_bytes: DEFAULT_MAX_HTTP_RESPONSE_BYTES,
+            max_response_bytes,
         }
+    }
+}
+
+impl Default for UreqHttpClient {
+    fn default() -> Self {
+        Self::with_limits(HTTP_ATTEMPT_TIMEOUT, DEFAULT_MAX_HTTP_RESPONSE_BYTES)
     }
 }
 

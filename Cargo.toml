@@ -1,6 +1,6 @@
 [package]
 name = "liskov-runtime-cargo"
-version = "0.1.2"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
 description = "Static first-contact helper for Liskov-managed Acurast Cargo/PRoot workloads"
@@ -20,6 +20,7 @@ name = "liskov-runtime-contact"
 path = "src/bin/liskov-runtime-contact.rs"
 
 [dependencies]
+base64 = "0.22.1"
 clap = { version = "4.5.40", features = ["derive"] }
 getrandom = "0.3.3"
 hex = "0.4.3"

@@ -9,6 +9,12 @@ Ed25519 key, waits for bounded authenticated contact, and then replaces itself
 with the customer command. If identity, signing, transport, or bootstrap
 validation fails, the customer command does not start.
 
+When `PROOF_SLIPWAY_BOOTSTRAP` contains the Liskov-owned `x.pc` extension, the
+helper also emits bounded pre-contact evidence before bridge discovery and once
+more on terminal contact failure. This bearer-authenticated evidence is
+diagnostic only: it never authorizes command execution or replaces the signed
+runtime-bootstrap gate.
+
 ## Supported runtime
 
 - 64-bit AArch64 Cargo/PRoot workloads
@@ -41,7 +47,7 @@ Only HTTPS URLs without user information, a query, or a fragment are accepted.
 
 The helper writes concise, non-secret diagnostics to stderr. It never logs
 bridge replies, signed request or response bodies, signatures, processor
-identity, or the customer command.
+identity, pre-contact tokens, or the customer command.
 
 ## Exit status
 
@@ -75,6 +81,12 @@ surface:
 The flag changes only failure reporting: contact remains fail closed and the
 customer command is never started after an error.
 
+Liskov-controlled canaries may also use the hidden `--bridge-probe` flag. It
+checks both the documented short request ID and the helper's long request ID
+across the bounded Cargo bridge surface, including a domain-separated harmless
+Ed25519 signing call. The probe shares a 15-second budget and emits only method,
+ID-style, closed outcome, and optional numeric JSON-RPC code fields.
+
 ## Retry boundary
 
 Retryable bridge failures and incomplete identity replies use a 250 ms first
@@ -83,6 +95,10 @@ timestamp. The helper signs once per process and reuses the exact serialized
 request for all HTTP attempts. Identity discovery and HTTP contact each allow
 at most 30 attempts, share one 60-second elapsed-time ceiling, and each HTTP
 attempt has a 10-second timeout.
+
+Pre-contact reporting is independent of this retry loop. The started and
+terminal reports each receive one HTTP attempt, a two-second timeout, an 8-KiB
+response limit, and strict response binding.
 
 ## Release
 

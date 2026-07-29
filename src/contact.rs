@@ -381,7 +381,7 @@ mod tests {
                         .lock()
                         .unwrap()
                         .push((method.to_owned(), params));
-                    return Err(BridgeError::RpcError);
+                    return Err(BridgeError::RpcError { code: None });
                 }
             }
             self.bridge.call(method, params)
@@ -595,7 +595,7 @@ mod tests {
         assert!(matches!(
             error,
             ContactError::Protocol(ProtocolError::DeploymentIdentityBridge(
-                BridgeError::RpcError
+                BridgeError::RpcError { .. }
             ))
         ));
         assert_eq!(
@@ -672,7 +672,7 @@ mod tests {
         let cases = [
             (
                 ContactError::Protocol(ProtocolError::DeploymentIdentityBridge(
-                    BridgeError::RpcError,
+                    BridgeError::RpcError { code: None },
                 )),
                 81,
             ),
@@ -681,13 +681,15 @@ mod tests {
                 82,
             ),
             (
-                ContactError::Protocol(ProtocolError::PublicKeyBridge(BridgeError::RpcError)),
+                ContactError::Protocol(ProtocolError::PublicKeyBridge(BridgeError::RpcError {
+                    code: None,
+                })),
                 83,
             ),
             (ContactError::Protocol(ProtocolError::InvalidPublicKey), 84),
             (
                 ContactError::Protocol(ProtocolError::AssignedProcessorsBridge(
-                    BridgeError::RpcError,
+                    BridgeError::RpcError { code: None },
                 )),
                 85,
             ),
@@ -696,7 +698,9 @@ mod tests {
                 86,
             ),
             (
-                ContactError::Protocol(ProtocolError::SignerBridge(BridgeError::RpcError)),
+                ContactError::Protocol(ProtocolError::SignerBridge(BridgeError::RpcError {
+                    code: None,
+                })),
                 87,
             ),
             (ContactError::Protocol(ProtocolError::InvalidSignature), 88),
