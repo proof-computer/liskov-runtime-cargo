@@ -98,7 +98,7 @@ fn main() -> ExitCode {
                     .to_owned()
             })
         );
-        if let Some(failure) = probe.first_failure() {
+        if let Some(failure) = probe.terminal_failure() {
             if let Some(reporter) = &reporter {
                 let _ = reporter.report_failed(&diagnostic_http, failure);
             }

@@ -72,10 +72,23 @@ pub struct BridgeProbeReport {
 }
 
 impl BridgeProbeReport {
-    pub fn first_failure(&self) -> Option<DiagnosticFailure> {
-        self.observations
-            .iter()
-            .find(|observation| observation.outcome != "ok")
+    pub fn terminal_failure(&self) -> Option<DiagnosticFailure> {
+        // The owned pre-contact contract permits one terminal report. Prefer
+        // the observations that decide whether signed bootstrap v2 or a
+        // signer-backed fallback is possible, while retaining the complete
+        // closed-enum report on stderr for controlled probes.
+        ["signer_sign", "deployment_id", "deployment_publicKeys"]
+            .into_iter()
+            .find_map(|method| {
+                self.observations
+                    .iter()
+                    .find(|observation| observation.method == method && observation.outcome != "ok")
+            })
+            .or_else(|| {
+                self.observations
+                    .iter()
+                    .find(|observation| observation.outcome != "ok")
+            })
             .map(|observation| DiagnosticFailure {
                 stage: "bridge.probe",
                 method: observation.method,
@@ -292,7 +305,7 @@ mod tests {
             replies: Mutex::new(successful_replies().into()),
         };
         let report = run_bridge_probe_with(&bridge, &FakeRuntime(Duration::ZERO));
-        assert!(report.first_failure().is_none());
+        assert!(report.terminal_failure().is_none());
         assert_eq!(report.observations.len(), 7);
         assert_eq!(report.observations[0].id_style, "documented-short");
         assert_eq!(report.observations[1].id_style, "liskov-long");
@@ -328,6 +341,60 @@ mod tests {
         assert_eq!(report.observations[6].rpc_code, Some(-32_601));
         let encoded = serde_json::to_string(&report).unwrap();
         assert!(!encoded.contains("sensitive"));
+    }
+
+    #[test]
+    fn terminal_report_prioritizes_signing_then_identity_capabilities() {
+        let report = BridgeProbeReport {
+            domain: BRIDGE_PROBE_DOMAIN,
+            observations: vec![
+                ProbeObservation {
+                    method: "processor_version",
+                    id_style: "documented-short",
+                    outcome: "bridge_json",
+                    rpc_code: None,
+                },
+                ProbeObservation {
+                    method: "deployment_id",
+                    id_style: "liskov-long",
+                    outcome: "bridge_result_shape",
+                    rpc_code: None,
+                },
+                ProbeObservation {
+                    method: "deployment_publicKeys",
+                    id_style: "liskov-long",
+                    outcome: "bridge_rpc_error",
+                    rpc_code: Some(-32_601),
+                },
+                ProbeObservation {
+                    method: "signer_sign",
+                    id_style: "liskov-long",
+                    outcome: "bridge_timeout",
+                    rpc_code: None,
+                },
+            ],
+        };
+
+        let failure = report.terminal_failure().unwrap();
+        assert_eq!(failure.method, "signer_sign");
+        assert_eq!(failure.code, "bridge_timeout");
+
+        let mut without_signer_failure = report.clone();
+        without_signer_failure.observations[3].outcome = "ok";
+        let failure = without_signer_failure.terminal_failure().unwrap();
+        assert_eq!(failure.method, "deployment_id");
+        assert_eq!(failure.code, "bridge_result_shape");
+
+        without_signer_failure.observations[1].outcome = "ok";
+        let failure = without_signer_failure.terminal_failure().unwrap();
+        assert_eq!(failure.method, "deployment_publicKeys");
+        assert_eq!(failure.code, "bridge_rpc_error");
+        assert_eq!(failure.rpc_code, Some(-32_601));
+
+        without_signer_failure.observations[2].outcome = "ok";
+        let failure = without_signer_failure.terminal_failure().unwrap();
+        assert_eq!(failure.method, "processor_version");
+        assert_eq!(failure.code, "bridge_json");
     }
 
     #[test]
