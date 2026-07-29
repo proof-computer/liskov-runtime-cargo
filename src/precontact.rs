@@ -16,7 +16,7 @@ pub const PRECONTACT_DIAGNOSTIC_DOMAIN: &str = "proof.liskov.runtime-precontact-
 pub const PRECONTACT_HTTP_TIMEOUT: Duration = Duration::from_secs(2);
 pub const MAX_PRECONTACT_RESPONSE_BYTES: usize = 8 * 1024;
 const MAX_BOOTSTRAP_BYTES: usize = 64 * 1024;
-const MAX_TOKEN_BYTES: usize = 4_096;
+const MAX_TOKEN_BYTES: usize = 48;
 const MAX_BINDING_BYTES: usize = 1_024;
 const MAX_VALIDITY_MS: i64 = 45 * 60_000;
 
@@ -51,21 +51,6 @@ struct CompactPrecontact {
     c: String,
     iat: i64,
     exp: i64,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct TokenClaims {
-    domain: String,
-    application_uid: String,
-    application_id: String,
-    policy_digest: String,
-    job_id: String,
-    deployment_id: String,
-    child_session_id: String,
-    purpose: String,
-    issued_at_ms: i64,
-    expires_at_ms: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -262,38 +247,19 @@ impl PrecontactReporter {
                 .any(|value| value.is_empty() || value.len() > MAX_BINDING_BYTES)
             || bootstrap.p != bootstrap.p.to_ascii_lowercase()
             || bootstrap.d != pc.d
-            || !pc.t.starts_with("lrp1_")
-            || pc.t.len() > MAX_TOKEN_BYTES
+            || pc.t.len() != MAX_TOKEN_BYTES
             || pc.iat <= 0
             || pc.exp <= pc.iat
             || pc.exp - pc.iat > MAX_VALIDITY_MS
         {
             return Err(PrecontactError::Invalid);
         }
-        let encoded = pc.t.strip_prefix("lrp1_").ok_or(PrecontactError::Invalid)?;
-        let (payload, tag) = encoded
-            .split_once('.')
-            .filter(|(_, tag)| !tag.contains('.'))
-            .ok_or(PrecontactError::Invalid)?;
-        let claims_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(payload)
-            .map_err(|_| PrecontactError::Invalid)?;
+        let encoded_tag = pc.t.strip_prefix("lrp1_").ok_or(PrecontactError::Invalid)?;
         let tag = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(tag)
+            .decode(encoded_tag)
             .map_err(|_| PrecontactError::Invalid)?;
-        let claims: TokenClaims =
-            serde_json::from_slice(&claims_bytes).map_err(|_| PrecontactError::Invalid)?;
         if tag.len() != 32
-            || claims.domain != "proof.liskov.runtime-precontact-token.v1"
-            || claims.purpose != "cargo-runtime-precontact"
-            || claims.application_uid != bootstrap.uid
-            || claims.application_id != bootstrap.a
-            || claims.policy_digest != bootstrap.p
-            || claims.job_id != pc.j
-            || claims.deployment_id != pc.d
-            || claims.child_session_id != pc.c
-            || claims.issued_at_ms != pc.iat
-            || claims.expires_at_ms != pc.exp
+            || base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&tag) != encoded_tag
         {
             return Err(PrecontactError::Invalid);
         }
@@ -459,22 +425,8 @@ mod tests {
     }
 
     fn bootstrap() -> String {
-        let claims = json!({
-            "applicationId": "app-1",
-            "applicationUid": "app-uid-1",
-            "childSessionId": "child-1",
-            "deploymentId": "deployment-1",
-            "domain": "proof.liskov.runtime-precontact-token.v1",
-            "expiresAtMs": 61_000,
-            "issuedAtMs": 1_000,
-            "jobId": "job-1",
-            "policyDigest": "sha256:ab",
-            "purpose": "cargo-runtime-precontact",
-        });
         let token = format!(
-            "lrp1_{}.{}",
-            base64::engine::general_purpose::URL_SAFE_NO_PAD
-                .encode(serde_json::to_vec(&claims).unwrap()),
+            "lrp1_{}",
             base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([7_u8; 32])
         );
         json!({
@@ -522,11 +474,23 @@ mod tests {
             PrecontactError::Missing
         );
         let mut mismatched: Value = serde_json::from_str(&bootstrap()).unwrap();
-        mismatched["x"]["pc"]["c"] = json!("wrong-child");
+        mismatched["d"] = json!("wrong-deployment");
         assert_eq!(
             PrecontactReporter::parse(&mismatched.to_string(), 2_000).unwrap_err(),
             PrecontactError::Invalid
         );
+        for invalid_token in [
+            "lrp1_not-base64!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",
+            "lrp1_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "lrp1_AAAAAAAAAAAAAAAAAAAAA.AAAAAAAAAAAAAAAAAAAAA",
+        ] {
+            let mut malformed: Value = serde_json::from_str(&bootstrap()).unwrap();
+            malformed["x"]["pc"]["t"] = json!(invalid_token);
+            assert_eq!(
+                PrecontactReporter::parse(&malformed.to_string(), 2_000).unwrap_err(),
+                PrecontactError::Invalid
+            );
+        }
     }
 
     #[test]
