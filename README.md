@@ -82,16 +82,15 @@ The flag changes only failure reporting: contact remains fail closed and the
 customer command is never started after an error.
 
 Liskov-controlled canaries may also use the hidden `--bridge-probe` flag. It
-checks unique decimal `UInt` request IDs and the helper's incompatible long
-request ID across the bounded Cargo bridge surface, including a
-domain-separated harmless Ed25519 signing call. Bounded read-only calls run in
-dependency order before signing; the probe stops at the first decisive failure
-and gives signing the remainder of the shared 15-second budget. If the first
-`processor_version` call times out, the probe records that attempt as
-non-terminal warm-up evidence and retries it once with a fresh decimal `UInt`
-ID; a second timeout is terminal. The long-ID comparison runs last and is
-evidence only. The probe emits only method, ID-style, closed outcome, and
-optional numeric JSON-RPC code fields.
+first reproduces Acurast's Cargo-native example call:
+`signer_publicKey` with `curve: "p256"`. That first connection receives the
+remainder of the shared 15-second budget and is followed by the example's
+`deployment_assignedProcessors` call. The probe then checks unique decimal
+`UInt` request IDs and the helper's incompatible long request ID across
+Liskov's stricter Cargo bridge surface, including a domain-separated harmless
+Ed25519 signing call. It stops at the first decisive failure. The long-ID
+comparison runs last and is evidence only. The probe emits only method,
+ID-style, closed outcome, and optional numeric JSON-RPC code fields.
 
 ## Retry boundary
 
