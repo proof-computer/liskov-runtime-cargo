@@ -82,12 +82,13 @@ The flag changes only failure reporting: contact remains fail closed and the
 customer command is never started after an error.
 
 Liskov-controlled canaries may also use the hidden `--bridge-probe` flag. It
-checks both the documented short request ID and the helper's long request ID
-across the bounded Cargo bridge surface, including a domain-separated harmless
-Ed25519 signing call. Decision-critical signing and deployment identity calls
-run first so later probes cannot consume their shared 15-second budget. The
-probe emits only method, ID-style, closed outcome, and optional numeric JSON-RPC
-code fields.
+checks unique decimal `UInt` request IDs and the helper's incompatible long
+request ID across the bounded Cargo bridge surface, including a
+domain-separated harmless Ed25519 signing call. Bounded read-only calls run in
+dependency order before signing; the probe stops at the first decisive failure
+and gives signing the remainder of the shared 15-second budget. The long-ID
+comparison runs last and is evidence only. The probe emits only method,
+ID-style, closed outcome, and optional numeric JSON-RPC code fields.
 
 ## Retry boundary
 

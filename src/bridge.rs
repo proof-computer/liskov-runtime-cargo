@@ -61,7 +61,7 @@ impl UnixBridge {
         let sequence = self.next_id.fetch_add(1, Ordering::Relaxed);
         let id = match id_style {
             RequestIdStyle::Long => format!("liskov-runtime-contact-{sequence}"),
-            RequestIdStyle::DocumentedShort => "1".to_owned(),
+            RequestIdStyle::DocumentedShort => sequence.to_string(),
         };
         let request = RpcRequest {
             jsonrpc: "2.0",
@@ -273,7 +273,7 @@ mod tests {
     }
 
     #[test]
-    fn processor_compatible_id_stays_exact_after_prior_calls() {
+    fn processor_compatible_id_is_a_unique_decimal_uint_after_prior_calls() {
         let (socket_name, handle) = serve_once(|request| {
             serde_json::to_vec(&json!({
                 "jsonrpc": "2.0",
@@ -295,7 +295,7 @@ mod tests {
                 Duration::from_secs(1),
             )
             .unwrap();
-        assert_eq!(handle.join().unwrap()["id"], "1");
+        assert_eq!(handle.join().unwrap()["id"], "4");
     }
 
     #[test]
