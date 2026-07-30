@@ -6,6 +6,8 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 concurrency:
   group: release-${{ github.ref }}
@@ -16,7 +18,7 @@ jobs:
     name: Publish static AArch64 release
     runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install Rust target and inspection tools
         run: |
           rustup target add aarch64-unknown-linux-musl
@@ -39,22 +41,74 @@ jobs:
         env:
           TAG: ${{ github.ref_name }}
         run: |
-          name="liskov-runtime-contact-${TAG}-aarch64-unknown-linux-musl"
-          mkdir -p "dist/${name}"
-          install -m 0755 target/aarch64-unknown-linux-musl/release/liskov-runtime-contact "dist/${name}/"
-          install -m 0644 README.md LICENSE "dist/${name}/"
-          tar --sort=name --owner=0 --group=0 --numeric-owner -C dist -czf "dist/${name}.tar.gz" "${name}"
-          cd dist
-          sha256sum "${name}.tar.gz" > SHA256SUMS
-      - name: Publish GitHub release
+          scripts/package-release.sh \
+            "$TAG" \
+            "$GITHUB_SHA" \
+            target/aarch64-unknown-linux-musl/release/liskov-runtime-contact \
+            dist
+      - name: Create draft GitHub release with all assets
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
+          binary="dist/liskov-runtime-contact-${TAG}-aarch64-unknown-linux-musl"
           archive="dist/liskov-runtime-contact-${TAG}-aarch64-unknown-linux-musl.tar.gz"
-          gh release create "$TAG" "$archive" dist/SHA256SUMS \
+          gh release create "$TAG" \
+            "$binary" \
+            "$archive" \
+            dist/runtime-contact-release.json \
+            dist/SHA256SUMS \
+            --draft \
             --verify-tag \
             --title "$TAG" \
             --notes "Static AArch64 first-contact helper for Liskov-managed Acurast Cargo/PRoot workloads."
-
+      - name: Attest release assets
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4
+        with:
+          subject-path: |
+            dist/liskov-runtime-contact-${{ github.ref_name }}-aarch64-unknown-linux-musl
+            dist/liskov-runtime-contact-${{ github.ref_name }}-aarch64-unknown-linux-musl.tar.gz
+            dist/runtime-contact-release.json
+      - name: Publish immutable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: gh release edit "$TAG" --draft=false
+      - name: Verify immutable release and exact assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          binary="dist/liskov-runtime-contact-${TAG}-aarch64-unknown-linux-musl"
+          archive="dist/liskov-runtime-contact-${TAG}-aarch64-unknown-linux-musl.tar.gz"
+          for attempt in 1 2 3 4 5 6; do
+            if gh release verify "$TAG"; then
+              break
+            fi
+            if [ "$attempt" -eq 6 ]; then
+              exit 1
+            fi
+            sleep 10
+          done
+          gh release verify-asset "$TAG" "$binary"
+          gh release verify-asset "$TAG" "$archive"
+          gh release verify-asset "$TAG" dist/runtime-contact-release.json
+      - name: Notify Liskov release registry
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          token=$(
+            curl --fail --silent --show-error \
+              --header "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+              "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=liskov-runtime-contact-release" |
+              jq -er '.value'
+          )
+          curl --fail --silent --show-error \
+            --request POST \
+            --header "Authorization: Bearer ${token}" \
+            --header "Content-Type: application/json" \
+            --data "$(jq -cn --arg tag "$TAG" '{domain:"proof.liskov.runtime-contact-release.v1",tag:$tag}')" \
+            https://liskov.proof.computer/api/runtime-contact/releases/github

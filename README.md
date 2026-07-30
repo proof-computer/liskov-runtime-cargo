@@ -110,12 +110,16 @@ response limit, and strict response binding.
 Each release publishes:
 
 ```text
+liskov-runtime-contact-v<VERSION>-aarch64-unknown-linux-musl
 liskov-runtime-contact-v<VERSION>-aarch64-unknown-linux-musl.tar.gz
+runtime-contact-release.json
 SHA256SUMS
 ```
 
-The archive contains the helper binary, this README, and the Apache-2.0
-license. Verify it before extraction:
+The raw binary, archive, and release manifest are attested. The manifest binds
+the immutable tag and source commit to their exact digests and byte sizes. The
+archive contains the helper binary, this README, and the Apache-2.0 license.
+Verify the checksums before use:
 
 ```sh
 sha256sum --check SHA256SUMS

@@ -25,6 +25,8 @@ jobs:
         run: cargo build --workspace --all-targets --locked
       - name: Test
         run: cargo test --workspace --all-features --locked
+      - name: Verify deterministic release contract
+        run: scripts/test-package-release.sh
 
   aarch64-static:
     name: Native AArch64 static artifact
@@ -49,4 +51,3 @@ jobs:
             echo "artifact unexpectedly contains a dynamic interpreter" >&2
             exit 1
           fi
-
