@@ -201,7 +201,12 @@ struct RpcRequest<'a> {
 
 impl Bridge for UnixBridge {
     fn call(&self, method: &str, params: Value) -> Result<Value, BridgeError> {
-        self.call_with_options(method, params, RequestIdStyle::Long, BRIDGE_TIMEOUT)
+        self.call_with_options(
+            method,
+            params,
+            RequestIdStyle::DocumentedShort,
+            BRIDGE_TIMEOUT,
+        )
     }
 }
 
@@ -241,7 +246,7 @@ mod tests {
     }
 
     #[test]
-    fn frames_one_newline_delimited_request_with_matching_id() {
+    fn frames_one_newline_delimited_request_with_processor_compatible_id() {
         let (socket_name, handle) = serve_once(|request| {
             serde_json::to_vec(&json!({
                 "jsonrpc": "2.0",
@@ -264,11 +269,11 @@ mod tests {
         assert_eq!(request["jsonrpc"], "2.0");
         assert_eq!(request["method"], "deployment_id");
         assert_eq!(request["params"], json!([]));
-        assert_eq!(request["id"], "liskov-runtime-contact-1");
+        assert_eq!(request["id"], "1");
     }
 
     #[test]
-    fn documented_short_id_stays_exact_after_prior_long_calls() {
+    fn processor_compatible_id_stays_exact_after_prior_calls() {
         let (socket_name, handle) = serve_once(|request| {
             serde_json::to_vec(&json!({
                 "jsonrpc": "2.0",
@@ -291,6 +296,23 @@ mod tests {
             )
             .unwrap();
         assert_eq!(handle.join().unwrap()["id"], "1");
+    }
+
+    #[test]
+    fn classifies_processor_raw_rejection_of_long_id_as_invalid_json() {
+        let (socket_name, handle) = serve_once(|_| b"Invalid Request\n".to_vec());
+        let bridge = UnixBridge::new(socket_name).unwrap();
+        let error = bridge
+            .call_with_options(
+                "signer_sign",
+                json!([{"curve": "ed25519", "bytes": "00"}]),
+                RequestIdStyle::Long,
+                Duration::from_secs(1),
+            )
+            .unwrap_err();
+        assert!(matches!(error, BridgeError::InvalidJson(_)));
+        assert_eq!(error.failure_code(), "bridge_json");
+        assert_eq!(handle.join().unwrap()["id"], "liskov-runtime-contact-1");
     }
 
     #[test]

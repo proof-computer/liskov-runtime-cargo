@@ -76,18 +76,23 @@ impl BridgeProbeReport {
         // The owned pre-contact contract permits one terminal report. Prefer
         // the observations that decide whether signed bootstrap v2 or a
         // signer-backed fallback is possible, while retaining the complete
-        // closed-enum report on stderr for controlled probes.
+        // closed-enum report on stderr for controlled probes. The deliberately
+        // incompatible long-ID comparison is evidence only: Acurast Core
+        // accepts unsigned integer IDs and decimal strings, not arbitrary
+        // JSON-RPC string IDs.
         ["signer_sign", "deployment_id", "deployment_publicKeys"]
             .into_iter()
             .find_map(|method| {
-                self.observations
-                    .iter()
-                    .find(|observation| observation.method == method && observation.outcome != "ok")
+                self.observations.iter().find(|observation| {
+                    observation.method == method
+                        && observation.id_style == "documented-short"
+                        && observation.outcome != "ok"
+                })
             })
             .or_else(|| {
-                self.observations
-                    .iter()
-                    .find(|observation| observation.outcome != "ok")
+                self.observations.iter().find(|observation| {
+                    observation.id_style == "documented-short" && observation.outcome != "ok"
+                })
             })
             .map(|observation| DiagnosticFailure {
                 stage: "bridge.probe",
@@ -118,19 +123,19 @@ pub fn run_bridge_probe_with(
         ProbeSpec {
             method: "signer_sign",
             params: json!([{"curve": "ed25519", "bytes": harmless}]),
-            id_style: RequestIdStyle::Long,
+            id_style: RequestIdStyle::DocumentedShort,
             shape: signature_shape,
         },
         ProbeSpec {
             method: "deployment_id",
             params: json!([]),
-            id_style: RequestIdStyle::Long,
+            id_style: RequestIdStyle::DocumentedShort,
             shape: deployment_id_shape,
         },
         ProbeSpec {
             method: "deployment_publicKeys",
             params: json!([]),
-            id_style: RequestIdStyle::Long,
+            id_style: RequestIdStyle::DocumentedShort,
             shape: public_keys_shape,
         },
         ProbeSpec {
@@ -148,13 +153,13 @@ pub fn run_bridge_probe_with(
         ProbeSpec {
             method: "deployment_ipfsHash",
             params: json!([]),
-            id_style: RequestIdStyle::Long,
+            id_style: RequestIdStyle::DocumentedShort,
             shape: ipfs_hash_shape,
         },
         ProbeSpec {
             method: "deployment_assignedProcessors",
             params: json!([]),
-            id_style: RequestIdStyle::Long,
+            id_style: RequestIdStyle::DocumentedShort,
             shape: assigned_processors_shape,
         },
     ];
@@ -316,8 +321,13 @@ mod tests {
                 .all(|observation| observation.outcome == "ok")
         );
         let calls = bridge.calls.lock().unwrap();
+        assert_eq!(calls[0].2, RequestIdStyle::DocumentedShort);
+        assert_eq!(calls[1].2, RequestIdStyle::DocumentedShort);
+        assert_eq!(calls[2].2, RequestIdStyle::DocumentedShort);
         assert_eq!(calls[3].2, RequestIdStyle::DocumentedShort);
         assert_eq!(calls[4].2, RequestIdStyle::Long);
+        assert_eq!(calls[5].2, RequestIdStyle::DocumentedShort);
+        assert_eq!(calls[6].2, RequestIdStyle::DocumentedShort);
         assert_eq!(
             calls[0].1[0]["bytes"],
             hex::encode(b"proof.liskov.runtime-bridge-probe.v1\0harmless-capability-check")
@@ -401,20 +411,26 @@ mod tests {
                 },
                 ProbeObservation {
                     method: "deployment_id",
-                    id_style: "liskov-long",
+                    id_style: "documented-short",
                     outcome: "bridge_result_shape",
                     rpc_code: None,
                 },
                 ProbeObservation {
                     method: "deployment_publicKeys",
-                    id_style: "liskov-long",
+                    id_style: "documented-short",
                     outcome: "bridge_rpc_error",
                     rpc_code: Some(-32_601),
                 },
                 ProbeObservation {
                     method: "signer_sign",
-                    id_style: "liskov-long",
+                    id_style: "documented-short",
                     outcome: "bridge_timeout",
+                    rpc_code: None,
+                },
+                ProbeObservation {
+                    method: "processor_version",
+                    id_style: "liskov-long",
+                    outcome: "bridge_json",
                     rpc_code: None,
                 },
             ],
@@ -440,6 +456,9 @@ mod tests {
         let failure = without_signer_failure.terminal_failure().unwrap();
         assert_eq!(failure.method, "processor_version");
         assert_eq!(failure.code, "bridge_json");
+
+        without_signer_failure.observations[0].outcome = "ok";
+        assert!(without_signer_failure.terminal_failure().is_none());
     }
 
     #[test]
