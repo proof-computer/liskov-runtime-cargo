@@ -6,7 +6,8 @@ use clap::Parser;
 use liskov_runtime_cargo::bridge::UnixBridge;
 use liskov_runtime_cargo::http::UreqHttpClient;
 use liskov_runtime_cargo::precontact::{
-    DiagnosticFailure, MAX_PRECONTACT_RESPONSE_BYTES, PRECONTACT_HTTP_TIMEOUT, PrecontactReporter,
+    DiagnosticFailure, MAX_PRECONTACT_RESPONSE_BYTES, PRECONTACT_HTTP_TIMEOUT, PrecontactError,
+    PrecontactReporter,
 };
 use liskov_runtime_cargo::probe::{SystemProbeRuntime, run_bridge_probe};
 use liskov_runtime_cargo::{
@@ -37,6 +38,17 @@ struct Cli {
     command: Vec<OsString>,
 }
 
+fn precontact_probe_line(phase: &'static str, error: &PrecontactError) -> String {
+    format!(
+        "liskov-runtime-contact: precontact {{\"domain\":\"proof.liskov.runtime-precontact-probe.v1\",\"phase\":\"{phase}\",\"outcome\":\"{}\"}}",
+        error.probe_code()
+    )
+}
+
+fn emit_precontact_probe(phase: &'static str, error: &PrecontactError) {
+    eprintln!("{}", precontact_probe_line(phase, error));
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let core_url = cli
@@ -45,23 +57,45 @@ fn main() -> ExitCode {
         .unwrap_or_else(|| DEFAULT_CORE_URL.to_owned());
     let diagnostic_http =
         UreqHttpClient::with_limits(PRECONTACT_HTTP_TIMEOUT, MAX_PRECONTACT_RESPONSE_BYTES);
-    let reporter = std::env::var("PROOF_SLIPWAY_BOOTSTRAP")
-        .ok()
-        .and_then(|raw| {
+    let reporter = match std::env::var("PROOF_SLIPWAY_BOOTSTRAP") {
+        Ok(raw) => {
             let now_ms = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .ok()
-                .and_then(|duration| i64::try_from(duration.as_millis()).ok())?;
-            PrecontactReporter::parse(&raw, now_ms).ok()
-        });
+                .and_then(|duration| i64::try_from(duration.as_millis()).ok());
+            match now_ms
+                .ok_or(PrecontactError::Invalid)
+                .and_then(|now_ms| PrecontactReporter::parse(&raw, now_ms))
+            {
+                Ok(reporter) => Some(reporter),
+                Err(error) => {
+                    if cli.bridge_probe {
+                        emit_precontact_probe("setup", &error);
+                    }
+                    None
+                }
+            }
+        }
+        Err(_) => {
+            if cli.bridge_probe {
+                emit_precontact_probe("setup", &PrecontactError::Missing);
+            }
+            None
+        }
+    };
     if let Some(reporter) = &reporter {
-        let _ = reporter.report_started(&diagnostic_http);
+        let outcome = reporter.report_started(&diagnostic_http);
+        if cli.bridge_probe {
+            if let Err(error) = outcome {
+                emit_precontact_probe("started", &error);
+            }
+        }
     }
     let bridge_socket = match std::env::var("BRIDGE_SOCKET") {
         Ok(value) if !value.is_empty() => value,
         _ => {
             if let Some(reporter) = &reporter {
-                let _ = reporter.report_failed(
+                let outcome = reporter.report_failed(
                     &diagnostic_http,
                     DiagnosticFailure {
                         stage: "bridge.discovery",
@@ -70,6 +104,11 @@ fn main() -> ExitCode {
                         rpc_code: None,
                     },
                 );
+                if cli.bridge_probe {
+                    if let Err(error) = outcome {
+                        emit_precontact_probe("failed", &error);
+                    }
+                }
             }
             eprintln!("liskov-runtime-contact: BRIDGE_SOCKET is required");
             return ExitCode::from(2);
@@ -81,10 +120,12 @@ fn main() -> ExitCode {
             Ok(bridge) => bridge,
             Err(error) => {
                 if let Some(reporter) = &reporter {
-                    let _ = reporter.report_failed(
+                    if let Err(report_error) = reporter.report_failed(
                         &diagnostic_http,
                         DiagnosticFailure::bridge("bridge.discovery", "bridge_discovery", &error),
-                    );
+                    ) {
+                        emit_precontact_probe("failed", &report_error);
+                    }
                 }
                 eprintln!("liskov-runtime-contact: bridge probe failed");
                 return ExitCode::from(70);
@@ -100,7 +141,9 @@ fn main() -> ExitCode {
         );
         if let Some(failure) = probe.terminal_failure() {
             if let Some(reporter) = &reporter {
-                let _ = reporter.report_failed(&diagnostic_http, failure);
+                if let Err(error) = reporter.report_failed(&diagnostic_http, failure) {
+                    emit_precontact_probe("failed", &error);
+                }
             }
             return ExitCode::from(70);
         }
@@ -111,10 +154,15 @@ fn main() -> ExitCode {
             establish_runtime_contact(&core_url, &bridge_socket)
                 .inspect_err(|error| {
                     if let Some(reporter) = &reporter {
-                        let _ = reporter.report_failed(
+                        let outcome = reporter.report_failed(
                             &diagnostic_http,
                             DiagnosticFailure::from_contact(error),
                         );
+                        if cli.bridge_probe {
+                            if let Err(report_error) = outcome {
+                                emit_precontact_probe("failed", &report_error);
+                            }
+                        }
                     }
                 })
                 .map(|_| ())
@@ -135,6 +183,25 @@ fn main() -> ExitCode {
         Err(RunError::Exec(_)) => {
             eprintln!("liskov-runtime-contact: customer command could not be executed");
             ExitCode::from(126)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn controlled_precontact_probe_line_is_closed_and_redacted() {
+        let line = precontact_probe_line("started", &PrecontactError::ResponseBinding);
+        assert_eq!(
+            line,
+            "liskov-runtime-contact: precontact \
+             {\"domain\":\"proof.liskov.runtime-precontact-probe.v1\",\
+             \"phase\":\"started\",\"outcome\":\"response_binding\"}"
+        );
+        for forbidden in ["lrp1_", "https://", "token", "signature", "response body"] {
+            assert!(!line.contains(forbidden));
         }
     }
 }

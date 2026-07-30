@@ -101,6 +101,23 @@ pub enum PrecontactError {
     ResponseBinding,
 }
 
+impl PrecontactError {
+    /// Closed-enum outcome for the hidden controlled-canary telemetry.
+    ///
+    /// This deliberately carries no endpoint, token, request, or response
+    /// material.
+    pub const fn probe_code(&self) -> &'static str {
+        match self {
+            Self::Missing => "missing",
+            Self::TooLarge => "too_large",
+            Self::Invalid => "invalid",
+            Self::OutsideWindow => "outside_window",
+            Self::Transport => "transport",
+            Self::ResponseBinding => "response_binding",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DiagnosticFailure {
     pub stage: &'static str,
@@ -490,6 +507,23 @@ mod tests {
                 PrecontactReporter::parse(&malformed.to_string(), 2_000).unwrap_err(),
                 PrecontactError::Invalid
             );
+        }
+    }
+
+    #[test]
+    fn probe_codes_are_closed_and_redacted() {
+        let cases = [
+            (PrecontactError::Missing, "missing"),
+            (PrecontactError::TooLarge, "too_large"),
+            (PrecontactError::Invalid, "invalid"),
+            (PrecontactError::OutsideWindow, "outside_window"),
+            (PrecontactError::Transport, "transport"),
+            (PrecontactError::ResponseBinding, "response_binding"),
+        ];
+        for (error, expected) in cases {
+            assert_eq!(error.probe_code(), expected);
+            assert!(!error.probe_code().contains("lrp1_"));
+            assert!(!error.probe_code().contains("http"));
         }
     }
 
