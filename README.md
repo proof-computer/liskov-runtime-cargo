@@ -86,9 +86,12 @@ checks unique decimal `UInt` request IDs and the helper's incompatible long
 request ID across the bounded Cargo bridge surface, including a
 domain-separated harmless Ed25519 signing call. Bounded read-only calls run in
 dependency order before signing; the probe stops at the first decisive failure
-and gives signing the remainder of the shared 15-second budget. The long-ID
-comparison runs last and is evidence only. The probe emits only method,
-ID-style, closed outcome, and optional numeric JSON-RPC code fields.
+and gives signing the remainder of the shared 15-second budget. If the first
+`processor_version` call times out, the probe records that attempt as
+non-terminal warm-up evidence and retries it once with a fresh decimal `UInt`
+ID; a second timeout is terminal. The long-ID comparison runs last and is
+evidence only. The probe emits only method, ID-style, closed outcome, and
+optional numeric JSON-RPC code fields.
 
 ## Retry boundary
 

@@ -74,10 +74,12 @@ pub struct BridgeProbeReport {
 impl BridgeProbeReport {
     pub fn terminal_failure(&self) -> Option<DiagnosticFailure> {
         // Decisive calls run in dependency order and stop at the first
-        // failure. Reaching signer_sign therefore proves the bounded
-        // read-only bridge calls already succeeded. The deliberately
-        // incompatible long-ID comparison runs last and remains evidence only:
-        // Acurast Core keys pending connections by UInt.
+        // failure. A single first-call timeout may be retained as non-terminal
+        // warm-up evidence before processor_version is retried with a fresh
+        // UInt ID. Reaching signer_sign therefore proves the bounded read-only
+        // bridge calls already succeeded. The deliberately incompatible
+        // long-ID comparison runs last and remains evidence only: Acurast Core
+        // keys pending connections by UInt.
         self.observations
             .iter()
             .find(|observation| {
@@ -150,42 +152,56 @@ pub fn run_bridge_probe_with(
             shape: signature_shape,
         },
     ];
-    let mut observations = Vec::with_capacity(decisive_specs.len() + 1);
+    let mut observations = Vec::with_capacity(decisive_specs.len() + 2);
     for spec in decisive_specs {
-        let Some(remaining) = BRIDGE_PROBE_BUDGET.checked_sub(runtime.elapsed()) else {
+        let mut first_call_warmup = spec.method == "processor_version";
+        loop {
+            let Some(remaining) = BRIDGE_PROBE_BUDGET.checked_sub(runtime.elapsed()) else {
+                observations.push(ProbeObservation {
+                    method: spec.method,
+                    id_style: "documented-short",
+                    outcome: "bridge_timeout",
+                    rpc_code: None,
+                });
+                return BridgeProbeReport {
+                    domain: BRIDGE_PROBE_DOMAIN,
+                    observations,
+                };
+            };
+            let timeout = if spec.method == "signer_sign" {
+                remaining
+            } else {
+                remaining.min(MAX_READ_ONLY_PROBE_CALL)
+            };
+            let (outcome, rpc_code) =
+                match bridge.probe_call(spec.method, spec.params.clone(), spec.id_style, timeout) {
+                    Ok(result) if (spec.shape)(&result) => ("ok", None),
+                    Ok(_) => ("bridge_result_shape", None),
+                    Err(error) => (error.failure_code(), error.rpc_code()),
+                };
+            if first_call_warmup && outcome == "bridge_timeout" {
+                observations.push(ProbeObservation {
+                    method: spec.method,
+                    id_style: "warmup-short",
+                    outcome,
+                    rpc_code,
+                });
+                first_call_warmup = false;
+                continue;
+            }
             observations.push(ProbeObservation {
                 method: spec.method,
                 id_style: "documented-short",
-                outcome: "bridge_timeout",
-                rpc_code: None,
+                outcome,
+                rpc_code,
             });
-            return BridgeProbeReport {
-                domain: BRIDGE_PROBE_DOMAIN,
-                observations,
-            };
-        };
-        let timeout = if spec.method == "signer_sign" {
-            remaining
-        } else {
-            remaining.min(MAX_READ_ONLY_PROBE_CALL)
-        };
-        let (outcome, rpc_code) =
-            match bridge.probe_call(spec.method, spec.params, spec.id_style, timeout) {
-                Ok(result) if (spec.shape)(&result) => ("ok", None),
-                Ok(_) => ("bridge_result_shape", None),
-                Err(error) => (error.failure_code(), error.rpc_code()),
-            };
-        observations.push(ProbeObservation {
-            method: spec.method,
-            id_style: "documented-short",
-            outcome,
-            rpc_code,
-        });
-        if outcome != "ok" {
-            return BridgeProbeReport {
-                domain: BRIDGE_PROBE_DOMAIN,
-                observations,
-            };
+            if outcome != "ok" {
+                return BridgeProbeReport {
+                    domain: BRIDGE_PROBE_DOMAIN,
+                    observations,
+                };
+            }
+            break;
         }
     }
 
@@ -385,6 +401,60 @@ mod tests {
         assert_eq!(report.observations.len(), 1);
         assert_eq!(report.observations[0].outcome, "bridge_rpc_error");
         assert_eq!(report.observations[0].rpc_code, Some(-32_601));
+    }
+
+    #[test]
+    fn retries_only_the_first_processor_version_timeout_with_a_fresh_uint_id() {
+        let replies = [Err(BridgeError::Timeout)]
+            .into_iter()
+            .chain(successful_replies())
+            .collect();
+        let bridge = FakeBridge {
+            calls: Mutex::new(Vec::new()),
+            replies: Mutex::new(replies),
+        };
+        let report = run_bridge_probe_with(&bridge, &FakeRuntime(Duration::ZERO));
+
+        assert!(report.terminal_failure().is_none());
+        assert_eq!(report.observations.len(), 8);
+        assert_eq!(
+            report.observations[0],
+            ProbeObservation {
+                method: "processor_version",
+                id_style: "warmup-short",
+                outcome: "bridge_timeout",
+                rpc_code: None,
+            }
+        );
+        assert_eq!(report.observations[1].method, "processor_version");
+        assert_eq!(report.observations[1].id_style, "documented-short");
+        assert_eq!(report.observations[1].outcome, "ok");
+
+        let calls = bridge.calls.lock().unwrap();
+        assert_eq!(calls[0].0, "processor_version");
+        assert_eq!(calls[1].0, "processor_version");
+        assert_eq!(calls[0].2, RequestIdStyle::DocumentedShort);
+        assert_eq!(calls[1].2, RequestIdStyle::DocumentedShort);
+        assert_eq!(calls[0].3, Duration::from_secs(2));
+        assert_eq!(calls[1].3, Duration::from_secs(2));
+    }
+
+    #[test]
+    fn two_processor_version_timeouts_remain_terminal() {
+        let bridge = FakeBridge {
+            calls: Mutex::new(Vec::new()),
+            replies: Mutex::new([Err(BridgeError::Timeout), Err(BridgeError::Timeout)].into()),
+        };
+        let report = run_bridge_probe_with(&bridge, &FakeRuntime(Duration::ZERO));
+
+        assert_eq!(bridge.calls.lock().unwrap().len(), 2);
+        assert_eq!(report.observations.len(), 2);
+        assert_eq!(report.observations[0].id_style, "warmup-short");
+        assert_eq!(report.observations[1].id_style, "documented-short");
+        let failure = report.terminal_failure().unwrap();
+        assert_eq!(failure.stage, "bridge.probe");
+        assert_eq!(failure.method, "processor_version");
+        assert_eq!(failure.code, "bridge_timeout");
     }
 
     #[test]
