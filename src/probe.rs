@@ -116,6 +116,24 @@ pub fn run_bridge_probe_with(
     let harmless = hex::encode(b"proof.liskov.runtime-bridge-probe.v1\0harmless-capability-check");
     let specs = [
         ProbeSpec {
+            method: "signer_sign",
+            params: json!([{"curve": "ed25519", "bytes": harmless}]),
+            id_style: RequestIdStyle::Long,
+            shape: signature_shape,
+        },
+        ProbeSpec {
+            method: "deployment_id",
+            params: json!([]),
+            id_style: RequestIdStyle::Long,
+            shape: deployment_id_shape,
+        },
+        ProbeSpec {
+            method: "deployment_publicKeys",
+            params: json!([]),
+            id_style: RequestIdStyle::Long,
+            shape: public_keys_shape,
+        },
+        ProbeSpec {
             method: "processor_version",
             params: json!([]),
             id_style: RequestIdStyle::DocumentedShort,
@@ -128,34 +146,16 @@ pub fn run_bridge_probe_with(
             shape: version_shape,
         },
         ProbeSpec {
-            method: "deployment_id",
-            params: json!([]),
-            id_style: RequestIdStyle::Long,
-            shape: deployment_id_shape,
-        },
-        ProbeSpec {
             method: "deployment_ipfsHash",
             params: json!([]),
             id_style: RequestIdStyle::Long,
             shape: ipfs_hash_shape,
         },
         ProbeSpec {
-            method: "deployment_publicKeys",
-            params: json!([]),
-            id_style: RequestIdStyle::Long,
-            shape: public_keys_shape,
-        },
-        ProbeSpec {
             method: "deployment_assignedProcessors",
             params: json!([]),
             id_style: RequestIdStyle::Long,
             shape: assigned_processors_shape,
-        },
-        ProbeSpec {
-            method: "signer_sign",
-            params: json!([{"curve": "ed25519", "bytes": harmless}]),
-            id_style: RequestIdStyle::Long,
-            shape: signature_shape,
         },
     ];
     let mut observations = Vec::with_capacity(specs.len());
@@ -288,13 +288,13 @@ mod tests {
 
     fn successful_replies() -> Vec<Result<Value, BridgeError>> {
         vec![
-            Ok(json!({"version": "1.25.1"})),
-            Ok(json!({"version": "1.25.1"})),
-            Ok(json!({"id": "7", "origin": {"kind": "Acurast", "source": "ab"}})),
-            Ok(json!({"ipfsHash": "bafy-test"})),
-            Ok(json!({"publicKeys": {"ed25519": "ab".repeat(32)}})),
-            Ok(json!({"processors": {"processor-1": {"ed25519": "ab".repeat(32)}}})),
             Ok(json!({"bytes": "cd".repeat(64)})),
+            Ok(json!({"id": "7", "origin": {"kind": "Acurast", "source": "ab"}})),
+            Ok(json!({"publicKeys": {"ed25519": "ab".repeat(32)}})),
+            Ok(json!({"version": "1.25.1"})),
+            Ok(json!({"version": "1.25.1"})),
+            Ok(json!({"ipfsHash": "bafy-test"})),
+            Ok(json!({"processors": {"processor-1": {"ed25519": "ab".repeat(32)}}})),
         ]
     }
 
@@ -307,8 +307,8 @@ mod tests {
         let report = run_bridge_probe_with(&bridge, &FakeRuntime(Duration::ZERO));
         assert!(report.terminal_failure().is_none());
         assert_eq!(report.observations.len(), 7);
-        assert_eq!(report.observations[0].id_style, "documented-short");
-        assert_eq!(report.observations[1].id_style, "liskov-long");
+        assert_eq!(report.observations[3].id_style, "documented-short");
+        assert_eq!(report.observations[4].id_style, "liskov-long");
         assert!(
             report
                 .observations
@@ -316,10 +316,10 @@ mod tests {
                 .all(|observation| observation.outcome == "ok")
         );
         let calls = bridge.calls.lock().unwrap();
-        assert_eq!(calls[0].2, RequestIdStyle::DocumentedShort);
-        assert_eq!(calls[1].2, RequestIdStyle::Long);
+        assert_eq!(calls[3].2, RequestIdStyle::DocumentedShort);
+        assert_eq!(calls[4].2, RequestIdStyle::Long);
         assert_eq!(
-            calls[6].1[0]["bytes"],
+            calls[0].1[0]["bytes"],
             hex::encode(b"proof.liskov.runtime-bridge-probe.v1\0harmless-capability-check")
         );
     }
@@ -327,8 +327,8 @@ mod tests {
     #[test]
     fn records_rpc_code_and_result_shape_without_response_data() {
         let mut replies = successful_replies();
-        replies[2] = Ok(json!({"unexpected": "sensitive"}));
-        replies[6] = Err(BridgeError::RpcError {
+        replies[1] = Ok(json!({"unexpected": "sensitive"}));
+        replies[0] = Err(BridgeError::RpcError {
             code: Some(-32_601),
         });
         let bridge = FakeBridge {
@@ -336,11 +336,56 @@ mod tests {
             replies: Mutex::new(replies.into()),
         };
         let report = run_bridge_probe_with(&bridge, &FakeRuntime(Duration::ZERO));
-        assert_eq!(report.observations[2].outcome, "bridge_result_shape");
-        assert_eq!(report.observations[6].outcome, "bridge_rpc_error");
-        assert_eq!(report.observations[6].rpc_code, Some(-32_601));
+        assert_eq!(report.observations[1].outcome, "bridge_result_shape");
+        assert_eq!(report.observations[0].outcome, "bridge_rpc_error");
+        assert_eq!(report.observations[0].rpc_code, Some(-32_601));
         let encoded = serde_json::to_string(&report).unwrap();
         assert!(!encoded.contains("sensitive"));
+    }
+
+    #[test]
+    fn shared_budget_cannot_mask_signing_or_deployment_identity() {
+        struct AdvancingRuntime(Mutex<VecDeque<Duration>>);
+
+        impl ProbeRuntime for AdvancingRuntime {
+            fn elapsed(&self) -> Duration {
+                self.0.lock().unwrap().pop_front().unwrap()
+            }
+        }
+
+        let bridge = FakeBridge {
+            calls: Mutex::new(Vec::new()),
+            replies: Mutex::new(successful_replies().into()),
+        };
+        let runtime = AdvancingRuntime(Mutex::new(
+            [
+                Duration::ZERO,
+                Duration::from_secs(5),
+                Duration::from_secs(10),
+                Duration::from_secs(15) + Duration::from_millis(1),
+                Duration::from_secs(15) + Duration::from_millis(2),
+                Duration::from_secs(15) + Duration::from_millis(3),
+                Duration::from_secs(15) + Duration::from_millis(4),
+            ]
+            .into(),
+        ));
+        let report = run_bridge_probe_with(&bridge, &runtime);
+        let calls = bridge.calls.lock().unwrap();
+        assert_eq!(
+            calls
+                .iter()
+                .map(|(method, _, _, _)| method.as_str())
+                .collect::<Vec<_>>(),
+            vec!["signer_sign", "deployment_id", "deployment_publicKeys"]
+        );
+        assert_eq!(report.observations[0].outcome, "ok");
+        assert_eq!(report.observations[1].outcome, "ok");
+        assert_eq!(report.observations[2].outcome, "ok");
+        assert!(
+            report.observations[3..]
+                .iter()
+                .all(|observation| observation.outcome == "bridge_timeout")
+        );
     }
 
     #[test]
