@@ -12,7 +12,7 @@ pub struct HttpResponse {
     pub body: Vec<u8>,
 }
 
-pub trait HttpClient {
+pub trait HttpClient: Send + Sync {
     fn post(&self, url: &str, body: &[u8]) -> Result<HttpResponse, HttpError>;
 }
 

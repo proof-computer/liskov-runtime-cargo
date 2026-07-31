@@ -1,13 +1,15 @@
 # liskov-runtime-cargo
 
-`liskov-runtime-contact` is the native first-contact helper for
+`liskov-runtime-contact` is the native bootstrap and process supervisor for
 Liskov-managed workloads running in Acurast Cargo/PRoot images.
 
 It discovers the active Acurast deployment and processor through the Cargo
 bridge, signs one Liskov runtime-bootstrap v2 request with the deployment's
-Ed25519 key, waits for bounded authenticated contact, and then replaces itself
-with the customer command. If identity, signing, transport, or bootstrap
-validation fails, the customer command does not start.
+Ed25519 key and waits for bounded authenticated contact. It then becomes a
+child subreaper, starts the customer command in a dedicated process group,
+forwards supported signals, reaps descendants, and returns the customer's
+exact exit status or terminating signal after cleanup. If identity, signing,
+transport, or bootstrap validation fails, the customer command does not start.
 
 When `PROOF_SLIPWAY_BOOTSTRAP` contains the Liskov-owned `x.pc` extension, the
 helper also emits bounded pre-contact evidence before bridge discovery and once
@@ -45,9 +47,37 @@ The core URL is selected in this order:
 Only HTTPS URLs without user information, a query, or a fragment are accepted.
 `BRIDGE_SOCKET` is required and is supplied by the Acurast Cargo runtime.
 
-The helper writes concise, non-secret diagnostics to stderr. It never logs
+The supervisor writes concise, non-secret diagnostics to stderr. It never logs
 bridge replies, signed request or response bodies, signatures, processor
 identity, pre-contact tokens, or the customer command.
+
+After successful contact it also emits best-effort, deployment-signed Cargo
+diagnostic-v4 observations. These observations use one monotonic sequence for
+the runtime instance and include nested process-attempt counters. Delivery is
+bounded to five seconds per request with a bounded response and never changes
+workload execution.
+
+## Optional stdout/stderr forwarding
+
+Output forwarding starts only when the signed bootstrap response contains the
+exact policy decision `{"logging":{"enabled":true}}` and
+`BLACKBOX_LOG_CONFIG` validates against the same application, deployment, and
+job. The supervisor tees stdout and stderr to their normal local destinations,
+then forwards separately encrypted records through Liskov's canonical
+Blackbox sink protocol. UTF-8 chunks are labeled as text; binary chunks use
+base64url framing. Every encrypted record binds the stream, process attempt,
+monotonic output sequence, runtime instance, timestamp, byte length, and
+truncation state.
+
+Capture uses 3-KiB chunks, a 256-KiB-per-second admission limit, a 128-item
+in-memory queue, at most 32 records and 256 KiB per request, five-second
+requests, 16-KiB responses, and at most ten network requests per second. It
+does not create a local durable spool. Queue or rate overflow produces only
+bounded encrypted dropped-byte and dropped-chunk evidence. Network failure,
+sink backpressure, invalid logging configuration, and the bounded 250-ms
+terminal flush never block, restart, terminate, or change the customer result.
+Customer output, the Blackbox DEK, factory token, request signatures, and
+environment values never enter Cargo diagnostics.
 
 ## Exit status
 
@@ -56,10 +86,26 @@ identity, pre-contact tokens, or the customer command.
 | `2` | CLI or configuration error |
 | `70` | Bridge, identity, signature, protocol, or permanent server rejection |
 | `75` | Transport failure or retry exhaustion |
-| `126` | The customer command could not be executed |
+| `126` | The customer command could not be started |
 
-After a successful `exec`, the customer process has normal process and exit
-behavior.
+On Unix, normal exits and terminating signals are propagated exactly after the
+customer process group and adopted descendants have been cleaned up.
+
+## Supervision policy
+
+The compatibility default is `never`: one customer attempt is run. A strict,
+server-owned optional bootstrap block can select `on_failure` with either an
+attempt limit from 0 through 10 restarts or the schedule end. Unknown or
+malformed values fail closed to `never`. Restart delays use deterministic
+equal jitter, a one-minute cap, a five-minute stability reset, and a five-second
+schedule runway.
+
+Non-default restart policy is currently limited to exact applications selected
+by the Liskov control plane through `LISKOV_CARGO_SUPERVISION_CANARY_JSON`. The
+variable is an internal fail-closed canary control, is removed before customer
+startup, and is not a customer-authored policy surface. The bootstrap secret and
+reserved Runtime SSH credential are also removed from the captured customer
+environment.
 
 For bounded release canaries whose Shell host does not retain stderr,
 `--diagnostic-exit-codes` replaces status `70`/`75` with a non-secret stage
@@ -136,4 +182,5 @@ cargo build --workspace --all-targets --locked
 cargo test --workspace --all-features --locked
 ```
 
-Bootstrap ZIP integration is intentionally not part of this first slice.
+Stable publication requires the repository's native AArch64 and emulated
+Cargo/PRoot release gates in addition to these host checks.

@@ -52,6 +52,104 @@ pub struct RuntimeBootstrapResponse {
     pub processor_id: String,
     pub runtime_instance_id: String,
     pub slipway_url: String,
+    #[serde(default)]
+    pub supervision: Option<Value>,
+    #[serde(default)]
+    pub logging: Option<Value>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestartLimit {
+    Attempts { max_restarts: u8 },
+    ScheduleEnd,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SupervisionMode {
+    Never,
+    OnFailure { restart_limit: RestartLimit },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SupervisionPolicy {
+    pub mode: SupervisionMode,
+    pub server_time_ms: u64,
+    pub schedule_end_ms: u64,
+}
+
+impl RuntimeBootstrapResponse {
+    /// Logging is opt-in twice: the signed policy decision must explicitly
+    /// enable it and the separate Blackbox environment must validate. Unknown
+    /// bootstrap fields never broaden capture authority.
+    pub fn logging_enabled(&self) -> bool {
+        let Some(object) = self.logging.as_ref().and_then(Value::as_object) else {
+            return false;
+        };
+        object.len() == 1 && object.get("enabled").and_then(Value::as_bool) == Some(true)
+    }
+
+    /// Parse the optional server-owned supervision decision. Any missing,
+    /// malformed, unknown, expired, or authority-broadening value fails closed
+    /// to the compatibility `never` mode.
+    pub fn supervision_policy(&self) -> Option<SupervisionPolicy> {
+        let value = self.supervision.as_ref()?;
+        let object = value.as_object()?;
+        if object.keys().any(|key| {
+            !matches!(
+                key.as_str(),
+                "mode" | "restartLimit" | "serverTimeMs" | "scheduleEndMs"
+            )
+        }) {
+            return None;
+        }
+        let mode = match object.get("mode").and_then(Value::as_str)? {
+            "never" => {
+                if object
+                    .get("restartLimit")
+                    .is_some_and(|value| !value.is_null())
+                {
+                    return None;
+                }
+                SupervisionMode::Never
+            }
+            "on_failure" => {
+                let limit = object.get("restartLimit")?.as_object()?;
+                if limit
+                    .keys()
+                    .any(|key| !matches!(key.as_str(), "kind" | "maxRestarts"))
+                {
+                    return None;
+                }
+                let restart_limit = match limit.get("kind").and_then(Value::as_str)? {
+                    "attempts" => {
+                        let max_restarts = limit.get("maxRestarts")?.as_u64()?;
+                        RestartLimit::Attempts {
+                            max_restarts: u8::try_from(max_restarts).ok().filter(|n| *n <= 10)?,
+                        }
+                    }
+                    "schedule_end" => {
+                        if limit
+                            .get("maxRestarts")
+                            .is_some_and(|value| !value.is_null())
+                        {
+                            return None;
+                        }
+                        RestartLimit::ScheduleEnd
+                    }
+                    _ => return None,
+                };
+                SupervisionMode::OnFailure { restart_limit }
+            }
+            _ => return None,
+        };
+        let server_time_ms = object.get("serverTimeMs")?.as_u64()?;
+        let schedule_end_ms = object.get("scheduleEndMs")?.as_u64()?;
+        (schedule_end_ms > server_time_ms).then_some(SupervisionPolicy {
+            mode,
+            server_time_ms,
+            schedule_end_ms,
+        })
+    }
 }
 
 #[derive(Debug, Error)]
@@ -426,6 +524,126 @@ mod tests {
                 validate_response(&request, &serde_json::to_vec(&mutated).unwrap()),
                 Err(ProtocolError::InvalidResponse)
             ));
+        }
+    }
+
+    #[test]
+    fn supervision_union_is_closed_and_defaults_to_never() {
+        let request = signed_request();
+        let base = json!({
+            "ok": true,
+            "domain": RUNTIME_BOOTSTRAP_RESPONSE_DOMAIN_V2,
+            "applicationUid": "app-uid-1",
+            "applicationId": "app-1",
+            "policyDigest": "ab",
+            "deploymentId": "dep-1",
+            "jobId": request.job_id,
+            "processorId": request.processor_id,
+            "runtimeInstanceId": request.nonce,
+            "slipwayUrl": "https://liskov.example"
+        });
+        let absent = validate_response(&request, &serde_json::to_vec(&base).unwrap()).unwrap();
+        assert_eq!(absent.supervision_policy(), None);
+
+        for (value, expected) in [
+            (
+                json!({
+                    "mode": "on_failure",
+                    "restartLimit": {"kind": "attempts", "maxRestarts": 0},
+                    "serverTimeMs": 1_000,
+                    "scheduleEndMs": 2_000,
+                }),
+                SupervisionMode::OnFailure {
+                    restart_limit: RestartLimit::Attempts { max_restarts: 0 },
+                },
+            ),
+            (
+                json!({
+                    "mode": "on_failure",
+                    "restartLimit": {"kind": "schedule_end"},
+                    "serverTimeMs": 1_000,
+                    "scheduleEndMs": 2_000,
+                }),
+                SupervisionMode::OnFailure {
+                    restart_limit: RestartLimit::ScheduleEnd,
+                },
+            ),
+        ] {
+            let mut response = base.clone();
+            response["supervision"] = value;
+            let parsed =
+                validate_response(&request, &serde_json::to_vec(&response).unwrap()).unwrap();
+            assert_eq!(
+                parsed.supervision_policy().map(|policy| policy.mode),
+                Some(expected)
+            );
+        }
+
+        for invalid in [
+            json!({"mode": "optional", "serverTimeMs": 1, "scheduleEndMs": 2}),
+            json!({
+                "mode": "on_failure",
+                "restartLimit": {"kind": "attempts", "maxRestarts": 11},
+                "serverTimeMs": 1,
+                "scheduleEndMs": 2,
+            }),
+            json!({
+                "mode": "on_failure",
+                "restartLimit": {"kind": "future"},
+                "serverTimeMs": 1,
+                "scheduleEndMs": 2,
+            }),
+            json!({
+                "mode": "on_failure",
+                "restartLimit": {"kind": "schedule_end"},
+                "serverTimeMs": 2,
+                "scheduleEndMs": 2,
+            }),
+            json!({
+                "mode": "on_failure",
+                "restartLimit": {"kind": "schedule_end"},
+                "serverTimeMs": 1,
+                "scheduleEndMs": 2,
+                "command": "replace",
+            }),
+        ] {
+            let mut response = base.clone();
+            response["supervision"] = invalid;
+            let parsed =
+                validate_response(&request, &serde_json::to_vec(&response).unwrap()).unwrap();
+            assert_eq!(parsed.supervision_policy(), None);
+        }
+    }
+
+    #[test]
+    fn logging_decision_is_an_exact_closed_opt_in() {
+        let request = signed_request();
+        let base = json!({
+            "ok": true,
+            "domain": RUNTIME_BOOTSTRAP_RESPONSE_DOMAIN_V2,
+            "applicationUid": "app-uid-1",
+            "applicationId": "app-1",
+            "policyDigest": "ab",
+            "deploymentId": "dep-1",
+            "jobId": request.job_id,
+            "processorId": request.processor_id,
+            "runtimeInstanceId": request.nonce,
+            "slipwayUrl": "https://liskov.example"
+        });
+        for (logging, enabled) in [
+            (None, false),
+            (Some(json!({"enabled": false})), false),
+            (Some(json!({"enabled": true})), true),
+            (Some(json!({"enabled": true, "sink": "customer"})), false),
+            (Some(json!(true)), false),
+        ] {
+            let mut response = base.clone();
+            if let Some(logging) = logging {
+                response["logging"] = logging;
+            }
+            let parsed =
+                validate_response(&request, &serde_json::to_vec(&response).unwrap()).unwrap();
+            assert_eq!(parsed.logging_enabled(), enabled);
         }
     }
 }

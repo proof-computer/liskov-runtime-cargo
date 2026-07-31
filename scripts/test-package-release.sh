@@ -10,8 +10,8 @@ printf '\177ELF deterministic fixture\n' >"${test_root}/helper"
 chmod 0755 "${test_root}/helper"
 source_commit=0123456789abcdef0123456789abcdef01234567
 
-scripts/package-release.sh v0.2.10 "$source_commit" "${test_root}/helper" "${test_root}/one"
-scripts/package-release.sh v0.2.10 "$source_commit" "${test_root}/helper" "${test_root}/two"
+scripts/package-release.sh v0.3.0 "$source_commit" "${test_root}/helper" "${test_root}/one"
+scripts/package-release.sh v0.3.0 "$source_commit" "${test_root}/helper" "${test_root}/two"
 
 diff -ru "${test_root}/one" "${test_root}/two"
 jq -e \
@@ -21,12 +21,12 @@ jq -e \
     .schemaVersion == 1 and
     .contractEpoch == 1 and
     .runtimeBootstrapDomain == "proof.liskov.runtime-bootstrap-request.v2" and
-    .tag == "v0.2.10" and
-    .version == "0.2.10" and
+    .tag == "v0.3.0" and
+    .version == "0.3.0" and
     .sourceCommit == $source_commit and
     .target == "aarch64-unknown-linux-musl" and
-    .binary.asset == "liskov-runtime-contact-v0.2.10-aarch64-unknown-linux-musl" and
-    .archive.asset == "liskov-runtime-contact-v0.2.10-aarch64-unknown-linux-musl.tar.gz" and
+    .binary.asset == "liskov-runtime-contact-v0.3.0-aarch64-unknown-linux-musl" and
+    .archive.asset == "liskov-runtime-contact-v0.3.0-aarch64-unknown-linux-musl.tar.gz" and
     (.binary.sha256 | test("^[0-9a-f]{64}$")) and
     (.archive.sha256 | test("^[0-9a-f]{64}$")) and
     .binary.byteSize > 0 and
@@ -37,11 +37,11 @@ jq -e \
   sha256sum --check SHA256SUMS
 )
 
-if scripts/package-release.sh v0.2.10-rc.1 "$source_commit" "${test_root}/helper" "${test_root}/bad-tag"; then
+if scripts/package-release.sh v0.3.0-rc.1 "$source_commit" "${test_root}/helper" "${test_root}/bad-tag"; then
   echo "prerelease tag unexpectedly accepted" >&2
   exit 1
 fi
-if scripts/package-release.sh v0.2.10 ABCD "${test_root}/helper" "${test_root}/bad-commit"; then
+if scripts/package-release.sh v0.3.0 ABCD "${test_root}/helper" "${test_root}/bad-commit"; then
   echo "malformed source commit unexpectedly accepted" >&2
   exit 1
 fi

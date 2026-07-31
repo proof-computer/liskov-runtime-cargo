@@ -1,9 +1,9 @@
 [package]
 name = "liskov-runtime-cargo"
-version = "0.2.10"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.85"
-description = "Static first-contact helper for Liskov-managed Acurast Cargo/PRoot workloads"
+description = "Static bootstrap and process supervisor for Liskov-managed Acurast Cargo/PRoot workloads"
 license = "Apache-2.0"
 repository = "https://github.com/proof-computer/liskov-runtime-cargo"
 readme = "README.md"
@@ -24,8 +24,11 @@ base64 = "0.22.1"
 clap = { version = "4.5.40", features = ["derive"] }
 getrandom = "0.3.3"
 hex = "0.4.3"
+libc = "0.2.189"
+ring = "0.17.14"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
+sha2 = "0.10.9"
 thiserror = "2.0.12"
 ureq = { version = "2.12.1", default-features = false, features = ["tls"] }
 url = "2.5.4"

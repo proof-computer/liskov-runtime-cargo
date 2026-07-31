@@ -62,7 +62,7 @@ jobs:
             --draft \
             --verify-tag \
             --title "$TAG" \
-            --notes "Static AArch64 first-contact helper for Liskov-managed Acurast Cargo/PRoot workloads."
+            --notes "Static AArch64 bootstrap and process supervisor for Liskov-managed Acurast Cargo/PRoot workloads."
       - name: Attest release assets
         uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4
         with:

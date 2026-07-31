@@ -11,7 +11,7 @@ use thiserror::Error;
 pub const DEFAULT_MAX_BRIDGE_RESPONSE_BYTES: usize = 64 * 1024;
 const BRIDGE_TIMEOUT: Duration = Duration::from_secs(5);
 
-pub trait Bridge {
+pub trait Bridge: Send + Sync {
     fn call(&self, method: &str, params: Value) -> Result<Value, BridgeError>;
 }
 

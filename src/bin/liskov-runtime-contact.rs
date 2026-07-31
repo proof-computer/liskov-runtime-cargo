@@ -1,6 +1,7 @@
 use std::ffi::OsString;
 use std::process::ExitCode;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::Arc;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use clap::Parser;
 use liskov_runtime_cargo::bridge::UnixBridge;
@@ -11,14 +12,14 @@ use liskov_runtime_cargo::precontact::{
 };
 use liskov_runtime_cargo::probe::{SystemProbeRuntime, run_bridge_probe};
 use liskov_runtime_cargo::{
-    DEFAULT_CORE_URL, ExecCommand, RunError, contact_then_exec, establish_runtime_contact,
+    DEFAULT_CORE_URL, SupervisorExit, establish_runtime_contact, supervise,
 };
 
 #[derive(Debug, Parser)]
 #[command(
     name = "liskov-runtime-contact",
     version,
-    about = "Establish signed Liskov runtime contact, then exec the customer command"
+    about = "Establish signed Liskov runtime contact, then supervise the customer command"
 )]
 struct Cli {
     /// Liskov core base URL
@@ -149,42 +150,56 @@ fn main() -> ExitCode {
         }
     }
 
-    match contact_then_exec(
-        || {
-            establish_runtime_contact(&core_url, &bridge_socket)
-                .inspect_err(|error| {
-                    if let Some(reporter) = &reporter {
-                        let outcome = reporter.report_failed(
-                            &diagnostic_http,
-                            DiagnosticFailure::from_contact(error),
-                        );
-                        if cli.bridge_probe {
-                            if let Err(report_error) = outcome {
-                                emit_precontact_probe("failed", &report_error);
-                            }
-                        }
+    let contact_started = Instant::now();
+    let bootstrap =
+        match establish_runtime_contact(&core_url, &bridge_socket).inspect_err(|error| {
+            if let Some(reporter) = &reporter {
+                let outcome = reporter
+                    .report_failed(&diagnostic_http, DiagnosticFailure::from_contact(error));
+                if cli.bridge_probe {
+                    if let Err(report_error) = outcome {
+                        emit_precontact_probe("failed", &report_error);
                     }
-                })
-                .map(|_| ())
-        },
-        &ExecCommand,
+                }
+            }
+        }) {
+            Ok(bootstrap) => bootstrap,
+            Err(error) => {
+                eprintln!("liskov-runtime-contact: {error}");
+                let status = if cli.diagnostic_exit_codes {
+                    error.diagnostic_exit_code()
+                } else {
+                    error.exit_category() as u8
+                };
+                return ExitCode::from(status);
+            }
+        };
+    let bridge = match UnixBridge::new(&bridge_socket) {
+        Ok(bridge) => bridge,
+        Err(_) => {
+            eprintln!("liskov-runtime-contact: bridge setup failed after contact");
+            return ExitCode::from(70);
+        }
+    };
+    match supervise(
         &cli.command,
+        &bootstrap,
+        Arc::new(bridge),
+        contact_started.elapsed(),
     ) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(RunError::Contact(error)) => {
-            eprintln!("liskov-runtime-contact: {error}");
-            let status = if cli.diagnostic_exit_codes {
-                error.diagnostic_exit_code()
-            } else {
-                error.exit_category() as u8
-            };
-            ExitCode::from(status)
-        }
-        Err(RunError::Exec(_)) => {
-            eprintln!("liskov-runtime-contact: customer command could not be executed");
-            ExitCode::from(126)
-        }
+        SupervisorExit::Code(code) => ExitCode::from(u8::try_from(code).unwrap_or(70)),
+        SupervisorExit::Signal(signal) => propagate_signal(signal),
     }
+}
+
+fn propagate_signal(signal: i32) -> ExitCode {
+    // SAFETY: restore the default disposition and deliver the exact customer
+    // terminating signal to this process after all supervised cleanup.
+    unsafe {
+        libc::signal(signal, libc::SIG_DFL);
+        libc::raise(signal);
+    }
+    ExitCode::from(u8::try_from(128_i32.saturating_add(signal)).unwrap_or(70))
 }
 
 #[cfg(test)]
