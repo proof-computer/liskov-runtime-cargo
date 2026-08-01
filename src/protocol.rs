@@ -58,6 +58,8 @@ pub struct RuntimeBootstrapResponse {
     pub supervision: Option<Value>,
     #[serde(default)]
     pub logging: Option<Value>,
+    #[serde(default)]
+    pub logging_outage_canary: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -95,6 +97,12 @@ impl RuntimeBootstrapResponse {
             return false;
         };
         object.len() == 1 && object.get("enabled").and_then(Value::as_bool) == Some(true)
+    }
+
+    /// The outage injector is a server-owned release-canary control. It can
+    /// affect only an otherwise-valid, explicitly enabled logging transport.
+    pub fn logging_outage_canary_enabled(&self) -> bool {
+        self.logging_enabled() && self.logging_outage_canary
     }
 
     /// Parse the optional server-owned supervision decision. Any missing,
@@ -699,5 +707,29 @@ mod tests {
                 validate_response(&request, &serde_json::to_vec(&response).unwrap()).unwrap();
             assert_eq!(parsed.logging_enabled(), enabled);
         }
+    }
+
+    #[test]
+    fn logging_outage_canary_never_enables_logging() {
+        let request = signed_request();
+        let mut response = json!({
+            "ok": true,
+            "domain": RUNTIME_BOOTSTRAP_RESPONSE_DOMAIN_V2,
+            "applicationUid": "app-uid-1",
+            "applicationId": "app-1",
+            "policyDigest": "ab",
+            "deploymentId": "dep-1",
+            "jobId": request.job_id,
+            "processorId": request.processor_id,
+            "runtimeInstanceId": request.nonce,
+            "slipwayUrl": "https://liskov.example",
+            "loggingOutageCanary": true,
+        });
+        let parsed = validate_response(&request, &serde_json::to_vec(&response).unwrap()).unwrap();
+        assert!(!parsed.logging_outage_canary_enabled());
+
+        response["logging"] = json!({"enabled": true});
+        let parsed = validate_response(&request, &serde_json::to_vec(&response).unwrap()).unwrap();
+        assert!(parsed.logging_outage_canary_enabled());
     }
 }

@@ -892,6 +892,7 @@ mod tests {
             runtime_env: None,
             supervision: Some(supervision),
             logging: None,
+            logging_outage_canary: false,
         }
     }
 

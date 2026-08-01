@@ -185,7 +185,11 @@ impl OutputLogger {
         }
         let raw = std::env::var(BLACKBOX_CONFIG_ENV).ok()?;
         let config = BlackboxConfig::parse(&raw, bootstrap).ok()?;
-        let http: Arc<dyn LogHttpClient> = Arc::new(UreqLogHttpClient::new(config.timeout));
+        let http: Arc<dyn LogHttpClient> = if bootstrap.logging_outage_canary_enabled() {
+            Arc::new(OutageCanaryHttp)
+        } else {
+            Arc::new(UreqLogHttpClient::new(config.timeout))
+        };
         Self::spawn(config, RuntimeLabels::from(bootstrap), http)
     }
 
@@ -255,6 +259,22 @@ impl OutputLogger {
     #[cfg(test)]
     fn enqueue_for_test(&self, chunk: OutputChunk) {
         enqueue_chunk(self.sender.as_ref(), &self.dropped, &self.budget, chunk);
+    }
+}
+
+/// Exact-application release-canary transport selected only by the bound
+/// bootstrap response. It proves that a total logging outage cannot apply
+/// backpressure to customer output or alter the customer result.
+struct OutageCanaryHttp;
+
+impl LogHttpClient for OutageCanaryHttp {
+    fn post(
+        &self,
+        _url: &str,
+        _headers: &[(String, String)],
+        _body: &[u8],
+    ) -> Result<LogHttpResponse, ()> {
+        Err(())
     }
 }
 
@@ -1182,6 +1202,7 @@ mod tests {
             runtime_env: None,
             supervision: None,
             logging,
+            logging_outage_canary: false,
         }
     }
 

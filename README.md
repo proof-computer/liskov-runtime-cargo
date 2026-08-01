@@ -83,6 +83,13 @@ terminal flush never block, restart, terminate, or change the customer result.
 Customer output, the Blackbox DEK, factory token, request signatures, and
 environment values never enter Cargo diagnostics.
 
+The server-owned `loggingOutageCanary` bootstrap flag is accepted only when
+logging is already explicitly enabled and the bound Blackbox configuration is
+valid. For an exact release canary it makes every log request fail locally,
+without changing capture limits, local stdout/stderr, supervision, diagnostics,
+or the customer result. It is not a customer-authored policy field and never
+enables logging by itself.
+
 ## Exit status
 
 | Status | Meaning |

@@ -340,6 +340,7 @@ mod tests {
             runtime_env: None,
             supervision: None,
             logging: None,
+            logging_outage_canary: false,
         }
     }
 
