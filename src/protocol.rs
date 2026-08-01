@@ -60,6 +60,8 @@ pub struct RuntimeBootstrapResponse {
     pub logging: Option<Value>,
     #[serde(default)]
     pub logging_outage_canary: bool,
+    #[serde(default)]
+    pub access: Option<RuntimeAccessBootstrap>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -67,6 +69,68 @@ pub struct RuntimeBootstrapResponse {
 pub struct RuntimeEnvBootstrap {
     pub enabled: bool,
     pub url: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeAccessProviderKind {
+    Tailscale,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeAccessProvider {
+    pub kind: RuntimeAccessProviderKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeAccessArtifact {
+    pub descriptor_id: String,
+    pub version: String,
+    pub url: String,
+    pub sha256: String,
+    pub byte_size: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeAccessBootstrap {
+    pub provider: RuntimeAccessProvider,
+    pub attachment_id: String,
+    pub expected_tailnet: String,
+    pub setup_deadline_ms: u64,
+    pub fence: u64,
+    pub artifact: RuntimeAccessArtifact,
+}
+
+impl RuntimeAccessBootstrap {
+    fn valid(&self) -> bool {
+        let url_valid = url::Url::parse(&self.artifact.url).is_ok_and(|url| {
+            url.scheme() == "https"
+                && url.host_str().is_some()
+                && url.username().is_empty()
+                && url.password().is_none()
+                && url.fragment().is_none()
+        });
+        !self.attachment_id.is_empty()
+            && self.attachment_id.len() <= 256
+            && !self.expected_tailnet.is_empty()
+            && self.expected_tailnet != "-"
+            && self.expected_tailnet.len() <= 253
+            && !self.expected_tailnet.contains('/')
+            && self.fence > 0
+            && !self.artifact.descriptor_id.is_empty()
+            && !self.artifact.version.is_empty()
+            && self.artifact.sha256.len() == 64
+            && self
+                .artifact
+                .sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            && (1..=134_217_728).contains(&self.artifact.byte_size)
+            && url_valid
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -326,6 +390,10 @@ pub fn validate_response(
             .runtime_env
             .as_ref()
             .is_some_and(|runtime_env| runtime_env.enabled && runtime_env.url.is_empty())
+        || response
+            .access
+            .as_ref()
+            .is_some_and(|access| !access.valid())
     {
         return Err(ProtocolError::InvalidResponse);
     }
@@ -587,6 +655,68 @@ mod tests {
                 Err(ProtocolError::InvalidResponse)
             ));
         }
+    }
+
+    #[test]
+    fn runtime_access_bootstrap_is_typed_pinned_and_closed() {
+        let request = signed_request();
+        let mut response = json!({
+            "ok": true,
+            "domain": RUNTIME_BOOTSTRAP_RESPONSE_DOMAIN_V2,
+            "applicationUid": "app-uid-1",
+            "applicationId": "app-1",
+            "policyDigest": "sha256:policy",
+            "deploymentId": "dep-1",
+            "jobId": request.job_id,
+            "processorId": request.processor_id,
+            "runtimeInstanceId": request.nonce,
+            "slipwayUrl": "https://liskov.example",
+            "access": {
+                "provider": {"kind": "tailscale"},
+                "attachmentId": "att-1",
+                "expectedTailnet": "example.com",
+                "setupDeadlineMs": 60_000,
+                "fence": 1,
+                "artifact": {
+                    "descriptorId": "descriptor-1",
+                    "version": "1.80.3",
+                    "url": "https://pkgs.tailscale.com/stable/client.tgz",
+                    "sha256": "1".repeat(64),
+                    "byteSize": 123,
+                }
+            }
+        });
+        let parsed = validate_response(&request, &serde_json::to_vec(&response).unwrap()).unwrap();
+        assert_eq!(
+            parsed.access.unwrap().provider.kind,
+            RuntimeAccessProviderKind::Tailscale
+        );
+
+        for invalid in [
+            json!("cloudflare"),
+            json!("../tailnet"),
+            json!("http://pkgs.example/client.tgz"),
+            json!("ABCDEF"),
+        ] {
+            let mut rejected = response.clone();
+            match invalid.as_str().unwrap() {
+                "cloudflare" => rejected["access"]["provider"]["kind"] = invalid,
+                "../tailnet" => rejected["access"]["expectedTailnet"] = invalid,
+                value if value.starts_with("http:") => {
+                    rejected["access"]["artifact"]["url"] = invalid
+                }
+                _ => rejected["access"]["artifact"]["sha256"] = invalid,
+            }
+            assert!(matches!(
+                validate_response(&request, &serde_json::to_vec(&rejected).unwrap()),
+                Err(ProtocolError::InvalidResponse)
+            ));
+        }
+        response["access"]["futureProviderConfig"] = json!(true);
+        assert!(matches!(
+            validate_response(&request, &serde_json::to_vec(&response).unwrap()),
+            Err(ProtocolError::InvalidResponse)
+        ));
     }
 
     #[test]

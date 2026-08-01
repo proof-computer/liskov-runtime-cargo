@@ -1,5 +1,6 @@
 //! Native first contact for Liskov-managed Acurast Cargo/PRoot workloads.
 
+pub mod access;
 pub mod bridge;
 pub mod contact;
 pub mod diagnostics;
@@ -18,4 +19,6 @@ pub use contact::{
 };
 pub use handoff::{CommandExecutor, ExecCommand, RunError, contact_then_exec};
 pub use runtime_env::{RuntimeEnvError, load_runtime_environment};
-pub use supervisor::{SupervisorExit, supervise, supervise_with_environment};
+pub use supervisor::{
+    SupervisorExit, supervise, supervise_with_environment, supervise_with_environment_and_access,
+};
