@@ -1203,6 +1203,7 @@ mod tests {
             supervision: None,
             logging,
             logging_outage_canary: false,
+            access: None,
         }
     }
 

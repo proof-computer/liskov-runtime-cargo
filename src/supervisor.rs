@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
+use crate::access::{AccessSession, setup_runtime_access};
 use crate::bridge::Bridge;
 use crate::diagnostics::{
     AsyncDiagnosticReporter, DIAGNOSTIC_HTTP_TIMEOUT, DiagnosticStatus,
@@ -88,12 +89,76 @@ pub fn supervise_with_environment(
     bootstrap_elapsed: Duration,
     runtime_environment: &BTreeMap<String, String>,
 ) -> SupervisorExit {
+    supervise_with_environment_and_access(
+        command,
+        bootstrap,
+        bridge,
+        bootstrap_elapsed,
+        runtime_environment,
+        None,
+    )
+}
+
+pub fn supervise_with_environment_and_access(
+    command: &[OsString],
+    bootstrap: &RuntimeBootstrapResponse,
+    bridge: Arc<dyn Bridge>,
+    bootstrap_elapsed: Duration,
+    runtime_environment: &BTreeMap<String, String>,
+    runtime_access_credential: Option<String>,
+) -> SupervisorExit {
     let http: Arc<dyn HttpClient> = Arc::new(UreqHttpClient::with_limits(
         DIAGNOSTIC_HTTP_TIMEOUT,
         MAX_DIAGNOSTIC_RESPONSE_BYTES,
     ));
     let mut reporter = AsyncDiagnosticReporter::spawn(bootstrap, bridge, http);
-    supervise_with_reporter_and_environment(
+    let access_binding = bootstrap.access.as_ref().map(|access| {
+        json!({
+            "attachmentId": access.attachment_id,
+            "fence": access.fence,
+            "providerKind": "tailscale",
+        })
+    });
+    if let Some(attrs) = access_binding.clone() {
+        report(
+            &mut reporter
+                .as_mut()
+                .map(|reporter| reporter as &mut dyn RuntimeReporter),
+            "runtime.access.setup_started",
+            DiagnosticStatus::Started,
+            None,
+            attrs,
+        );
+    }
+    let mut access_session = match setup_runtime_access(bootstrap, runtime_access_credential) {
+        Ok(session) => session,
+        Err(error) => {
+            if let Some(attrs) = access_binding {
+                report(
+                    &mut reporter
+                        .as_mut()
+                        .map(|reporter| reporter as &mut dyn RuntimeReporter),
+                    "runtime.access.degraded",
+                    DiagnosticStatus::Failed,
+                    Some(error.code),
+                    attrs,
+                );
+            }
+            None
+        }
+    };
+    if let Some(session) = access_session.as_ref() {
+        report(
+            &mut reporter
+                .as_mut()
+                .map(|reporter| reporter as &mut dyn RuntimeReporter),
+            "runtime.access.ready",
+            DiagnosticStatus::Succeeded,
+            None,
+            session.ready_attrs(),
+        );
+    }
+    let result = supervise_with_reporter_and_environment(
         command,
         bootstrap,
         bootstrap_elapsed,
@@ -101,7 +166,29 @@ pub fn supervise_with_environment(
         reporter
             .as_mut()
             .map(|reporter| reporter as &mut dyn RuntimeReporter),
-    )
+        access_session.as_mut(),
+    );
+    if let Some(session) = access_session.as_mut() {
+        let attrs = session.binding_attrs();
+        let (stage, status, code) = match session.stop() {
+            Ok(()) => ("runtime.access.stopped", DiagnosticStatus::Succeeded, None),
+            Err(_) => (
+                "runtime.access.degraded",
+                DiagnosticStatus::Failed,
+                Some("access_cleanup_failed"),
+            ),
+        };
+        report(
+            &mut reporter
+                .as_mut()
+                .map(|reporter| reporter as &mut dyn RuntimeReporter),
+            stage,
+            status,
+            code,
+            attrs,
+        );
+    }
+    result
 }
 
 trait RuntimeReporter {
@@ -139,6 +226,7 @@ fn supervise_with_reporter(
         bootstrap_elapsed,
         &BTreeMap::new(),
         reporter,
+        None,
     )
 }
 
@@ -148,6 +236,7 @@ fn supervise_with_reporter_and_environment(
     bootstrap_elapsed: Duration,
     runtime_environment: &BTreeMap<String, String>,
     mut reporter: Option<&mut dyn RuntimeReporter>,
+    mut access_session: Option<&mut AccessSession>,
 ) -> SupervisorExit {
     if command.is_empty() {
         report(
@@ -185,6 +274,17 @@ fn supervise_with_reporter_and_environment(
     let mut consecutive_failures = 0_u32;
 
     loop {
+        if let Some(session) = access_session.as_deref_mut() {
+            if session.newly_crashed() {
+                report(
+                    &mut reporter,
+                    "runtime.access.degraded",
+                    DiagnosticStatus::Failed,
+                    Some("access_sidecar_failed"),
+                    session.binding_attrs(),
+                );
+            }
+        }
         if let Some(signal) = take_signal() {
             return SupervisorExit::Signal(signal);
         }
@@ -226,6 +326,17 @@ fn supervise_with_reporter_and_environment(
         let mut forwarded_signal = None;
         let mut forced_cleanup = false;
         let status = loop {
+            if let Some(session) = access_session.as_deref_mut() {
+                if session.newly_crashed() {
+                    report(
+                        &mut reporter,
+                        "runtime.access.degraded",
+                        DiagnosticStatus::Failed,
+                        Some("access_sidecar_failed"),
+                        session.binding_attrs(),
+                    );
+                }
+            }
             if let Some(signal) = take_signal() {
                 if forwarded_signal.is_none() {
                     if signal_process_group(process_group, signal).is_err() {
@@ -893,6 +1004,7 @@ mod tests {
             supervision: Some(supervision),
             logging: None,
             logging_outage_canary: false,
+            access: None,
         }
     }
 
@@ -1092,6 +1204,7 @@ mod tests {
                 &never,
                 Duration::ZERO,
                 &runtime_environment,
+                None,
                 None,
             ),
             SupervisorExit::Code(0)
