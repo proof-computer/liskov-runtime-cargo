@@ -96,23 +96,60 @@ jobs:
           gh release verify-asset "$TAG" "$binary"
           gh release verify-asset "$TAG" "$archive"
           gh release verify-asset "$TAG" dist/runtime-contact-release.json
+  notify:
+    name: Notify Liskov release registry
+    needs: release
+    runs-on: ubuntu-24.04
+    steps:
       - name: Notify Liskov release registry
         env:
           TAG: ${{ github.ref_name }}
         run: |
-          token=$(
-            curl --fail --silent --show-error \
-              --header "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
-              "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=liskov-runtime-contact-release" |
-              jq -er '.value'
-          )
-          curl --fail --silent --show-error \
-            --retry 5 \
-            --retry-all-errors \
-            --retry-delay 5 \
-            --retry-max-time 60 \
-            --request POST \
-            --header "Authorization: Bearer ${token}" \
-            --header "Content-Type: application/json" \
-            --data "$(jq -cn --arg tag "$TAG" '{domain:"proof.liskov.runtime-contact-release.v1",tag:$tag}')" \
-            https://liskov.proof.computer/api/runtime-contact/releases/github
+          response_file=$(mktemp)
+          trap 'rm -f "$response_file"' EXIT
+          for attempt in 1 2 3 4 5 6 7 8; do
+            status=000
+            if token=$(
+              curl --fail --silent --show-error \
+                --header "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+                "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=liskov-runtime-contact-release" |
+                jq -er '.value'
+            ); then
+              status=$(
+                curl --silent --show-error \
+                  --output "$response_file" \
+                  --write-out '%{http_code}' \
+                  --request POST \
+                  --header "Authorization: Bearer ${token}" \
+                  --header "Content-Type: application/json" \
+                  --data "$(jq -cn --arg tag "$TAG" '{domain:"proof.liskov.runtime-contact-release.v1",tag:$tag}')" \
+                  https://liskov.proof.computer/api/runtime-contact/releases/github
+              ) || status=000
+            fi
+
+            if [ "$status" = 200 ] && jq -e '.ok == true' "$response_file" >/dev/null; then
+              jq -c '{ok,tag,active,version,sourceCommit,binaryDigest}' "$response_file"
+              exit 0
+            fi
+
+            retry=false
+            case "$status" in
+              000|503) retry=true ;;
+              422)
+                if jq -e '.reason == "release_rejected"' "$response_file" >/dev/null 2>&1; then
+                  retry=true
+                fi
+                ;;
+            esac
+            if [ "$retry" != true ] || [ "$attempt" -eq 8 ]; then
+              echo "release registry notification failed with HTTP ${status}" >&2
+              jq -c '{ok,error,reason}' "$response_file" >&2 2>/dev/null || true
+              exit 1
+            fi
+
+            # The registry fences an interrupted ingest with a two-minute lease.
+            # Wait past it and mint a fresh OIDC token before the next attempt.
+            sleep 60
+            sleep 60
+            sleep 10
+          done
