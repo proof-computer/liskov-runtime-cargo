@@ -8,9 +8,9 @@ Cargo/PRoot workloads. It produces the static AArch64
 
 - Keep the helper independent of the `liskov-rs` checkout. It consumes the
   published signed runtime-bootstrap v2 contract.
-- Slice 1 ends at authenticated first contact and exact `exec` handoff. Runtime
-  environment retrieval, Lockbox, Blackbox, health reporting, and bootstrap ZIP
-  integration are separate work.
+- The supervisor owns authenticated first contact, required runtime-environment
+  retrieval, and exact customer-process handoff. Lockbox, provider adapters,
+  and bootstrap ZIP integration remain separate work.
 - Distribution is through GitHub Releases, not crates.io and not a runtime
   download.
 
@@ -51,4 +51,3 @@ cargo test --workspace --all-features --locked
 The GitHub ARM64 job additionally builds
 `aarch64-unknown-linux-musl`, runs `--version`, and checks the ELF machine and
 absence of a dynamic interpreter.
-

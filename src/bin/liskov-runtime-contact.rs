@@ -12,7 +12,8 @@ use liskov_runtime_cargo::precontact::{
 };
 use liskov_runtime_cargo::probe::{SystemProbeRuntime, run_bridge_probe};
 use liskov_runtime_cargo::{
-    DEFAULT_CORE_URL, SupervisorExit, establish_runtime_contact, supervise,
+    DEFAULT_CORE_URL, SupervisorExit, establish_runtime_contact, load_runtime_environment,
+    supervise_with_environment,
 };
 
 #[derive(Debug, Parser)]
@@ -181,11 +182,19 @@ fn main() -> ExitCode {
             return ExitCode::from(70);
         }
     };
-    match supervise(
+    let runtime_environment = match load_runtime_environment(&bootstrap, &bridge) {
+        Ok(environment) => environment,
+        Err(error) => {
+            eprintln!("liskov-runtime-contact: {error}");
+            return ExitCode::from(error.exit_status());
+        }
+    };
+    match supervise_with_environment(
         &cli.command,
         &bootstrap,
         Arc::new(bridge),
         contact_started.elapsed(),
+        &runtime_environment,
     ) {
         SupervisorExit::Code(code) => ExitCode::from(u8::try_from(code).unwrap_or(70)),
         SupervisorExit::Signal(signal) => propagate_signal(signal),

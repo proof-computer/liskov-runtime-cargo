@@ -9,6 +9,7 @@ pub mod logging;
 pub mod precontact;
 pub mod probe;
 pub mod protocol;
+pub mod runtime_env;
 pub mod supervisor;
 
 pub use contact::{
@@ -16,4 +17,5 @@ pub use contact::{
     establish_runtime_contact, establish_runtime_contact_with,
 };
 pub use handoff::{CommandExecutor, ExecCommand, RunError, contact_then_exec};
-pub use supervisor::{SupervisorExit, supervise};
+pub use runtime_env::{RuntimeEnvError, load_runtime_environment};
+pub use supervisor::{SupervisorExit, supervise, supervise_with_environment};

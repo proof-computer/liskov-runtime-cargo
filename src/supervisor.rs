@@ -1,5 +1,6 @@
 //! Long-running customer-process authority for newly finalized Cargo bundles.
 
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::process::{Command, Stdio};
@@ -71,15 +72,32 @@ pub fn supervise(
     bridge: Arc<dyn Bridge>,
     bootstrap_elapsed: Duration,
 ) -> SupervisorExit {
+    supervise_with_environment(
+        command,
+        bootstrap,
+        bridge,
+        bootstrap_elapsed,
+        &BTreeMap::new(),
+    )
+}
+
+pub fn supervise_with_environment(
+    command: &[OsString],
+    bootstrap: &RuntimeBootstrapResponse,
+    bridge: Arc<dyn Bridge>,
+    bootstrap_elapsed: Duration,
+    runtime_environment: &BTreeMap<String, String>,
+) -> SupervisorExit {
     let http: Arc<dyn HttpClient> = Arc::new(UreqHttpClient::with_limits(
         DIAGNOSTIC_HTTP_TIMEOUT,
         MAX_DIAGNOSTIC_RESPONSE_BYTES,
     ));
     let mut reporter = AsyncDiagnosticReporter::spawn(bootstrap, bridge, http);
-    supervise_with_reporter(
+    supervise_with_reporter_and_environment(
         command,
         bootstrap,
         bootstrap_elapsed,
+        runtime_environment,
         reporter
             .as_mut()
             .map(|reporter| reporter as &mut dyn RuntimeReporter),
@@ -108,10 +126,27 @@ impl RuntimeReporter for AsyncDiagnosticReporter {
     }
 }
 
+#[cfg(test)]
 fn supervise_with_reporter(
     command: &[OsString],
     bootstrap: &RuntimeBootstrapResponse,
     bootstrap_elapsed: Duration,
+    reporter: Option<&mut dyn RuntimeReporter>,
+) -> SupervisorExit {
+    supervise_with_reporter_and_environment(
+        command,
+        bootstrap,
+        bootstrap_elapsed,
+        &BTreeMap::new(),
+        reporter,
+    )
+}
+
+fn supervise_with_reporter_and_environment(
+    command: &[OsString],
+    bootstrap: &RuntimeBootstrapResponse,
+    bootstrap_elapsed: Duration,
+    runtime_environment: &BTreeMap<String, String>,
     mut reporter: Option<&mut dyn RuntimeReporter>,
 ) -> SupervisorExit {
     if command.is_empty() {
@@ -143,7 +178,7 @@ fn supervise_with_reporter(
         bootstrap_elapsed,
         Instant::now(),
     );
-    let environment = sanitized_environment();
+    let environment = sanitized_environment(runtime_environment);
     let output_logger = OutputLogger::from_environment(bootstrap);
     let mut process_attempt = 0_u64;
     let mut restart_count = 0_u64;
@@ -552,8 +587,24 @@ fn spawn_customer(
     child.spawn()
 }
 
-fn sanitized_environment() -> Vec<(OsString, OsString)> {
-    sanitize_environment_values(std::env::vars_os())
+fn sanitized_environment(
+    runtime_environment: &BTreeMap<String, String>,
+) -> Vec<(OsString, OsString)> {
+    merge_runtime_environment(
+        sanitize_environment_values(std::env::vars_os()),
+        runtime_environment,
+    )
+}
+
+fn merge_runtime_environment(
+    mut environment: Vec<(OsString, OsString)>,
+    runtime_environment: &BTreeMap<String, String>,
+) -> Vec<(OsString, OsString)> {
+    for (name, value) in runtime_environment {
+        environment.retain(|(existing, _)| existing.to_str() != Some(name.as_str()));
+        environment.push((name.into(), value.into()));
+    }
+    environment
 }
 
 fn sanitize_environment_values(
@@ -838,6 +889,7 @@ mod tests {
             processor_id: "processor".into(),
             runtime_instance_id: "runtime-instance".into(),
             slipway_url: "https://liskov.example".into(),
+            runtime_env: None,
             supervision: Some(supervision),
             logging: None,
         }
@@ -992,6 +1044,56 @@ mod tests {
             environment
                 .iter()
                 .any(|(key, value)| { key == "LISKOV_SUPERVISOR_TEST_VISIBLE" && value == "yes" })
+        );
+    }
+
+    #[test]
+    fn runtime_environment_overrides_inherited_customer_values() {
+        let runtime_environment = BTreeMap::from([("MODE".to_string(), "new".to_string())]);
+        let environment = merge_runtime_environment(
+            sanitize_environment_values([
+                ("MODE".into(), "old".into()),
+                ("VISIBLE".into(), "yes".into()),
+            ]),
+            &runtime_environment,
+        );
+        assert_eq!(
+            environment
+                .iter()
+                .find(|(name, _)| name == "MODE")
+                .map(|(_, value)| value),
+            Some(&OsString::from("new"))
+        );
+        assert!(
+            environment
+                .iter()
+                .any(|(name, value)| name == "VISIBLE" && value == "yes")
+        );
+    }
+
+    #[test]
+    fn captured_runtime_environment_reaches_the_customer_process() {
+        let _lock = PROCESS_TEST_LOCK.lock().unwrap();
+        let never = bootstrap(json!({
+            "mode": "never",
+            "serverTimeMs": 1,
+            "scheduleEndMs": 60_001,
+        }));
+        let runtime_environment =
+            BTreeMap::from([("LISKOV_SUPERVISOR_TEST_VALUE".into(), "signed".into())]);
+        assert_eq!(
+            supervise_with_reporter_and_environment(
+                &[
+                    "/bin/sh".into(),
+                    "-c".into(),
+                    "test \"$LISKOV_SUPERVISOR_TEST_VALUE\" = signed".into(),
+                ],
+                &never,
+                Duration::ZERO,
+                &runtime_environment,
+                None,
+            ),
+            SupervisorExit::Code(0)
         );
     }
 

@@ -5,11 +5,15 @@ Liskov-managed workloads running in Acurast Cargo/PRoot images.
 
 It discovers the active Acurast deployment and processor through the Cargo
 bridge, signs one Liskov runtime-bootstrap v2 request with the deployment's
-Ed25519 key and waits for bounded authenticated contact. It then becomes a
-child subreaper, starts the customer command in a dedicated process group,
-forwards supported signals, reaps descendants, and returns the customer's
-exact exit status or terminating signal after cleanup. If identity, signing,
-transport, or bootstrap validation fails, the customer command does not start.
+Ed25519 key and waits for bounded authenticated contact. When that bound
+response enables runtime environment retrieval, the helper signs a separate
+UID-bound v2 request, rejects endpoint or response substitution, validates
+every environment name, and captures those values before customer startup. It
+then becomes a child subreaper, starts the customer command in a dedicated
+process group, forwards supported signals, reaps descendants, and returns the
+customer's exact exit status or terminating signal after cleanup. If identity,
+signing, transport, or bootstrap validation fails, the customer command does
+not start.
 
 When `PROOF_SLIPWAY_BOOTSTRAP` contains the Liskov-owned `x.pc` extension, the
 helper also emits bounded pre-contact evidence before bridge discovery and once
@@ -103,9 +107,10 @@ schedule runway.
 Non-default restart policy is currently limited to exact applications selected
 by the Liskov control plane through `LISKOV_CARGO_SUPERVISION_CANARY_JSON`. The
 variable is an internal fail-closed canary control, is removed before customer
-startup, and is not a customer-authored policy surface. The bootstrap secret and
-reserved Runtime SSH credential are also removed from the captured customer
-environment.
+startup, and is not a customer-authored policy surface. The bootstrap secret,
+supervision canary control, and reserved Runtime SSH credential are removed
+from the captured customer environment. Runtime values cannot reintroduce
+those protected names.
 
 For bounded release canaries whose Shell host does not retain stderr,
 `--diagnostic-exit-codes` replaces status `70`/`75` with a non-secret stage

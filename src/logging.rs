@@ -1179,6 +1179,7 @@ mod tests {
             processor_id: "processor".into(),
             runtime_instance_id: "instance".into(),
             slipway_url: "https://liskov.example".into(),
+            runtime_env: None,
             supervision: None,
             logging,
         }

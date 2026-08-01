@@ -53,9 +53,18 @@ pub struct RuntimeBootstrapResponse {
     pub runtime_instance_id: String,
     pub slipway_url: String,
     #[serde(default)]
+    pub runtime_env: Option<RuntimeEnvBootstrap>,
+    #[serde(default)]
     pub supervision: Option<Value>,
     #[serde(default)]
     pub logging: Option<Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeEnvBootstrap {
+    pub enabled: bool,
+    pub url: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -305,6 +314,10 @@ pub fn validate_response(
         || response.policy_digest.is_empty()
         || response.deployment_id.is_empty()
         || response.slipway_url.is_empty()
+        || response
+            .runtime_env
+            .as_ref()
+            .is_some_and(|runtime_env| runtime_env.enabled && runtime_env.url.is_empty())
     {
         return Err(ProtocolError::InvalidResponse);
     }
@@ -522,6 +535,47 @@ mod tests {
             mutated[field] = json!("");
             assert!(matches!(
                 validate_response(&request, &serde_json::to_vec(&mutated).unwrap()),
+                Err(ProtocolError::InvalidResponse)
+            ));
+        }
+    }
+
+    #[test]
+    fn runtime_environment_bootstrap_is_typed_and_fail_closed() {
+        let request = signed_request();
+        let base = json!({
+            "ok": true,
+            "domain": RUNTIME_BOOTSTRAP_RESPONSE_DOMAIN_V2,
+            "applicationUid": "app-uid-1",
+            "applicationId": "app-1",
+            "policyDigest": "ab",
+            "deploymentId": "dep-1",
+            "jobId": request.job_id,
+            "processorId": request.processor_id,
+            "runtimeInstanceId": request.nonce,
+            "slipwayUrl": "https://liskov.example",
+            "runtimeEnv": {
+                "enabled": true,
+                "url": "https://liskov.example"
+            }
+        });
+        let parsed = validate_response(&request, &serde_json::to_vec(&base).unwrap()).unwrap();
+        assert_eq!(
+            parsed.runtime_env,
+            Some(RuntimeEnvBootstrap {
+                enabled: true,
+                url: "https://liskov.example".into(),
+            })
+        );
+
+        for runtime_env in [
+            json!({"enabled": true, "url": ""}),
+            json!({"enabled": true, "url": "https://liskov.example", "future": true}),
+        ] {
+            let mut invalid = base.clone();
+            invalid["runtimeEnv"] = runtime_env;
+            assert!(matches!(
+                validate_response(&request, &serde_json::to_vec(&invalid).unwrap()),
                 Err(ProtocolError::InvalidResponse)
             ));
         }
