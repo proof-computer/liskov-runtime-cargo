@@ -8,6 +8,8 @@ use std::os::unix::process::CommandExt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -28,6 +30,7 @@ const CREDENTIAL_SCHEMA: &str = "proof.liskov.runtime-ssh-credential.v1";
 const MAX_ARTIFACT_BYTES: usize = 128 * 1024 * 1024;
 const MAX_BINARY_BYTES: u64 = 96 * 1024 * 1024;
 const MAX_COMMAND_OUTPUT_BYTES: usize = 1024 * 1024;
+const MAX_STARTUP_STDERR_BYTES: usize = 16 * 1024;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const MAX_SAFE_JSON_INTEGER: u64 = 9_007_199_254_740_991;
@@ -77,7 +80,7 @@ impl Drop for RuntimeSshCredentialProvider {
 }
 
 pub struct AccessSession {
-    daemon: Child,
+    daemon: DaemonProcess,
     root: PathBuf,
     pub attachment_id: String,
     pub fence: u64,
@@ -113,7 +116,7 @@ impl AccessSession {
         if self.degraded_reported {
             return false;
         }
-        let crashed = self.daemon.try_wait().ok().flatten().is_some();
+        let crashed = self.daemon.child.try_wait().ok().flatten().is_some();
         if crashed {
             self.degraded_reported = true;
         }
@@ -121,7 +124,7 @@ impl AccessSession {
     }
 
     pub fn stop(&mut self) -> Result<(), AccessError> {
-        terminate_child(&mut self.daemon)?;
+        self.daemon.stop()?;
         std::fs::remove_dir_all(&self.root)
             .map_err(|_| AccessError::new("access_cleanup_failed"))?;
         Ok(())
@@ -134,22 +137,79 @@ impl Drop for AccessSession {
     }
 }
 
-struct DaemonGuard(Option<Child>);
+struct DaemonProcess {
+    child: Child,
+    startup_stderr: Arc<StartupStderr>,
+    stderr_thread: Option<thread::JoinHandle<()>>,
+}
+
+impl DaemonProcess {
+    fn disable_startup_capture(&self) {
+        self.startup_stderr.enabled.store(false, Ordering::Release);
+        if let Ok(mut bytes) = self.startup_stderr.bytes.lock() {
+            bytes.zeroize();
+        }
+    }
+
+    fn startup_exit_error(&mut self, status: std::process::ExitStatus) -> AccessError {
+        if let Some(handle) = self.stderr_thread.take() {
+            let _ = handle.join();
+        }
+        let error = self
+            .startup_stderr
+            .bytes
+            .lock()
+            .map(|bytes| sidecar_exit_error(status, &bytes))
+            .unwrap_or_else(|_| sidecar_exit_error(status, &[]));
+        self.disable_startup_capture();
+        error
+    }
+
+    fn stop(&mut self) -> Result<(), AccessError> {
+        self.disable_startup_capture();
+        let result = terminate_child(&mut self.child);
+        if let Some(handle) = self.stderr_thread.take() {
+            let _ = handle.join();
+        }
+        result
+    }
+}
+
+struct StartupStderr {
+    enabled: AtomicBool,
+    bytes: Mutex<Zeroizing<Vec<u8>>>,
+}
+
+struct DaemonGuard(Option<DaemonProcess>);
 
 impl DaemonGuard {
     fn child_mut(&mut self) -> &mut Child {
-        self.0.as_mut().expect("daemon guard owns child")
+        &mut self.0.as_mut().expect("daemon guard owns child").child
     }
 
-    fn take(mut self) -> Child {
+    fn disable_startup_capture(&self) {
+        self.0
+            .as_ref()
+            .expect("daemon guard owns child")
+            .disable_startup_capture();
+    }
+
+    fn startup_exit_error(&mut self, status: std::process::ExitStatus) -> AccessError {
+        self.0
+            .as_mut()
+            .expect("daemon guard owns child")
+            .startup_exit_error(status)
+    }
+
+    fn take(mut self) -> DaemonProcess {
         self.0.take().expect("daemon guard owns child")
     }
 }
 
 impl Drop for DaemonGuard {
     fn drop(&mut self) {
-        if let Some(child) = self.0.as_mut() {
-            let _ = terminate_child(child);
+        if let Some(daemon) = self.0.as_mut() {
+            let _ = daemon.stop();
         }
     }
 }
@@ -421,7 +481,7 @@ fn setup_in_root(
             .map_err(|_| AccessError::new("access_sidecar_failed"))?
         {
             let _ = std::fs::remove_file(&auth_path);
-            return Err(sidecar_exit_error(status));
+            return Err(daemon.startup_exit_error(status));
         }
         if std::time::Instant::now() >= deadline {
             let _ = std::fs::remove_file(&auth_path);
@@ -429,6 +489,7 @@ fn setup_in_root(
         }
         thread::sleep(POLL_INTERVAL);
     }
+    daemon.disable_startup_capture();
     let hostname = runtime_hostname(&bootstrap.application_uid, &bootstrap.deployment_id);
     let auth_argument = format!("file:{}", auth_path.display());
     let up = run_bounded(
@@ -556,7 +617,11 @@ fn write_private_file(path: &Path, bytes: &[u8], mode: u32) -> Result<(), Access
         .map_err(|_| AccessError::new("access_setup_failed"))
 }
 
-fn spawn_daemon(binary: &Path, socket: &Path, state_dir: &Path) -> Result<Child, AccessError> {
+fn spawn_daemon(
+    binary: &Path,
+    socket: &Path,
+    state_dir: &Path,
+) -> Result<DaemonProcess, AccessError> {
     let mut command = Command::new(binary);
     command
         .arg("--tun=userspace-networking")
@@ -565,7 +630,7 @@ fn spawn_daemon(binary: &Path, socket: &Path, state_dir: &Path) -> Result<Child,
         .arg(format!("--statedir={}", state_dir.display()))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stderr(Stdio::piped());
     // SAFETY: setpgid is async-signal-safe and performs no allocation.
     unsafe {
         command.pre_exec(|| {
@@ -575,22 +640,77 @@ fn spawn_daemon(binary: &Path, socket: &Path, state_dir: &Path) -> Result<Child,
             Ok(())
         });
     }
-    command.spawn().map_err(|error| match error.kind() {
+    let mut child = command.spawn().map_err(|error| match error.kind() {
         std::io::ErrorKind::PermissionDenied => AccessError::new("access_sidecar_exec_denied"),
         std::io::ErrorKind::NotFound => AccessError::new("access_sidecar_exec_missing"),
         _ => AccessError::new("access_sidecar_spawn_failed"),
+    })?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| AccessError::new("access_sidecar_spawn_failed"))?;
+    let startup_stderr = Arc::new(StartupStderr {
+        enabled: AtomicBool::new(true),
+        bytes: Mutex::new(Zeroizing::new(Vec::with_capacity(MAX_STARTUP_STDERR_BYTES))),
+    });
+    let reader_state = Arc::clone(&startup_stderr);
+    let stderr_thread = thread::spawn(move || {
+        let mut buffer = [0_u8; 4 * 1024];
+        while let Ok(read) = stderr.read(&mut buffer) {
+            if read == 0 {
+                break;
+            }
+            if !reader_state.enabled.load(Ordering::Acquire) {
+                continue;
+            }
+            let Ok(mut captured) = reader_state.bytes.lock() else {
+                continue;
+            };
+            if !reader_state.enabled.load(Ordering::Acquire) {
+                continue;
+            }
+            let remaining = MAX_STARTUP_STDERR_BYTES.saturating_sub(captured.len());
+            captured.extend_from_slice(&buffer[..read.min(remaining)]);
+        }
+    });
+    Ok(DaemonProcess {
+        child,
+        startup_stderr,
+        stderr_thread: Some(stderr_thread),
     })
 }
 
-fn sidecar_exit_error(status: std::process::ExitStatus) -> AccessError {
+fn sidecar_exit_error(status: std::process::ExitStatus, startup_stderr: &[u8]) -> AccessError {
     match status.signal() {
         Some(libc::SIGSYS) => AccessError::new("access_sidecar_syscall_blocked"),
         Some(libc::SIGABRT) | Some(libc::SIGBUS) | Some(libc::SIGILL) | Some(libc::SIGSEGV) => {
             AccessError::new("access_sidecar_crashed")
         }
         Some(_) => AccessError::new("access_sidecar_signaled"),
-        None => AccessError::new("access_sidecar_exited"),
+        None => classify_sidecar_exit(startup_stderr),
     }
+}
+
+fn classify_sidecar_exit(startup_stderr: &[u8]) -> AccessError {
+    let stderr = String::from_utf8_lossy(startup_stderr).to_ascii_lowercase();
+    let code = if stderr.contains("failed to create state directory:") {
+        "access_sidecar_state_directory_failed"
+    } else if stderr.contains("tailscaled requires root") {
+        "access_sidecar_requires_root"
+    } else if stderr.contains("safesocket.listen:") {
+        "access_sidecar_socket_failed"
+    } else if stderr.contains("getlocalbackend error:") {
+        "access_sidecar_backend_failed"
+    } else if stderr.contains("ipnserver.run:") {
+        "access_sidecar_ipn_server_failed"
+    } else if stderr.contains("failed to start netstack:") {
+        "access_sidecar_netstack_failed"
+    } else if stderr.contains("--statedir (or at least --state) is required") {
+        "access_sidecar_state_required"
+    } else {
+        "access_sidecar_exited"
+    };
+    AccessError::new(code)
 }
 
 fn run_bounded(
@@ -785,21 +905,60 @@ mod tests {
     #[test]
     fn sidecar_exit_taxonomy_is_closed_and_secret_free() {
         assert_eq!(
-            sidecar_exit_error(std::process::ExitStatus::from_raw(1 << 8)).code,
+            sidecar_exit_error(std::process::ExitStatus::from_raw(1 << 8), b"").code,
             "access_sidecar_exited"
         );
         assert_eq!(
-            sidecar_exit_error(std::process::ExitStatus::from_raw(libc::SIGSYS)).code,
+            sidecar_exit_error(std::process::ExitStatus::from_raw(libc::SIGSYS), b"").code,
             "access_sidecar_syscall_blocked"
         );
         assert_eq!(
-            sidecar_exit_error(std::process::ExitStatus::from_raw(libc::SIGSEGV)).code,
+            sidecar_exit_error(std::process::ExitStatus::from_raw(libc::SIGSEGV), b"").code,
             "access_sidecar_crashed"
         );
         assert_eq!(
-            sidecar_exit_error(std::process::ExitStatus::from_raw(libc::SIGTERM)).code,
+            sidecar_exit_error(std::process::ExitStatus::from_raw(libc::SIGTERM), b"").code,
             "access_sidecar_signaled"
         );
+    }
+
+    #[test]
+    fn sidecar_stderr_is_bounded_to_closed_secret_free_classifications() {
+        let exited = std::process::ExitStatus::from_raw(1 << 8);
+        for (stderr, expected) in [
+            (
+                "failed to create state directory: permission denied",
+                "access_sidecar_state_directory_failed",
+            ),
+            (
+                "tailscaled requires root; use sudo tailscaled",
+                "access_sidecar_requires_root",
+            ),
+            (
+                "safesocket.Listen: bind: operation not permitted",
+                "access_sidecar_socket_failed",
+            ),
+            (
+                "getLocalBackend error: platform detail",
+                "access_sidecar_backend_failed",
+            ),
+            (
+                "ipnserver.Run: platform detail",
+                "access_sidecar_ipn_server_failed",
+            ),
+            (
+                "failed to start netstack: platform detail",
+                "access_sidecar_netstack_failed",
+            ),
+            (
+                "--statedir (or at least --state) is required",
+                "access_sidecar_state_required",
+            ),
+        ] {
+            let error = sidecar_exit_error(exited, stderr.as_bytes());
+            assert_eq!(error.code, expected);
+            assert!(!error.code.contains("platform detail"));
+        }
     }
 
     #[test]
