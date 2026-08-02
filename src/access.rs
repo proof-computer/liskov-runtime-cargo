@@ -701,6 +701,8 @@ fn classify_sidecar_exit(success: bool, startup_stderr: &[u8]) -> AccessError {
         "access_sidecar_state_directory_failed"
     } else if stderr.contains("tailscaled requires root") {
         "access_sidecar_requires_root"
+    } else if stderr.contains("netmon.new:") {
+        "access_sidecar_network_monitor_failed"
     } else if stderr.contains("safesocket.listen:") {
         "access_sidecar_socket_failed"
     } else if stderr.contains("getlocalbackend error:") {
@@ -951,6 +953,10 @@ mod tests {
             (
                 "tailscaled requires root; use sudo tailscaled",
                 "access_sidecar_requires_root",
+            ),
+            (
+                "netmon.New: failed to read Android/PRoot interfaces",
+                "access_sidecar_network_monitor_failed",
             ),
             (
                 "safesocket.Listen: bind: operation not permitted",
