@@ -196,3 +196,41 @@ cargo test --workspace --all-features --locked
 
 Stable publication requires the repository's native AArch64 and emulated
 Cargo/PRoot release gates in addition to these host checks.
+
+### Local Acurast-shaped QEMU/PRoot runtime
+
+Developers with Docker can run an AArch64 candidate inside the exact maintained
+Liskov Debian rootfs without installing QEMU or PRoot on the workstation:
+
+```sh
+scripts/run-qemu-proot-runtime.sh --self-test
+scripts/run-qemu-proot-runtime.sh -- /workspace/path/to/aarch64-candidate --version
+scripts/run-qemu-proot-runtime.sh --profile netlink-denied --self-test
+```
+
+The wrapper bind-mounts the invocation directory read-only at `/workspace` and
+caches only the digest-verified rootfs under `.cache/qemu-proot/`. It runs the
+container as the invoking non-root UID, keeps privileged-port binding disabled,
+disables container SELinux relabeling so source files stay unchanged, and gives
+the container only `SYS_PTRACE`, which PRoot needs. The inner command
+builds the clean `termux/proot` `v5.1.107.72` base identified by the Acurast
+processor 1.27.0-rc1 APK and uses the APK's PRoot shape: fake root,
+`--kill-on-exit`, `--link2symlink`, the `/dev`, `/proc`, `/sys`, and `/dev/pts`
+binds, `/root` as its working directory, and the documented `PATH` and `HOME`.
+The Liskov `getifaddrs` loopback shim is preloaded by default, as it is in the
+generated Cargo launcher.
+
+`processor-like` leaves route netlink available. That matches Acurast's current
+documentation, which says PRoot can expose Android's real interfaces through
+netlink. `netlink-denied` is a deliberate seccomp fault profile which returns
+`EPERM` only for `socket(AF_NETLINK, ...)` while leaving IPv4/TCP available. It
+is useful for proving a constrained `tailscaled` patch or `tailscale-rs` mode,
+but it is not a claim that every processor denies netlink.
+
+This is a compatibility harness, not an Android security emulator. QEMU changes
+CPU execution, upstream PRoot replaces Acurast's patched Android `libproot`, and
+Docker cannot reproduce the processor app UID, SELinux policy, abstract bridge
+services, Android interfaces, or Acurast's outbound connect interceptor. The
+final processor canary remains required. Do not put auth keys in argv; provide
+a mode-0600 file below the selected workspace and let the candidate consume the
+file.

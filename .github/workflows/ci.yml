@@ -75,3 +75,7 @@ jobs:
           path: candidate
       - name: Exercise helper under QEMU/PRoot
         run: scripts/smoke-qemu-proot.sh candidate/liskov-runtime-contact
+      - name: Exercise reusable local emulator profiles
+        run: |
+          scripts/run-qemu-proot-runtime.sh --self-test
+          scripts/run-qemu-proot-runtime.sh --profile netlink-denied --self-test
