@@ -687,13 +687,17 @@ fn sidecar_exit_error(status: std::process::ExitStatus, startup_stderr: &[u8]) -
             AccessError::new("access_sidecar_crashed")
         }
         Some(_) => AccessError::new("access_sidecar_signaled"),
-        None => classify_sidecar_exit(startup_stderr),
+        None => classify_sidecar_exit(status.success(), startup_stderr),
     }
 }
 
-fn classify_sidecar_exit(startup_stderr: &[u8]) -> AccessError {
+fn classify_sidecar_exit(success: bool, startup_stderr: &[u8]) -> AccessError {
     let stderr = String::from_utf8_lossy(startup_stderr).to_ascii_lowercase();
-    let code = if stderr.contains("failed to create state directory:") {
+    let code = if stderr.contains("tailscaled got signal") && stderr.contains("shutting down") {
+        "access_sidecar_shutdown_signal"
+    } else if stderr.contains("wgengine has been closed; shutting down") {
+        "access_sidecar_engine_closed"
+    } else if stderr.contains("failed to create state directory:") {
         "access_sidecar_state_directory_failed"
     } else if stderr.contains("tailscaled requires root") {
         "access_sidecar_requires_root"
@@ -707,6 +711,8 @@ fn classify_sidecar_exit(startup_stderr: &[u8]) -> AccessError {
         "access_sidecar_netstack_failed"
     } else if stderr.contains("--statedir (or at least --state) is required") {
         "access_sidecar_state_required"
+    } else if success {
+        "access_sidecar_exited_cleanly"
     } else {
         "access_sidecar_exited"
     };
@@ -909,6 +915,10 @@ mod tests {
             "access_sidecar_exited"
         );
         assert_eq!(
+            sidecar_exit_error(std::process::ExitStatus::from_raw(0), b"").code,
+            "access_sidecar_exited_cleanly"
+        );
+        assert_eq!(
             sidecar_exit_error(std::process::ExitStatus::from_raw(libc::SIGSYS), b"").code,
             "access_sidecar_syscall_blocked"
         );
@@ -926,6 +936,14 @@ mod tests {
     fn sidecar_stderr_is_bounded_to_closed_secret_free_classifications() {
         let exited = std::process::ExitStatus::from_raw(1 << 8);
         for (stderr, expected) in [
+            (
+                "tailscaled got signal terminated; shutting down",
+                "access_sidecar_shutdown_signal",
+            ),
+            (
+                "wgengine has been closed; shutting down",
+                "access_sidecar_engine_closed",
+            ),
             (
                 "failed to create state directory: permission denied",
                 "access_sidecar_state_directory_failed",
