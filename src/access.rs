@@ -12,6 +12,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use flate2::read::GzDecoder;
 use serde::Deserialize;
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tar::Archive;
 use thiserror::Error;
@@ -28,6 +29,7 @@ const MAX_BINARY_BYTES: u64 = 96 * 1024 * 1024;
 const MAX_COMMAND_OUTPUT_BYTES: usize = 1024 * 1024;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
+const MAX_SAFE_JSON_INTEGER: u64 = 9_007_199_254_740_991;
 
 #[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
 #[error("{code}")]
@@ -237,7 +239,7 @@ fn validate_binding(
         || credential.attachment_id != access.attachment_id
         || credential.application_uid != bootstrap.application_uid
         || credential.deployment_id != bootstrap.deployment_id
-        || credential.job_id != bootstrap.job_id
+        || !runtime_job_ids_match(&credential.job_id, &bootstrap.job_id)
         || credential.policy_digest != bootstrap.policy_digest
         || credential.expires_at_ms != access.setup_deadline_ms
         || credential.expires_at_ms <= now_ms
@@ -254,6 +256,94 @@ fn validate_binding(
         }
         _ => Err(AccessError::new("access_setup_failed")),
     }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct AcurastJobIdentity {
+    origin: [u8; 32],
+    sequence: u64,
+}
+
+/// Acurast exposes the same job through two JSON encodings: the control plane
+/// persists `[origin, sequence]`, while the runtime bridge reports
+/// `{origin: {kind: "Acurast", source: <hex>}, id: <sequence>}`. Preserve exact
+/// matching for opaque IDs, but otherwise compare only a fully parsed Acurast
+/// account and safe non-negative sequence. Unknown or malformed forms never
+/// broaden credential authority.
+fn runtime_job_ids_match(left: &str, right: &str) -> bool {
+    left == right
+        || match (acurast_job_identity(left), acurast_job_identity(right)) {
+            (Some(left), Some(right)) => left == right,
+            _ => false,
+        }
+}
+
+fn acurast_job_identity(job_id: &str) -> Option<AcurastJobIdentity> {
+    let value: Value = serde_json::from_str(job_id).ok()?;
+    let (origin, raw_sequence) = match &value {
+        Value::Array(items) if items.len() == 2 => (&items[0], &items[1]),
+        Value::Object(object) => {
+            let origin = object.get("origin")?;
+            let sequence = match (object.get("sequence"), object.get("id")) {
+                (Some(sequence), Some(id)) => (parse_safe_sequence(sequence)?
+                    == parse_safe_sequence(id)?)
+                .then_some(sequence)?,
+                (Some(sequence), None) => sequence,
+                (None, Some(id)) => id,
+                (None, None) => return None,
+            };
+            (origin, sequence)
+        }
+        _ => return None,
+    };
+    Some(AcurastJobIdentity {
+        origin: acurast_origin(origin)?,
+        sequence: parse_safe_sequence(raw_sequence)?,
+    })
+}
+
+fn parse_safe_sequence(value: &Value) -> Option<u64> {
+    let sequence = match value {
+        Value::Number(number) => number.as_u64()?,
+        Value::String(string) if !string.trim().is_empty() => string.trim().parse().ok()?,
+        _ => return None,
+    };
+    (sequence <= MAX_SAFE_JSON_INTEGER).then_some(sequence)
+}
+
+fn acurast_origin(value: &Value) -> Option<[u8; 32]> {
+    let object = value.as_object()?;
+    let marked_acurast = object.get("kind").and_then(Value::as_str) == Some("Acurast")
+        || object.get("name").and_then(Value::as_str) == Some("Acurast")
+        || object.contains_key("acurast");
+    if !marked_acurast {
+        return None;
+    }
+    if let Some(source) = object.get("source").and_then(Value::as_str) {
+        return parse_origin_hex(source);
+    }
+    nested_origin_bytes(object.get("values")?)
+}
+
+fn parse_origin_hex(source: &str) -> Option<[u8; 32]> {
+    let source = source.trim().strip_prefix("0x").unwrap_or(source.trim());
+    if source.len() != 64 || !source.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let decoded = hex::decode(source).ok()?;
+    decoded.try_into().ok()
+}
+
+fn nested_origin_bytes(value: &Value) -> Option<[u8; 32]> {
+    let items = value.as_array()?;
+    if items.len() == 32 {
+        let bytes = items
+            .iter()
+            .map(|item| item.as_u64().and_then(|byte| u8::try_from(byte).ok()))
+            .collect::<Option<Vec<_>>>()?;
+        return bytes.try_into().ok();
+    }
+    items.iter().find_map(nested_origin_bytes)
 }
 
 fn download_artifact(access: &RuntimeAccessBootstrap) -> Result<Vec<u8>, AccessError> {
@@ -677,7 +767,63 @@ mod tests {
     }
 
     #[test]
+    fn runtime_job_identity_matches_only_the_same_acurast_origin_and_sequence() {
+        let origin_bytes = (0_u8..32).collect::<Vec<_>>();
+        let canonical = serde_json::json!([
+            {"name": "Acurast", "values": [[origin_bytes.clone()]]},
+            133_859
+        ])
+        .to_string();
+        let runtime = serde_json::json!({
+            "id": "133859",
+            "origin": {
+                "kind": "Acurast",
+                "source": format!("0x{}", hex::encode(&origin_bytes)),
+            }
+        })
+        .to_string();
+        assert!(runtime_job_ids_match(&canonical, &runtime));
+        assert!(runtime_job_ids_match("opaque-job", "opaque-job"));
+
+        let other_sequence = runtime.replace("133859", "133860");
+        assert!(!runtime_job_ids_match(&canonical, &other_sequence));
+
+        let mut other_origin = origin_bytes.clone();
+        other_origin[31] ^= 1;
+        let other_origin = runtime.replace(&hex::encode(origin_bytes), &hex::encode(other_origin));
+        assert!(!runtime_job_ids_match(&canonical, &other_origin));
+
+        assert!(!runtime_job_ids_match("opaque-job", "other-job"));
+        assert!(!runtime_job_ids_match(
+            r#"[{"name":"Other","values":[[[0,1,2]]]},1]"#,
+            r#"{"id":"1","origin":{"kind":"Other","source":"0000000000000000000000000000000000000000000000000000000000000000"}}"#,
+        ));
+        assert!(!runtime_job_ids_match(
+            r#"[{"name":"Acurast","values":[[[0,1,2]]]},1]"#,
+            r#"{"id":"1","origin":{"kind":"Acurast","source":"not-hex"}}"#,
+        ));
+        assert!(!runtime_job_ids_match(
+            r#"[{"name":"Acurast","values":[[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]]},9007199254740992]"#,
+            r#"{"id":"9007199254740992","origin":{"kind":"Acurast","source":"0000000000000000000000000000000000000000000000000000000000000000"}}"#,
+        ));
+    }
+
+    #[test]
     fn credential_is_bound_to_the_exact_signed_bootstrap() {
+        let origin_bytes = (0_u8..32).collect::<Vec<_>>();
+        let canonical_job_id = serde_json::json!([
+            {"name": "Acurast", "values": [[origin_bytes.clone()]]},
+            133_859
+        ])
+        .to_string();
+        let runtime_job_id = serde_json::json!({
+            "id": "133859",
+            "origin": {
+                "kind": "Acurast",
+                "source": format!("0x{}", hex::encode(origin_bytes)),
+            }
+        })
+        .to_string();
         let deadline = unix_time_ms().unwrap() + 60_000;
         let access = RuntimeAccessBootstrap {
             provider: RuntimeAccessProvider {
@@ -702,7 +848,7 @@ mod tests {
             application_id: "app".into(),
             policy_digest: "sha256:policy".into(),
             deployment_id: "deployment".into(),
-            job_id: "job".into(),
+            job_id: runtime_job_id,
             processor_id: "processor".into(),
             runtime_instance_id: "instance".into(),
             slipway_url: "https://liskov.example".into(),
@@ -720,7 +866,7 @@ mod tests {
             "attachmentId": "att-1",
             "applicationUid": "app-uid",
             "deploymentId": "deployment",
-            "jobId": "job",
+            "jobId": canonical_job_id,
             "policyDigest": "sha256:policy",
             "expiresAtMs": deadline,
         });
