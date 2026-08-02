@@ -5,6 +5,7 @@ use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::CommandExt;
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread;
@@ -414,15 +415,17 @@ fn setup_in_root(
     let mut daemon = DaemonGuard(Some(spawn_daemon(&tailscaled_path, &socket, &state_dir)?));
     let deadline = setup_deadline(access.setup_deadline_ms)?;
     while !socket.exists() {
-        if daemon
+        if let Some(status) = daemon
             .child_mut()
             .try_wait()
             .map_err(|_| AccessError::new("access_sidecar_failed"))?
-            .is_some()
-            || std::time::Instant::now() >= deadline
         {
             let _ = std::fs::remove_file(&auth_path);
-            return Err(AccessError::new("access_sidecar_failed"));
+            return Err(sidecar_exit_error(status));
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = std::fs::remove_file(&auth_path);
+            return Err(AccessError::new("access_sidecar_start_timeout"));
         }
         thread::sleep(POLL_INTERVAL);
     }
@@ -572,9 +575,22 @@ fn spawn_daemon(binary: &Path, socket: &Path, state_dir: &Path) -> Result<Child,
             Ok(())
         });
     }
-    command
-        .spawn()
-        .map_err(|_| AccessError::new("access_sidecar_failed"))
+    command.spawn().map_err(|error| match error.kind() {
+        std::io::ErrorKind::PermissionDenied => AccessError::new("access_sidecar_exec_denied"),
+        std::io::ErrorKind::NotFound => AccessError::new("access_sidecar_exec_missing"),
+        _ => AccessError::new("access_sidecar_spawn_failed"),
+    })
+}
+
+fn sidecar_exit_error(status: std::process::ExitStatus) -> AccessError {
+    match status.signal() {
+        Some(libc::SIGSYS) => AccessError::new("access_sidecar_syscall_blocked"),
+        Some(libc::SIGABRT) | Some(libc::SIGBUS) | Some(libc::SIGILL) | Some(libc::SIGSEGV) => {
+            AccessError::new("access_sidecar_crashed")
+        }
+        Some(_) => AccessError::new("access_sidecar_signaled"),
+        None => AccessError::new("access_sidecar_exited"),
+    }
 }
 
 fn run_bounded(
@@ -764,6 +780,26 @@ mod tests {
         assert!(hostname.starts_with("liskov-"));
         assert_eq!(hostname.len(), 23);
         assert!(!hostname.contains("secret"));
+    }
+
+    #[test]
+    fn sidecar_exit_taxonomy_is_closed_and_secret_free() {
+        assert_eq!(
+            sidecar_exit_error(std::process::ExitStatus::from_raw(1 << 8)).code,
+            "access_sidecar_exited"
+        );
+        assert_eq!(
+            sidecar_exit_error(std::process::ExitStatus::from_raw(libc::SIGSYS)).code,
+            "access_sidecar_syscall_blocked"
+        );
+        assert_eq!(
+            sidecar_exit_error(std::process::ExitStatus::from_raw(libc::SIGSEGV)).code,
+            "access_sidecar_crashed"
+        );
+        assert_eq!(
+            sidecar_exit_error(std::process::ExitStatus::from_raw(libc::SIGTERM)).code,
+            "access_sidecar_signaled"
+        );
     }
 
     #[test]
