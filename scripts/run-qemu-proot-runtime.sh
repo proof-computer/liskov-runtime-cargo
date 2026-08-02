@@ -9,6 +9,7 @@ rootfs_archive=
 profile=processor-like
 self_test=0
 use_shim=1
+container_name=
 guest_command=()
 
 usage() {
@@ -23,6 +24,7 @@ Options:
   --profile netlink-denied  Return EPERM from socket(AF_NETLINK, ...).
   --rootfs-archive FILE     Use and verify an existing exact rootfs archive.
   --workspace DIRECTORY     Bind this directory read-only at /workspace.
+  --container-name NAME     Assign a validated Docker name for exact teardown.
   --no-shim                 Do not preload the getifaddrs loopback shim.
   --self-test               Check PRoot, TCP, netlink profile, and the shim.
   -h, --help                Show this help.
@@ -60,6 +62,14 @@ while [[ $# -gt 0 ]]; do
       workspace=$(realpath "$2")
       shift 2
       ;;
+    --container-name)
+      [[ $# -ge 2 ]] || {
+        echo "--container-name requires a value" >&2
+        exit 2
+      }
+      container_name=$2
+      shift 2
+      ;;
     --no-shim)
       use_shim=0
       shift
@@ -93,6 +103,11 @@ case "${profile}" in
     ;;
 esac
 
+if [[ -n "${container_name}" && ! "${container_name}" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}$ ]]; then
+  echo "invalid container name" >&2
+  exit 2
+fi
+
 [[ -d "${workspace}" ]] || {
   echo "workspace is not a directory: ${workspace}" >&2
   exit 2
@@ -125,6 +140,9 @@ container_args=(
   --mount "type=bind,src=${workspace},dst=/workspace,readonly"
   --mount "type=bind,src=${cache_directory},dst=/cache"
 )
+if [[ -n "${container_name}" ]]; then
+  container_args+=(--name "${container_name}")
+fi
 if [[ -t 0 && -t 1 ]]; then
   container_args+=(--tty)
 fi

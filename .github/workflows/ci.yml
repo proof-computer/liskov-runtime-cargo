@@ -79,3 +79,9 @@ jobs:
         run: |
           scripts/run-qemu-proot-runtime.sh --self-test
           scripts/run-qemu-proot-runtime.sh --profile netlink-denied --self-test
+      - name: Validate opt-in provider-real gate syntax
+        run: |
+          bash -n scripts/test-tailscale-saas-runtime-ssh.sh
+          sh -n tools/qemu-proot/tailscale-saas-runner.sh
+          node --check tools/qemu-proot/tailscale-saas-controller.mjs
+          scripts/test-tailscale-saas-runtime-ssh.sh --help >/dev/null

@@ -234,3 +234,36 @@ services, Android interfaces, or Acurast's outbound connect interceptor. The
 final processor canary remains required. Do not put auth keys in argv; provide
 a mode-0600 file below the selected workspace and let the candidate consume the
 file.
+
+### Opt-in Tailscale SaaS Runtime SSH gate
+
+After the offline and emulator profiles pass, operators with an approved
+customer-owned test tailnet can exercise official Tailscale control, DERP, and
+native SSH without paying for an Acurast job:
+
+```sh
+scripts/test-tailscale-saas-runtime-ssh.sh \
+  --yes-provider \
+  --credential-file /protected/path/tailscale-canary.json
+```
+
+The credential file parent must be mode `0700` and the file mode `0600`. The
+JSON contract is `kind`, `tailnet`, `tag`, `oauthClientId`, and
+`oauthClientSecret`; the gate accepts only kind `tailscale` and tag
+`tag:liskov-runtime`. It refuses a local Tailscale client which is offline or
+logged into a different tailnet and never changes the local login.
+
+The gate verifies the pinned official ARM64 archive, mints one tagged,
+preauthorized, ephemeral, non-reusable 15-minute key, supplies it only through
+a mode-0600 file, and removes that file immediately after authentication. It
+then finds exactly one non-baseline tagged device, invokes `tailscale ssh` with
+an argument array, verifies root and maintained-rootfs markers, stops the exact
+named emulator container, and deletes only the exact persisted key and device.
+Output is limited to booleans and counts; OAuth values, auth keys, tailnet
+names, hostnames, device IDs, network maps, daemon logs, and SSH output remain
+inside protected disposable state and are removed on exit.
+
+This is a provider-real compatibility test, not the Android release gate. It
+does not reproduce the processor app UID, SELinux policy, Android interfaces,
+or Acurast's private outbound-connect interceptor, and it does not prove
+customer-workload continuity through a sidecar failure.
