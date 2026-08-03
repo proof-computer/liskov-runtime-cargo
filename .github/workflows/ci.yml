@@ -79,6 +79,8 @@ jobs:
         run: |
           scripts/run-qemu-proot-runtime.sh --self-test
           scripts/run-qemu-proot-runtime.sh --profile netlink-denied --self-test
+      - name: Exercise managed Dropbear access through stock OpenSSH
+        run: scripts/run-qemu-proot-runtime.sh --no-shim -- /workspace/tools/qemu-proot/managed-access-smoke.sh
       - name: Validate opt-in provider-real gate syntax
         run: |
           bash -n scripts/test-tailscale-saas-runtime-ssh.sh

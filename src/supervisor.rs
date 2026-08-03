@@ -20,7 +20,10 @@ use crate::diagnostics::{
 };
 use crate::http::{HttpClient, UreqHttpClient};
 use crate::logging::{LoggingController, OutputLogger, RuntimeSshLogEmitter};
-use crate::protocol::{RestartLimit, RuntimeBootstrapResponse, SupervisionMode, SupervisionPolicy};
+use crate::protocol::{
+    RestartLimit, RuntimeAccessBootstrap, RuntimeBootstrapResponse, SupervisionMode,
+    SupervisionPolicy,
+};
 
 const HEALTH_CADENCE: Duration = Duration::from_secs(30);
 const MAX_INITIAL_HEALTH_JITTER: Duration = Duration::from_secs(30);
@@ -114,13 +117,10 @@ pub fn supervise_with_environment_and_access(
     let mut reporter = AsyncDiagnosticReporter::spawn(bootstrap, bridge, http);
     let mut logging = LoggingController::from_environment(bootstrap);
     let runtime_ssh_logs = logging.as_ref().and_then(LoggingController::runtime_ssh);
-    let access_binding = bootstrap.access.as_ref().map(|access| {
-        json!({
-            "attachmentId": access.attachment_id,
-            "fence": access.fence,
-            "providerKind": "tailscale",
-        })
-    });
+    let access_binding = bootstrap
+        .access
+        .as_ref()
+        .map(RuntimeAccessBootstrap::binding_attrs);
     if let Some(attrs) = access_binding.clone() {
         log_access(
             runtime_ssh_logs.as_ref(),
@@ -1257,6 +1257,41 @@ mod tests {
                 None,
             ),
             SupervisorExit::Code(0)
+        );
+    }
+
+    #[test]
+    fn managed_access_setup_failure_preserves_the_exact_customer_exit() {
+        let _lock = PROCESS_TEST_LOCK.lock().unwrap();
+        let mut never = bootstrap(json!({
+            "mode": "never",
+            "serverTimeMs": 1,
+            "scheduleEndMs": 60_001,
+        }));
+        never.access = Some(RuntimeAccessBootstrap::Managed(
+            crate::protocol::ManagedRuntimeAccessBootstrap {
+                provider: crate::protocol::RuntimeAccessProvider {
+                    kind: crate::protocol::RuntimeAccessProviderKind::Liskov,
+                },
+                attachment_id: "att-managed-test".into(),
+                fence: 1,
+                gateway_url: "wss://access.example".into(),
+                tunnel_id: "tunnel_managed_test".into(),
+                protocol: crate::protocol::ManagedRuntimeAccessProtocol::LiskovAccessV0,
+                setup_deadline_ms: u64::MAX,
+            },
+        ));
+        let bridge = Arc::new(crate::bridge::UnixBridge::new("unused-test-bridge").unwrap());
+        assert_eq!(
+            supervise_with_environment_and_access(
+                &["/bin/sh".into(), "-c".into(), "exit 23".into()],
+                &never,
+                bridge,
+                Duration::ZERO,
+                &BTreeMap::new(),
+                Some("malformed-managed-credential".into()),
+            ),
+            SupervisorExit::Code(23)
         );
     }
 

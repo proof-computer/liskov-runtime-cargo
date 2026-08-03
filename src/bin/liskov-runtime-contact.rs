@@ -182,6 +182,9 @@ fn main() -> ExitCode {
             return ExitCode::from(70);
         }
     };
+    // First contact is signed and bound before this reserved credential is
+    // consumed; remove it before constructing the customer environment.
+    let runtime_access_credential = liskov_runtime_cargo::access::take_environment_credential();
     let runtime_environment = match load_runtime_environment(&bootstrap, &bridge) {
         Ok(environment) => environment,
         Err(error) => {
@@ -189,7 +192,6 @@ fn main() -> ExitCode {
             return ExitCode::from(error.exit_status());
         }
     };
-    let runtime_access_credential = liskov_runtime_cargo::access::take_environment_credential();
     match supervise_with_environment_and_access(
         &cli.command,
         &bootstrap,

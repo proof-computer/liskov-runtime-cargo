@@ -218,6 +218,7 @@ Liskov Debian rootfs without installing QEMU or PRoot on the workstation:
 scripts/run-qemu-proot-runtime.sh --self-test
 scripts/run-qemu-proot-runtime.sh -- /workspace/path/to/aarch64-candidate --version
 scripts/run-qemu-proot-runtime.sh --profile netlink-denied --self-test
+scripts/run-qemu-proot-runtime.sh --no-shim -- /workspace/tools/qemu-proot/managed-access-smoke.sh
 ```
 
 The wrapper bind-mounts the invocation directory read-only at `/workspace` and
@@ -246,6 +247,12 @@ services, Android interfaces, or Acurast's outbound connect interceptor. The
 final processor canary remains required. Do not put auth keys in argv; provide
 a mode-0600 file below the selected workspace and let the candidate consume the
 file.
+
+The managed-access smoke installs the same Debian Dropbear package with the
+helper's exact `apt-get install -y dropbear` argv, confirms port 22 is denied,
+starts the fixed loopback port-2222 Dropbear command, and uses stock OpenSSH
+through a local byte relay with a pinned host key. It also confirms killing the
+access sidecar does not change an independently running customer's exact exit.
 
 ### Opt-in Tailscale SaaS Runtime SSH gate
 
