@@ -347,6 +347,7 @@ mod tests {
             supervision: None,
             logging: None,
             logging_outage_canary: false,
+            diagnostics: None,
             access: None,
         }
     }

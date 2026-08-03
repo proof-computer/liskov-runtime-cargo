@@ -4,7 +4,9 @@ use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::process::{Child, ChildStderr, ChildStdout};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel};
+use std::sync::mpsc::{
+    Receiver, RecvTimeoutError, SyncSender, TryRecvError, TrySendError, sync_channel,
+};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -29,6 +31,9 @@ const WRITER_KEY_INFO: &[u8] = b"Ed25519";
 const OUTPUT_CHUNK_BYTES: usize = 3 * 1024;
 const OUTPUT_QUEUE_CAPACITY: usize = 128;
 const OUTPUT_BYTES_PER_SECOND: u64 = 256 * 1024;
+const RUNTIME_SSH_BYTES_PER_SECOND: u64 = 64 * 1024;
+const RUNTIME_SSH_QUEUE_MEMORY_BYTES: u64 = 1024 * 1024;
+pub(crate) const RUNTIME_SSH_LINE_BYTES: usize = 8 * 1024;
 const MAX_BATCH_RECORDS: usize = 32;
 const MAX_BATCH_BYTES: usize = 256 * 1024;
 const MAX_RESPONSE_BYTES: usize = 16 * 1024;
@@ -127,13 +132,15 @@ impl DroppedOutput {
 struct ByteBudget {
     window_started: Instant,
     admitted: u64,
+    limit: u64,
 }
 
 impl ByteBudget {
-    fn new() -> Self {
+    fn new(limit: u64) -> Self {
         Self {
             window_started: Instant::now(),
             admitted: 0,
+            limit,
         }
     }
 
@@ -146,7 +153,7 @@ impl ByteBudget {
         let Some(next) = self.admitted.checked_add(bytes) else {
             return false;
         };
-        if next > OUTPUT_BYTES_PER_SECOND {
+        if next > self.limit {
             return false;
         }
         self.admitted = next;
@@ -163,9 +170,144 @@ struct OutputChunk {
     bytes: Vec<u8>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LogOrigin {
+    Customer,
+    RuntimeSsh,
+}
+
+impl LogOrigin {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Customer => "customer",
+            Self::RuntimeSsh => "runtime_ssh",
+        }
+    }
+
+    fn source(self) -> &'static str {
+        match self {
+            Self::Customer => "runtime-cargo-supervisor",
+            Self::RuntimeSsh => "runtime-ssh-tailscaled",
+        }
+    }
+
+    fn dropped_event(self) -> &'static str {
+        match self {
+            Self::Customer => "runtime.cargo.output.dropped",
+            Self::RuntimeSsh => "runtime.access.tailscale.logs_dropped",
+        }
+    }
+}
+
+#[derive(Clone)]
+struct RuntimeSshRecord {
+    event: &'static str,
+    timestamp: String,
+    details: Value,
+    admitted_bytes: usize,
+}
+
 enum LogWork {
     Chunk(OutputChunk),
+    RuntimeSsh(RuntimeSshRecord),
     Finish(std::sync::mpsc::Sender<()>),
+}
+
+pub struct LoggingController {
+    customer: OutputLogger,
+    runtime_ssh: Option<RuntimeSshLogger>,
+}
+
+impl LoggingController {
+    /// Creates the sole Blackbox owner before Runtime SSH setup. Customer and
+    /// provider records use independent queues, budgets, and batches.
+    pub fn from_environment(bootstrap: &RuntimeBootstrapResponse) -> Option<Self> {
+        if !bootstrap.logging_enabled() {
+            return None;
+        }
+        let raw = std::env::var(BLACKBOX_CONFIG_ENV).ok()?;
+        let config = BlackboxConfig::parse(&raw, bootstrap).ok()?;
+        let http: Arc<dyn LogHttpClient> = if bootstrap.logging_outage_canary_enabled() {
+            Arc::new(OutageCanaryHttp)
+        } else {
+            Arc::new(UreqLogHttpClient::new(config.timeout))
+        };
+        let labels = RuntimeLabels::from(bootstrap);
+        let now_ms = unix_time_ms();
+        let raw_expires_at_ms = match bootstrap.provider_log_mode(now_ms) {
+            crate::protocol::ProviderLogMode::Disabled => None,
+            crate::protocol::ProviderLogMode::Sanitized => Some(None),
+            crate::protocol::ProviderLogMode::RawTailscaledStderr => {
+                Some(bootstrap.provider_log_expiry_ms())
+            }
+        };
+        let customer_dropped = Arc::new(DroppedOutput::default());
+        let runtime_dropped = Arc::new(DroppedOutput::default());
+        let runtime_queued_bytes = Arc::new(AtomicU64::new(0));
+        let (customer_sender, customer_receiver) = sync_channel(OUTPUT_QUEUE_CAPACITY);
+        let (runtime_sender, runtime_receiver) = sync_channel(OUTPUT_QUEUE_CAPACITY);
+        let worker_customer_dropped = customer_dropped.clone();
+        let worker_runtime_dropped = runtime_dropped.clone();
+        let worker_runtime_queued_bytes = runtime_queued_bytes.clone();
+        thread::Builder::new()
+            .name("liskov-blackbox-logs".into())
+            .spawn(move || {
+                if let Some(worker) = LogWorker::new_shared(
+                    config,
+                    labels,
+                    http,
+                    worker_customer_dropped,
+                    worker_runtime_dropped,
+                ) {
+                    worker.run_prioritized(
+                        customer_receiver,
+                        runtime_receiver,
+                        worker_runtime_queued_bytes,
+                    );
+                }
+            })
+            .ok()?;
+        let customer = OutputLogger {
+            sender: Some(customer_sender),
+            dropped: customer_dropped,
+            budget: Arc::new(Mutex::new(ByteBudget::new(OUTPUT_BYTES_PER_SECOND))),
+            next_output_sequence: Arc::new(AtomicU64::new(0)),
+        };
+        let runtime_ssh = raw_expires_at_ms.map(|raw_expires_at_ms| RuntimeSshLogger {
+            emitter: RuntimeSshLogEmitter {
+                sender: runtime_sender,
+                dropped: runtime_dropped,
+                budget: Arc::new(Mutex::new(ByteBudget::new(RUNTIME_SSH_BYTES_PER_SECOND))),
+                queued_bytes: runtime_queued_bytes,
+                raw_expires_at_ms,
+            },
+        });
+        Some(Self {
+            customer,
+            runtime_ssh,
+        })
+    }
+
+    pub fn customer(&self) -> &OutputLogger {
+        &self.customer
+    }
+
+    pub fn runtime_ssh(&self) -> Option<RuntimeSshLogEmitter> {
+        self.runtime_ssh.as_ref().map(RuntimeSshLogger::emitter)
+    }
+
+    pub fn finish(&mut self) {
+        // The single worker drains customer output before Runtime SSH and never
+        // mixes origins in one encrypted batch.
+        self.customer.finish();
+        self.runtime_ssh = None;
+    }
+}
+
+impl Drop for LoggingController {
+    fn drop(&mut self) {
+        self.finish();
+    }
 }
 
 pub struct OutputLogger {
@@ -198,13 +340,29 @@ impl OutputLogger {
         labels: RuntimeLabels,
         http: Arc<dyn LogHttpClient>,
     ) -> Option<Self> {
+        Self::spawn_with_origin(
+            config,
+            labels,
+            http,
+            LogOrigin::Customer,
+            OUTPUT_BYTES_PER_SECOND,
+        )
+    }
+
+    fn spawn_with_origin(
+        config: BlackboxConfig,
+        labels: RuntimeLabels,
+        http: Arc<dyn LogHttpClient>,
+        origin: LogOrigin,
+        bytes_per_second: u64,
+    ) -> Option<Self> {
         let dropped = Arc::new(DroppedOutput::default());
         let (sender, receiver) = sync_channel(OUTPUT_QUEUE_CAPACITY);
         let worker_dropped = dropped.clone();
         thread::Builder::new()
             .name("liskov-cargo-output".into())
             .spawn(move || {
-                if let Some(worker) = LogWorker::new(config, labels, http, worker_dropped) {
+                if let Some(worker) = LogWorker::new(config, labels, http, worker_dropped, origin) {
                     worker.run(receiver);
                 }
             })
@@ -212,7 +370,7 @@ impl OutputLogger {
         Some(Self {
             sender: Some(sender),
             dropped,
-            budget: Arc::new(Mutex::new(ByteBudget::new())),
+            budget: Arc::new(Mutex::new(ByteBudget::new(bytes_per_second))),
             next_output_sequence: Arc::new(AtomicU64::new(0)),
         })
     }
@@ -282,6 +440,108 @@ impl Drop for OutputLogger {
     fn drop(&mut self) {
         self.finish();
     }
+}
+
+struct RuntimeSshLogger {
+    emitter: RuntimeSshLogEmitter,
+}
+
+impl RuntimeSshLogger {
+    fn emitter(&self) -> RuntimeSshLogEmitter {
+        self.emitter.clone()
+    }
+}
+
+#[derive(Clone)]
+pub struct RuntimeSshLogEmitter {
+    sender: SyncSender<LogWork>,
+    dropped: Arc<DroppedOutput>,
+    budget: Arc<Mutex<ByteBudget>>,
+    queued_bytes: Arc<AtomicU64>,
+    raw_expires_at_ms: Option<u64>,
+}
+
+impl RuntimeSshLogEmitter {
+    pub fn lifecycle(&self, event: &'static str, code: Option<&'static str>) {
+        let details = without_nulls(json!({
+            "providerKind": "tailscale",
+            "component": "tailscaled",
+            "format": "lifecycle",
+            "code": code,
+        }));
+        self.enqueue(RuntimeSshRecord {
+            event,
+            timestamp: utc_timestamp(),
+            admitted_bytes: canonical_json_bytes(&details).len(),
+            details,
+        });
+    }
+
+    pub fn raw_tailscaled_line(&self, line: &[u8], exact_auth_key: &str, input_truncated: bool) {
+        let Some(expires_at_ms) = self.raw_expires_at_ms else {
+            return;
+        };
+        if unix_time_ms() >= expires_at_ms {
+            return;
+        }
+        let (message, redacted, truncated) =
+            sanitize_tailscaled_line(line, exact_auth_key, input_truncated);
+        let details = json!({
+            "providerKind": "tailscale",
+            "component": "tailscaled",
+            "format": "raw_canary",
+            "message": message,
+            "redacted": redacted,
+            "truncated": truncated,
+        });
+        self.enqueue(RuntimeSshRecord {
+            event: "runtime.access.tailscale.stderr",
+            timestamp: utc_timestamp(),
+            admitted_bytes: line.len().min(RUNTIME_SSH_LINE_BYTES),
+            details,
+        });
+    }
+
+    fn enqueue(&self, record: RuntimeSshRecord) {
+        let admitted = self
+            .budget
+            .lock()
+            .is_ok_and(|mut budget| budget.admit(record.admitted_bytes));
+        if !admitted || !reserve_queue_bytes(&self.queued_bytes, record.admitted_bytes) {
+            self.dropped.record(record.admitted_bytes);
+            return;
+        }
+        match self.sender.try_send(LogWork::RuntimeSsh(record)) {
+            Ok(()) => {}
+            Err(TrySendError::Full(LogWork::RuntimeSsh(record)))
+            | Err(TrySendError::Disconnected(LogWork::RuntimeSsh(record))) => {
+                release_queue_bytes(&self.queued_bytes, record.admitted_bytes);
+                self.dropped.record(record.admitted_bytes);
+            }
+            Err(TrySendError::Full(LogWork::Chunk(_)))
+            | Err(TrySendError::Disconnected(LogWork::Chunk(_)))
+            | Err(TrySendError::Full(LogWork::Finish(_)))
+            | Err(TrySendError::Disconnected(LogWork::Finish(_))) => unreachable!(),
+        }
+    }
+}
+
+fn reserve_queue_bytes(queued: &AtomicU64, bytes: usize) -> bool {
+    let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
+    queued
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            current
+                .checked_add(bytes)
+                .filter(|next| *next <= RUNTIME_SSH_QUEUE_MEMORY_BYTES)
+        })
+        .is_ok()
+}
+
+fn release_queue_bytes(queued: &AtomicU64, bytes: usize) {
+    let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
+    let _ = queued.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+        Some(current.saturating_sub(bytes))
+    });
 }
 
 pub struct OutputAttempt {
@@ -381,6 +641,8 @@ fn enqueue_chunk(
         }
         Err(TrySendError::Full(LogWork::Finish(_)))
         | Err(TrySendError::Disconnected(LogWork::Finish(_))) => unreachable!(),
+        Err(TrySendError::Full(LogWork::RuntimeSsh(_)))
+        | Err(TrySendError::Disconnected(LogWork::RuntimeSsh(_))) => unreachable!(),
     }
 }
 
@@ -577,6 +839,7 @@ struct ResolvedSink {
 #[derive(Clone)]
 struct EncryptedRecord {
     value: Value,
+    origin: LogOrigin,
 }
 
 struct WriterKey {
@@ -676,12 +939,14 @@ struct LogWorker {
     labels: RuntimeLabels,
     http: Arc<dyn LogHttpClient>,
     dropped: Arc<DroppedOutput>,
+    runtime_dropped: Arc<DroppedOutput>,
     writer: WriterKey,
     encryption: LessSafeKey,
     resolved: Option<ResolvedSink>,
     pending_records: VecDeque<EncryptedRecord>,
     pending_batch: Option<Value>,
     last_request: Option<Instant>,
+    origin: LogOrigin,
 }
 
 impl LogWorker {
@@ -690,33 +955,175 @@ impl LogWorker {
         labels: RuntimeLabels,
         http: Arc<dyn LogHttpClient>,
         dropped: Arc<DroppedOutput>,
+        origin: LogOrigin,
     ) -> Option<Self> {
         let writer = WriterKey::derive(&config.dek).ok()?;
         let encryption = LessSafeKey::new(UnboundKey::new(&AES_256_GCM, &config.dek).ok()?);
+        let runtime_dropped = if origin == LogOrigin::RuntimeSsh {
+            dropped.clone()
+        } else {
+            Arc::new(DroppedOutput::default())
+        };
         Some(Self {
             config,
             labels,
             http,
             dropped,
+            runtime_dropped,
             writer,
             encryption,
             resolved: None,
             pending_records: VecDeque::new(),
             pending_batch: None,
             last_request: None,
+            origin,
         })
     }
 
+    fn new_shared(
+        config: BlackboxConfig,
+        labels: RuntimeLabels,
+        http: Arc<dyn LogHttpClient>,
+        customer_dropped: Arc<DroppedOutput>,
+        runtime_dropped: Arc<DroppedOutput>,
+    ) -> Option<Self> {
+        let mut worker = Self::new(config, labels, http, customer_dropped, LogOrigin::Customer)?;
+        worker.runtime_dropped = runtime_dropped;
+        Some(worker)
+    }
+
     fn run(mut self, receiver: Receiver<LogWork>) {
+        self.run_inner(receiver, None);
+    }
+
+    fn run_prioritized(
+        mut self,
+        customer: Receiver<LogWork>,
+        runtime_ssh: Receiver<LogWork>,
+        queued_bytes: Arc<AtomicU64>,
+    ) {
+        loop {
+            match customer.try_recv() {
+                Ok(LogWork::Chunk(chunk)) => {
+                    self.admit_chunk(chunk);
+                    if let Some(acknowledge) =
+                        self.drain_prioritized(&customer, &runtime_ssh, &queued_bytes)
+                    {
+                        self.finish_prioritized(acknowledge);
+                        break;
+                    }
+                    let _ = self.flush_once();
+                    continue;
+                }
+                Ok(LogWork::Finish(acknowledge)) => {
+                    self.drain_prioritized(&customer, &runtime_ssh, &queued_bytes);
+                    self.finish_prioritized(acknowledge);
+                    break;
+                }
+                Ok(LogWork::RuntimeSsh(_)) => unreachable!(),
+                Err(TryRecvError::Disconnected | TryRecvError::Empty) => {}
+            }
+            match runtime_ssh.try_recv() {
+                Ok(LogWork::RuntimeSsh(record)) => {
+                    release_queue_bytes(&queued_bytes, record.admitted_bytes);
+                    self.admit_runtime_ssh(record);
+                    let _ = self.flush_once();
+                    continue;
+                }
+                Ok(LogWork::Chunk(_) | LogWork::Finish(_)) => unreachable!(),
+                Err(TryRecvError::Disconnected | TryRecvError::Empty) => {}
+            }
+            match customer.recv_timeout(Duration::from_millis(10)) {
+                Ok(LogWork::Chunk(chunk)) => {
+                    self.admit_chunk(chunk);
+                    if let Some(acknowledge) =
+                        self.drain_prioritized(&customer, &runtime_ssh, &queued_bytes)
+                    {
+                        self.finish_prioritized(acknowledge);
+                        break;
+                    }
+                    let _ = self.flush_once();
+                }
+                Ok(LogWork::Finish(acknowledge)) => {
+                    self.drain_prioritized(&customer, &runtime_ssh, &queued_bytes);
+                    self.finish_prioritized(acknowledge);
+                    break;
+                }
+                Ok(LogWork::RuntimeSsh(_)) => unreachable!(),
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => {
+                    self.drain_prioritized(&customer, &runtime_ssh, &queued_bytes);
+                    break;
+                }
+            }
+        }
+    }
+
+    fn drain_prioritized(
+        &mut self,
+        customer: &Receiver<LogWork>,
+        runtime_ssh: &Receiver<LogWork>,
+        queued_bytes: &AtomicU64,
+    ) -> Option<std::sync::mpsc::Sender<()>> {
+        let mut finish = None;
+        while self.pending_records.len() < MAX_BATCH_RECORDS * 2 {
+            match customer.try_recv() {
+                Ok(LogWork::Chunk(chunk)) => self.admit_chunk(chunk),
+                Ok(LogWork::Finish(acknowledge)) => {
+                    finish = Some(acknowledge);
+                    break;
+                }
+                Ok(LogWork::RuntimeSsh(_)) => unreachable!(),
+                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
+            }
+        }
+        while self.pending_records.len() < MAX_BATCH_RECORDS * 2 {
+            match runtime_ssh.try_recv() {
+                Ok(LogWork::RuntimeSsh(record)) => {
+                    release_queue_bytes(queued_bytes, record.admitted_bytes);
+                    self.admit_runtime_ssh(record);
+                }
+                Ok(LogWork::Chunk(_) | LogWork::Finish(_)) => unreachable!(),
+                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
+            }
+        }
+        finish
+    }
+
+    fn finish_prioritized(&mut self, acknowledge: std::sync::mpsc::Sender<()>) {
+        self.admit_drop_evidence_for(LogOrigin::Customer);
+        self.admit_drop_evidence_for(LogOrigin::RuntimeSsh);
+        let deadline = Instant::now() + OUTPUT_FLUSH_GRACE;
+        while !self.pending_records.is_empty() && Instant::now() < deadline {
+            if self.flush_once().is_err() {
+                break;
+            }
+        }
+        let _ = acknowledge.send(());
+    }
+
+    fn run_inner(&mut self, receiver: Receiver<LogWork>, queued_bytes: Option<&AtomicU64>) {
         loop {
             let work = match receiver.recv() {
                 Ok(work) => work,
                 Err(_) => break,
             };
+            if let (Some(queued_bytes), LogWork::RuntimeSsh(record)) = (queued_bytes, &work) {
+                release_queue_bytes(queued_bytes, record.admitted_bytes);
+            }
             match work {
                 LogWork::Chunk(chunk) => {
                     self.admit_chunk(chunk);
-                    let finish = self.drain_available(&receiver);
+                    let finish = self.drain_available(&receiver, queued_bytes);
+                    let _ = self.flush_once();
+                    if let Some(acknowledge) = finish {
+                        let _ = acknowledge.send(());
+                        break;
+                    }
+                }
+                LogWork::RuntimeSsh(record) => {
+                    self.admit_runtime_ssh(record);
+                    let finish = self.drain_available(&receiver, queued_bytes);
                     let _ = self.flush_once();
                     if let Some(acknowledge) = finish {
                         let _ = acknowledge.send(());
@@ -724,7 +1131,7 @@ impl LogWorker {
                     }
                 }
                 LogWork::Finish(acknowledge) => {
-                    let nested_finish = self.drain_available(&receiver);
+                    let nested_finish = self.drain_available(&receiver, queued_bytes);
                     self.admit_drop_evidence();
                     let _ = self.flush_once();
                     let _ = acknowledge.send(());
@@ -740,11 +1147,18 @@ impl LogWorker {
     fn drain_available(
         &mut self,
         receiver: &Receiver<LogWork>,
+        queued_bytes: Option<&AtomicU64>,
     ) -> Option<std::sync::mpsc::Sender<()>> {
         let mut finish = None;
         while self.pending_records.len() < MAX_BATCH_RECORDS {
             match receiver.try_recv() {
                 Ok(LogWork::Chunk(chunk)) => self.admit_chunk(chunk),
+                Ok(LogWork::RuntimeSsh(record)) => {
+                    if let Some(queued_bytes) = queued_bytes {
+                        release_queue_bytes(queued_bytes, record.admitted_bytes);
+                    }
+                    self.admit_runtime_ssh(record);
+                }
                 Ok(LogWork::Finish(acknowledge)) => {
                     finish = Some(acknowledge);
                     break;
@@ -757,7 +1171,13 @@ impl LogWorker {
     }
 
     fn admit_chunk(&mut self, chunk: OutputChunk) {
-        if self.pending_records.len() >= MAX_BATCH_RECORDS {
+        if self
+            .pending_records
+            .iter()
+            .filter(|record| record.origin == LogOrigin::Customer)
+            .count()
+            >= MAX_BATCH_RECORDS
+        {
             self.dropped.record(chunk.bytes.len());
             return;
         }
@@ -781,32 +1201,97 @@ impl LogWorker {
             target.extend(content.clone());
         }
         let record = self.base_record(chunk.timestamp, "runtime.cargo.output", details);
-        if let Ok(record) = self.encrypt_record(&record) {
-            self.pending_records.push_back(record);
+        if let Ok(record) = self.encrypt_record(&record, LogOrigin::Customer) {
+            if self
+                .pending_batch
+                .as_ref()
+                .is_some_and(|batch| batch["labels"]["logOrigin"].as_str() == Some("runtime_ssh"))
+            {
+                // A provider batch that has not been accepted can be rebuilt
+                // after customer output advances the shared chain.
+                self.pending_batch = None;
+            }
+            let insert_at = self
+                .pending_records
+                .iter()
+                .position(|record| record.origin == LogOrigin::RuntimeSsh)
+                .unwrap_or(self.pending_records.len());
+            self.pending_records.insert(insert_at, record);
         } else {
             self.dropped.record(chunk.bytes.len());
         }
     }
 
-    fn admit_drop_evidence(&mut self) {
-        if self.pending_records.len() >= MAX_BATCH_RECORDS {
+    fn admit_runtime_ssh(&mut self, record: RuntimeSshRecord) {
+        if self
+            .pending_records
+            .iter()
+            .filter(|record| record.origin == LogOrigin::RuntimeSsh)
+            .count()
+            >= MAX_BATCH_RECORDS
+        {
+            self.runtime_dropped.record(record.admitted_bytes);
             return;
         }
-        let Some((dropped_chunks, dropped_bytes)) = self.dropped.take() else {
+        let encrypted = self.base_record(record.timestamp, record.event, record.details);
+        if let Ok(encrypted) = self.encrypt_record(&encrypted, LogOrigin::RuntimeSsh) {
+            self.pending_records.push_back(encrypted);
+        } else {
+            self.runtime_dropped.record(record.admitted_bytes);
+        }
+    }
+
+    fn admit_drop_evidence(&mut self) {
+        self.admit_drop_evidence_for(self.origin);
+    }
+
+    fn admit_drop_evidence_for(&mut self, origin: LogOrigin) {
+        if self
+            .pending_records
+            .iter()
+            .filter(|record| record.origin == origin)
+            .count()
+            >= MAX_BATCH_RECORDS
+        {
+            return;
+        }
+        let dropped = if origin == LogOrigin::RuntimeSsh {
+            &self.runtime_dropped
+        } else {
+            &self.dropped
+        };
+        let Some((dropped_chunks, dropped_bytes)) = dropped.take() else {
             return;
         };
-        let record = self.base_record(
-            utc_timestamp(),
-            "runtime.cargo.output.dropped",
+        let details = if origin == LogOrigin::RuntimeSsh {
+            json!({
+                "providerKind": "tailscale",
+                "component": "tailscaled",
+                "format": "lifecycle",
+                "droppedLines": dropped_chunks,
+                "droppedBytes": dropped_bytes,
+                "truncated": true,
+            })
+        } else {
             json!({
                 "runtimeInstanceId": self.labels.runtime_instance_id,
                 "droppedChunks": dropped_chunks,
                 "droppedBytes": dropped_bytes,
                 "truncated": true,
-            }),
-        );
-        if let Ok(record) = self.encrypt_record(&record) {
-            self.pending_records.push_back(record);
+            })
+        };
+        let record = self.base_record(utc_timestamp(), origin.dropped_event(), details);
+        if let Ok(record) = self.encrypt_record(&record, origin) {
+            if origin == LogOrigin::Customer {
+                let insert_at = self
+                    .pending_records
+                    .iter()
+                    .position(|record| record.origin == LogOrigin::RuntimeSsh)
+                    .unwrap_or(self.pending_records.len());
+                self.pending_records.insert(insert_at, record);
+            } else {
+                self.pending_records.push_back(record);
+            }
         }
     }
 
@@ -822,7 +1307,7 @@ impl LogWorker {
         record
     }
 
-    fn encrypt_record(&self, record: &Value) -> Result<EncryptedRecord, ()> {
+    fn encrypt_record(&self, record: &Value, origin: LogOrigin) -> Result<EncryptedRecord, ()> {
         let mut iv = [0_u8; 12];
         getrandom::fill(&mut iv).map_err(|_| ())?;
         let mut plaintext = serde_json::to_vec(record).map_err(|_| ())?;
@@ -842,6 +1327,7 @@ impl LogWorker {
                 "ciphertext": URL_SAFE_NO_PAD.encode(plaintext),
                 "tag": URL_SAFE_NO_PAD.encode(tag),
             }),
+            origin,
         })
     }
 
@@ -902,10 +1388,16 @@ impl LogWorker {
 
     fn build_batch(&self) -> Result<Value, ()> {
         let resolved = self.resolved.as_ref().ok_or(())?;
+        let origin = self.pending_records.front().ok_or(())?.origin;
         let mut selected = Vec::new();
-        for record in self.pending_records.iter().take(MAX_BATCH_RECORDS) {
+        for record in self
+            .pending_records
+            .iter()
+            .take_while(|record| record.origin == origin)
+            .take(MAX_BATCH_RECORDS)
+        {
             selected.push(record.value.clone());
-            let candidate = self.batch_without_id(resolved, &selected)?;
+            let candidate = self.batch_without_id(resolved, &selected, origin)?;
             if canonical_json_bytes(&candidate).len() > MAX_BATCH_BYTES {
                 selected.pop();
                 break;
@@ -914,7 +1406,7 @@ impl LogWorker {
         if selected.is_empty() {
             return Err(());
         }
-        let mut batch = self.batch_without_id(resolved, &selected)?;
+        let mut batch = self.batch_without_id(resolved, &selected, origin)?;
         let digest = Sha256::digest(canonical_json_bytes(&batch));
         batch["batchId"] = json!(format!("0x{}", hex::encode(digest)));
         if canonical_json_bytes(&batch).len() > MAX_BATCH_BYTES {
@@ -923,7 +1415,12 @@ impl LogWorker {
         Ok(batch)
     }
 
-    fn batch_without_id(&self, resolved: &ResolvedSink, selected: &[Value]) -> Result<Value, ()> {
+    fn batch_without_id(
+        &self,
+        resolved: &ResolvedSink,
+        selected: &[Value],
+        origin: LogOrigin,
+    ) -> Result<Value, ()> {
         let count = u64::try_from(selected.len()).map_err(|_| ())?;
         let sequence_end = resolved
             .next_sequence
@@ -942,7 +1439,8 @@ impl LogWorker {
                 "applicationUid": self.labels.application_uid,
                 "deploymentId": self.labels.deployment_id,
                 "runtimeInstanceId": self.labels.runtime_instance_id,
-                "source": "runtime-cargo-supervisor",
+                "source": origin.source(),
+                "logOrigin": origin.label(),
             },
         }))
     }
@@ -1151,6 +1649,118 @@ fn without_nulls(mut value: Value) -> Value {
     value
 }
 
+fn sanitize_tailscaled_line(
+    bytes: &[u8],
+    exact_auth_key: &str,
+    input_truncated: bool,
+) -> (String, bool, bool) {
+    let truncated = input_truncated || bytes.len() > RUNTIME_SSH_LINE_BYTES;
+    let bounded = &bytes[..bytes.len().min(RUNTIME_SSH_LINE_BYTES)];
+    let mut message = String::from_utf8_lossy(bounded)
+        .trim_end_matches(['\r', '\n'])
+        .to_string();
+    let mut redacted = false;
+    if !exact_auth_key.is_empty() && message.contains(exact_auth_key) {
+        message = message.replace(exact_auth_key, "[REDACTED_AUTH_KEY]");
+        redacted = true;
+    }
+    for marker in [
+        "tskey-auth-",
+        "client_secret=",
+        "client-secret=",
+        "clientsecret=",
+        "client_secret:",
+        "client-secret:",
+        "clientsecret:",
+        "access_token=",
+        "access-token=",
+        "auth_key=",
+        "auth-key=",
+        "password=",
+        "token=",
+        "bearer ",
+    ] {
+        redacted |= redact_values_after_marker(&mut message, marker);
+    }
+    redacted |= redact_url_userinfo(&mut message);
+    (message, redacted, truncated)
+}
+
+fn redact_values_after_marker(message: &mut String, marker: &str) -> bool {
+    let mut changed = false;
+    let mut offset = 0;
+    loop {
+        let lower = message.to_ascii_lowercase();
+        let Some(relative) = lower[offset..].find(marker) else {
+            break;
+        };
+        let marker_start = offset + relative;
+        let mut value_start = marker_start + marker.len();
+        while value_start < message.len()
+            && matches!(message.as_bytes()[value_start], b' ' | b'\t' | b'"' | b'\'')
+        {
+            value_start += 1;
+        }
+        let mut value_end = value_start;
+        while value_end < message.len()
+            && !matches!(
+                message.as_bytes()[value_end],
+                b' ' | b'\t' | b'\r' | b'\n' | b'"' | b'\'' | b'&' | b',' | b';'
+            )
+        {
+            value_end += 1;
+        }
+        if value_end == value_start {
+            offset = value_start.min(message.len());
+            if offset == message.len() {
+                break;
+            }
+            continue;
+        }
+        message.replace_range(value_start..value_end, "[REDACTED]");
+        changed = true;
+        offset = value_start + "[REDACTED]".len();
+    }
+    changed
+}
+
+fn redact_url_userinfo(message: &mut String) -> bool {
+    let mut changed = false;
+    let mut offset = 0;
+    loop {
+        let Some(relative_scheme) = message[offset..].find("://") else {
+            break;
+        };
+        let authority_start = offset + relative_scheme + 3;
+        let authority_end = message[authority_start..]
+            .find(|character: char| character.is_whitespace() || character == '/')
+            .map(|relative| authority_start + relative)
+            .unwrap_or(message.len());
+        let Some(relative_at) = message[authority_start..authority_end].find('@') else {
+            offset = authority_end.min(message.len());
+            if offset == message.len() {
+                break;
+            }
+            continue;
+        };
+        let at = authority_start + relative_at;
+        message.replace_range(authority_start..at, "[REDACTED]");
+        changed = true;
+        offset = authority_start + "[REDACTED]@".len();
+    }
+    changed
+}
+
+fn unix_time_ms() -> u64 {
+    u64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::ZERO)
+            .as_millis(),
+    )
+    .unwrap_or(u64::MAX)
+}
+
 fn utc_timestamp() -> String {
     let duration = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1203,6 +1813,7 @@ mod tests {
             supervision: None,
             logging,
             logging_outage_canary: false,
+            diagnostics: None,
             access: None,
         }
     }
@@ -1266,7 +1877,8 @@ mod tests {
         let labels = RuntimeLabels::from(&bootstrap(Some(json!({"enabled": true}))));
         let http: Arc<dyn LogHttpClient> = Arc::new(PanicHttp);
         let dropped = Arc::new(DroppedOutput::default());
-        let mut worker = LogWorker::new(config, labels, http, dropped).unwrap();
+        let mut worker =
+            LogWorker::new(config, labels, http, dropped, LogOrigin::Customer).unwrap();
         worker.admit_chunk(OutputChunk {
             output_sequence: 7,
             process_attempt: 2,
@@ -1323,6 +1935,7 @@ mod tests {
         assert_eq!(batch["sequenceEnd"], 1);
         assert_eq!(batch["labels"]["runtimeInstanceId"], "instance");
         assert_eq!(batch["labels"]["source"], "runtime-cargo-supervisor");
+        assert_eq!(batch["labels"]["logOrigin"], "customer");
         assert_eq!(batch["encrypted"].as_array().unwrap().len(), 1);
         assert!(write.headers.iter().any(|(name, value)| {
             name == "authorization"
@@ -1335,7 +1948,7 @@ mod tests {
     #[test]
     fn rate_limit_records_only_bounded_drop_evidence() {
         let dropped = DroppedOutput::default();
-        let mut budget = ByteBudget::new();
+        let mut budget = ByteBudget::new(OUTPUT_BYTES_PER_SECOND);
         assert!(budget.admit(usize::try_from(OUTPUT_BYTES_PER_SECOND).unwrap()));
         assert!(!budget.admit(1));
         dropped.record(123);
@@ -1372,7 +1985,8 @@ mod tests {
         let labels = RuntimeLabels::from(&bootstrap(Some(json!({"enabled": true}))));
         let http: Arc<dyn LogHttpClient> = Arc::new(FailingHttp);
         let dropped = Arc::new(DroppedOutput::default());
-        let mut worker = LogWorker::new(config, labels, http, dropped.clone()).unwrap();
+        let mut worker =
+            LogWorker::new(config, labels, http, dropped.clone(), LogOrigin::Customer).unwrap();
         for output_sequence in 0..1_000 {
             worker.admit_chunk(OutputChunk {
                 output_sequence,
@@ -1384,6 +1998,121 @@ mod tests {
         }
         assert_eq!(worker.pending_records.len(), MAX_BATCH_RECORDS);
         assert_eq!(dropped.take(), Some((968, 968 * OUTPUT_CHUNK_BYTES as u64)));
+    }
+
+    #[test]
+    fn raw_tailscaled_lines_redact_credentials_and_bound_invalid_utf8() {
+        let exact = "tskey-auth-exact-secret";
+        let input = b"auth=tskey-auth-other client_secret=hunter2 Authorization: Bearer bearer-secret url=https://user:pass@example.com/?access_token=query-secret exact=tskey-auth-exact-secret \xff";
+        let (message, redacted, truncated) = sanitize_tailscaled_line(input, exact, false);
+        assert!(redacted);
+        assert!(!truncated);
+        for secret in [
+            "tskey-auth-other",
+            "hunter2",
+            "bearer-secret",
+            "user:pass",
+            "query-secret",
+            exact,
+        ] {
+            assert!(!message.contains(secret), "secret survived: {secret}");
+        }
+        assert!(message.contains('\u{fffd}'));
+
+        let oversized = vec![b'x'; RUNTIME_SSH_LINE_BYTES + 1];
+        let (message, _, truncated) = sanitize_tailscaled_line(&oversized, exact, false);
+        assert!(truncated);
+        assert_eq!(message.len(), RUNTIME_SSH_LINE_BYTES);
+    }
+
+    #[test]
+    fn runtime_ssh_batches_are_origin_isolated_and_plaintext_free() {
+        let config = config();
+        let labels = RuntimeLabels::from(&bootstrap(Some(json!({"enabled": true}))));
+        let http: Arc<dyn LogHttpClient> = Arc::new(PanicHttp);
+        let dropped = Arc::new(DroppedOutput::default());
+        let mut worker =
+            LogWorker::new(config, labels, http, dropped, LogOrigin::RuntimeSsh).unwrap();
+        worker.admit_runtime_ssh(RuntimeSshRecord {
+            event: "runtime.access.tailscale.stderr",
+            timestamp: "2026-08-03T12:00:00.000Z".into(),
+            details: json!({
+                "providerKind": "tailscale",
+                "component": "tailscaled",
+                "format": "raw_canary",
+                "message": "redacted daemon line",
+                "redacted": true,
+                "truncated": false,
+            }),
+            admitted_bytes: 20,
+        });
+        worker.resolved = Some(ResolvedSink {
+            sink_id: "sink".into(),
+            job_id: "job".into(),
+            write_url: "https://blackbox.test/events".into(),
+            resume_url: "https://blackbox.test/resume".into(),
+            next_sequence: 1,
+            previous_hash: None,
+        });
+        let batch = worker.build_batch().unwrap();
+        assert_eq!(batch["labels"]["logOrigin"], "runtime_ssh");
+        assert_eq!(batch["labels"]["source"], "runtime-ssh-tailscaled");
+        assert!(!batch.to_string().contains("redacted daemon line"));
+        assert_eq!(batch["encrypted"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn single_writer_prioritizes_customer_and_never_mixes_origins() {
+        let customer_dropped = Arc::new(DroppedOutput::default());
+        let runtime_dropped = Arc::new(DroppedOutput::default());
+        let mut worker = LogWorker::new_shared(
+            config(),
+            RuntimeLabels::from(&bootstrap(Some(json!({"enabled": true})))),
+            Arc::new(PanicHttp),
+            customer_dropped,
+            runtime_dropped,
+        )
+        .unwrap();
+        worker.admit_runtime_ssh(RuntimeSshRecord {
+            event: "runtime.access.ready",
+            timestamp: "2026-08-03T12:00:00.000Z".into(),
+            details: json!({"format": "lifecycle"}),
+            admitted_bytes: 10,
+        });
+        worker.admit_chunk(OutputChunk {
+            output_sequence: 1,
+            process_attempt: 0,
+            stream: "stdout",
+            timestamp: "2026-08-03T12:00:01.000Z".into(),
+            bytes: b"customer".to_vec(),
+        });
+        worker.resolved = Some(ResolvedSink {
+            sink_id: "sink".into(),
+            job_id: "job".into(),
+            write_url: "https://blackbox.test/events".into(),
+            resume_url: "https://blackbox.test/resume".into(),
+            next_sequence: 1,
+            previous_hash: None,
+        });
+        let customer = worker.build_batch().unwrap();
+        assert_eq!(customer["labels"]["logOrigin"], "customer");
+        assert_eq!(customer["encrypted"].as_array().unwrap().len(), 1);
+        worker.pending_records.pop_front();
+        let runtime = worker.build_batch().unwrap();
+        assert_eq!(runtime["labels"]["logOrigin"], "runtime_ssh");
+        assert_eq!(runtime["encrypted"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn runtime_ssh_queue_memory_is_hard_bounded() {
+        let queued = AtomicU64::new(RUNTIME_SSH_QUEUE_MEMORY_BYTES - 1);
+        assert!(reserve_queue_bytes(&queued, 1));
+        assert!(!reserve_queue_bytes(&queued, 1));
+        release_queue_bytes(
+            &queued,
+            usize::try_from(RUNTIME_SSH_QUEUE_MEMORY_BYTES).unwrap(),
+        );
+        assert_eq!(queued.load(Ordering::Acquire), 0);
     }
 
     #[test]

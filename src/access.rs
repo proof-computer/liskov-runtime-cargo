@@ -21,8 +21,10 @@ use tar::Archive;
 use thiserror::Error;
 use zeroize::{Zeroize, Zeroizing};
 
+use crate::logging::RuntimeSshLogEmitter;
 use crate::protocol::{
-    RuntimeAccessBootstrap, RuntimeAccessProviderKind, RuntimeBootstrapResponse,
+    RuntimeAccessBootstrap, RuntimeAccessLaunchProfile, RuntimeAccessProviderKind,
+    RuntimeBootstrapResponse,
 };
 
 pub const RUNTIME_SSH_CREDENTIAL_ENV: &str = "LISKOV_RUNTIME_SSH_CREDENTIAL_V1";
@@ -264,6 +266,14 @@ pub fn setup_runtime_access(
     bootstrap: &RuntimeBootstrapResponse,
     raw_credential: Option<String>,
 ) -> Result<Option<AccessSession>, AccessError> {
+    setup_runtime_access_with_logger(bootstrap, raw_credential, None)
+}
+
+pub fn setup_runtime_access_with_logger(
+    bootstrap: &RuntimeBootstrapResponse,
+    raw_credential: Option<String>,
+    provider_logger: Option<RuntimeSshLogEmitter>,
+) -> Result<Option<AccessSession>, AccessError> {
     let Some(access) = bootstrap.access.as_ref() else {
         return if raw_credential.is_none() {
             Ok(None)
@@ -276,9 +286,18 @@ pub fn setup_runtime_access(
     let credential = serde_json::from_str::<RuntimeSshCredentialV1>(&raw_credential)
         .map_err(|_| AccessError::new("access_setup_failed"))?;
     let auth_key = validate_binding(bootstrap, access, credential)?;
-    let archive = download_artifact(access)?;
+    let deadline = setup_deadline(access.setup_deadline_ms)?;
+    let archive = download_artifact(access, deadline)?;
     let root = private_root(&access.attachment_id)?;
-    let setup = setup_in_root(bootstrap, access, &root, &archive, &auth_key);
+    let setup = setup_in_root(
+        bootstrap,
+        access,
+        &root,
+        &archive,
+        &auth_key,
+        deadline,
+        provider_logger,
+    );
     match setup {
         Ok(session) => Ok(Some(session)),
         Err(error) => {
@@ -407,10 +426,14 @@ fn nested_origin_bytes(value: &Value) -> Option<[u8; 32]> {
     items.iter().find_map(nested_origin_bytes)
 }
 
-fn download_artifact(access: &RuntimeAccessBootstrap) -> Result<Vec<u8>, AccessError> {
+fn download_artifact(
+    access: &RuntimeAccessBootstrap,
+    deadline: std::time::Instant,
+) -> Result<Vec<u8>, AccessError> {
+    let timeout = remaining_timeout(deadline)?;
     let agent = ureq::AgentBuilder::new()
         .redirects(0)
-        .timeout(COMMAND_TIMEOUT)
+        .timeout(timeout)
         .build();
     let response = agent
         .get(&access.artifact.url)
@@ -461,6 +484,8 @@ fn setup_in_root(
     root: &Path,
     archive: &[u8],
     auth_key: &str,
+    deadline: std::time::Instant,
+    provider_logger: Option<RuntimeSshLogEmitter>,
 ) -> Result<AccessSession, AccessError> {
     let (tailscale, tailscaled) = extract_binaries(archive)?;
     let tailscale_path = root.join("tailscale");
@@ -472,8 +497,15 @@ fn setup_in_root(
     let socket = root.join("tailscaled.sock");
     let state_dir = root.join("state");
     std::fs::create_dir(&state_dir).map_err(|_| AccessError::new("access_setup_failed"))?;
-    let mut daemon = DaemonGuard(Some(spawn_daemon(&tailscaled_path, &socket, &state_dir)?));
-    let deadline = setup_deadline(access.setup_deadline_ms)?;
+    let daemon_deadline = subprocess_deadline(deadline)?;
+    let mut daemon = DaemonGuard(Some(spawn_daemon(
+        &tailscaled_path,
+        &socket,
+        &state_dir,
+        access.launch_profile,
+        provider_logger,
+        auth_key,
+    )?));
     while !socket.exists() {
         if let Some(status) = daemon
             .child_mut()
@@ -483,7 +515,7 @@ fn setup_in_root(
             let _ = std::fs::remove_file(&auth_path);
             return Err(daemon.startup_exit_error(status));
         }
-        if std::time::Instant::now() >= deadline {
+        if std::time::Instant::now() >= daemon_deadline {
             let _ = std::fs::remove_file(&auth_path);
             return Err(AccessError::new("access_sidecar_start_timeout"));
         }
@@ -503,7 +535,7 @@ fn setup_in_root(
             OsString::from("--accept-dns=false"),
             OsString::from("--accept-routes=false"),
         ],
-        deadline,
+        subprocess_deadline(deadline)?,
     );
     std::fs::remove_file(&auth_path).map_err(|_| AccessError::new("access_setup_failed"))?;
     up?;
@@ -514,7 +546,7 @@ fn setup_in_root(
             OsString::from("status"),
             OsString::from("--json"),
         ],
-        deadline,
+        subprocess_deadline(deadline)?,
     )?;
     let status: TailscaleStatus =
         serde_json::from_slice(&status).map_err(|_| AccessError::new("access_setup_failed"))?;
@@ -576,7 +608,7 @@ fn extract_binaries(archive: &[u8]) -> Result<(Vec<u8>, Vec<u8>), AccessError> {
             return Err(AccessError::new("access_setup_failed"));
         };
         if !matches!(name.as_str(), "tailscale" | "tailscaled") {
-            continue;
+            return Err(AccessError::new("access_setup_failed"));
         }
         if entry.header().size().unwrap_or(u64::MAX) > MAX_BINARY_BYTES {
             return Err(AccessError::new("access_setup_failed"));
@@ -621,13 +653,13 @@ fn spawn_daemon(
     binary: &Path,
     socket: &Path,
     state_dir: &Path,
+    launch_profile: Option<RuntimeAccessLaunchProfile>,
+    provider_logger: Option<RuntimeSshLogEmitter>,
+    auth_key: &str,
 ) -> Result<DaemonProcess, AccessError> {
     let mut command = Command::new(binary);
+    command.args(daemon_arguments(socket, state_dir, launch_profile));
     command
-        .arg("--tun=userspace-networking")
-        .arg("--state=mem:")
-        .arg(format!("--socket={}", socket.display()))
-        .arg(format!("--statedir={}", state_dir.display()))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
@@ -654,23 +686,42 @@ fn spawn_daemon(
         bytes: Mutex::new(Zeroizing::new(Vec::with_capacity(MAX_STARTUP_STDERR_BYTES))),
     });
     let reader_state = Arc::clone(&startup_stderr);
+    let exact_auth_key = Zeroizing::new(auth_key.to_string());
     let stderr_thread = thread::spawn(move || {
         let mut buffer = [0_u8; 4 * 1024];
+        let mut line = Vec::with_capacity(1024);
+        let mut line_truncated = false;
         while let Ok(read) = stderr.read(&mut buffer) {
             if read == 0 {
                 break;
             }
-            if !reader_state.enabled.load(Ordering::Acquire) {
-                continue;
+            if reader_state.enabled.load(Ordering::Acquire) {
+                if let Ok(mut captured) = reader_state.bytes.lock() {
+                    if reader_state.enabled.load(Ordering::Acquire) {
+                        let remaining = MAX_STARTUP_STDERR_BYTES.saturating_sub(captured.len());
+                        captured.extend_from_slice(&buffer[..read.min(remaining)]);
+                    }
+                }
             }
-            let Ok(mut captured) = reader_state.bytes.lock() else {
+            let Some(logger) = provider_logger.as_ref() else {
                 continue;
             };
-            if !reader_state.enabled.load(Ordering::Acquire) {
-                continue;
+            for byte in &buffer[..read] {
+                if *byte == b'\n' {
+                    logger.raw_tailscaled_line(&line, &exact_auth_key, line_truncated);
+                    line.clear();
+                    line_truncated = false;
+                } else if line.len() < crate::logging::RUNTIME_SSH_LINE_BYTES {
+                    line.push(*byte);
+                } else {
+                    line_truncated = true;
+                }
             }
-            let remaining = MAX_STARTUP_STDERR_BYTES.saturating_sub(captured.len());
-            captured.extend_from_slice(&buffer[..read.min(remaining)]);
+        }
+        if !line.is_empty() || line_truncated {
+            if let Some(logger) = provider_logger.as_ref() {
+                logger.raw_tailscaled_line(&line, &exact_auth_key, line_truncated);
+            }
         }
     });
     Ok(DaemonProcess {
@@ -678,6 +729,23 @@ fn spawn_daemon(
         startup_stderr,
         stderr_thread: Some(stderr_thread),
     })
+}
+
+fn daemon_arguments(
+    socket: &Path,
+    state_dir: &Path,
+    launch_profile: Option<RuntimeAccessLaunchProfile>,
+) -> Vec<OsString> {
+    let mut arguments = vec![OsString::from("--tun=userspace-networking")];
+    if launch_profile == Some(RuntimeAccessLaunchProfile::TailscaleAcurastProotV1) {
+        arguments.push(OsString::from("--netmon-mode=permission-fallback-v4"));
+    }
+    arguments.extend([
+        OsString::from("--state=mem:"),
+        OsString::from(format!("--socket={}", socket.display())),
+        OsString::from(format!("--statedir={}", state_dir.display())),
+    ]);
+    arguments
 }
 
 fn sidecar_exit_error(status: std::process::ExitStatus, startup_stderr: &[u8]) -> AccessError {
@@ -811,7 +879,28 @@ fn setup_deadline(deadline_ms: u64) -> Result<std::time::Instant, AccessError> {
     let remaining = deadline_ms
         .checked_sub(unix_time_ms().ok_or_else(|| AccessError::new("access_setup_failed"))?)
         .ok_or_else(|| AccessError::new("access_setup_failed"))?;
-    Ok(std::time::Instant::now() + Duration::from_millis(remaining).min(COMMAND_TIMEOUT))
+    Ok(std::time::Instant::now() + Duration::from_millis(remaining))
+}
+
+fn subprocess_deadline(
+    absolute_deadline: std::time::Instant,
+) -> Result<std::time::Instant, AccessError> {
+    let now = std::time::Instant::now();
+    if now >= absolute_deadline {
+        return Err(AccessError::new("access_setup_failed"));
+    }
+    Ok(absolute_deadline.min(now + COMMAND_TIMEOUT))
+}
+
+fn remaining_timeout(deadline: std::time::Instant) -> Result<Duration, AccessError> {
+    let now = std::time::Instant::now();
+    if now >= deadline {
+        return Err(AccessError::new("access_setup_failed"));
+    }
+    Ok(deadline
+        .saturating_duration_since(now)
+        .min(COMMAND_TIMEOUT)
+        .max(Duration::from_millis(1)))
 }
 
 fn unix_time_ms() -> Option<u64> {
@@ -900,6 +989,53 @@ mod tests {
             extract_binaries(&duplicate).unwrap_err().code,
             "access_setup_failed"
         );
+
+        let unexpected = archive(&[
+            ("tailscale_1.0_arm64/tailscale", b"cli"),
+            ("tailscale_1.0_arm64/tailscaled", b"daemon"),
+            ("tailscale_1.0_arm64/install.sh", b"unexpected"),
+        ]);
+        assert_eq!(
+            extract_binaries(&unexpected).unwrap_err().code,
+            "access_setup_failed"
+        );
+    }
+
+    #[test]
+    fn constrained_launch_profile_adds_only_the_netmon_argument() {
+        let socket = Path::new("/tmp/socket");
+        let state = Path::new("/tmp/state");
+        let standard = daemon_arguments(socket, state, None);
+        assert_eq!(
+            standard,
+            [
+                "--tun=userspace-networking",
+                "--state=mem:",
+                "--socket=/tmp/socket",
+                "--statedir=/tmp/state",
+            ]
+            .map(OsString::from)
+        );
+        assert_eq!(
+            daemon_arguments(
+                socket,
+                state,
+                Some(RuntimeAccessLaunchProfile::TailscaleStandardV1),
+            ),
+            standard
+        );
+        let constrained = daemon_arguments(
+            socket,
+            state,
+            Some(RuntimeAccessLaunchProfile::TailscaleAcurastProotV1),
+        );
+        assert_eq!(constrained.len(), standard.len() + 1);
+        assert_eq!(constrained[0], standard[0]);
+        assert_eq!(
+            constrained[1],
+            OsString::from("--netmon-mode=permission-fallback-v4")
+        );
+        assert_eq!(constrained[2..], standard[1..]);
     }
 
     #[test]
@@ -1052,6 +1188,7 @@ mod tests {
             expected_tailnet: "example.com".into(),
             setup_deadline_ms: deadline,
             fence: 1,
+            launch_profile: None,
             artifact: RuntimeAccessArtifact {
                 descriptor_id: "descriptor-1".into(),
                 version: "1.80.3".into(),
@@ -1075,6 +1212,7 @@ mod tests {
             supervision: None,
             logging: None,
             logging_outage_canary: false,
+            diagnostics: None,
             access: Some(access.clone()),
         };
         let raw = serde_json::json!({

@@ -90,6 +90,18 @@ without changing capture limits, local stdout/stderr, supervision, diagnostics,
 or the customer result. It is not a customer-authored policy field and never
 enables logging by itself.
 
+When Runtime SSH is attached and logging is enabled, the server may additionally
+authorize a closed `diagnostics.providerLogs` mode. `sanitized` emits typed
+setup, ready, degraded, crash, and stopped lifecycle records. The temporary
+`raw_tailscaled_stderr` mode adds only `tailscaled` stderr for an exact
+server-selected canary until its signed expiry. Every raw line is converted to
+valid UTF-8, capped at 8 KiB, and stripped of the in-memory auth key and
+recognized credential forms before encryption. Runtime SSH has its own
+64-KiB/s, 128-line, 1-MiB queue, but shares one ordered Blackbox writer with
+customer output; customer records are always serviced first and origins never
+share an encrypted batch. Provider logging failure cannot affect workload
+startup, supervision, health, or the customer exit result.
+
 ## Exit status
 
 | Status | Meaning |
