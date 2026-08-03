@@ -100,6 +100,7 @@ pub struct RuntimeEnvBootstrap {
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeAccessProviderKind {
     Tailscale,
+    Liskov,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -127,7 +128,7 @@ pub enum RuntimeAccessLaunchProfile {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeAccessBootstrap {
+pub struct TailscaleRuntimeAccessBootstrap {
     pub provider: RuntimeAccessProvider,
     pub attachment_id: String,
     pub expected_tailnet: String,
@@ -138,7 +139,7 @@ pub struct RuntimeAccessBootstrap {
     pub artifact: RuntimeAccessArtifact,
 }
 
-impl RuntimeAccessBootstrap {
+impl TailscaleRuntimeAccessBootstrap {
     fn valid(&self) -> bool {
         let url_valid = url::Url::parse(&self.artifact.url).is_ok_and(|url| {
             url.scheme() == "https"
@@ -164,6 +165,99 @@ impl RuntimeAccessBootstrap {
                 .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
             && (1..=134_217_728).contains(&self.artifact.byte_size)
             && url_valid
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ManagedRuntimeAccessProtocol {
+    LiskovAccessV0,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManagedRuntimeAccessBootstrap {
+    pub provider: RuntimeAccessProvider,
+    pub attachment_id: String,
+    pub fence: u64,
+    pub gateway_url: String,
+    pub tunnel_id: String,
+    pub protocol: ManagedRuntimeAccessProtocol,
+    pub setup_deadline_ms: u64,
+}
+
+impl ManagedRuntimeAccessBootstrap {
+    fn valid(&self) -> bool {
+        let gateway_valid = url::Url::parse(&self.gateway_url).is_ok_and(|url| {
+            url.scheme() == "wss"
+                && url.host_str().is_some()
+                && url.username().is_empty()
+                && url.password().is_none()
+                && url.query().is_none()
+                && url.fragment().is_none()
+                && matches!(url.path(), "" | "/")
+        });
+        self.provider.kind == RuntimeAccessProviderKind::Liskov
+            && !self.attachment_id.is_empty()
+            && self.attachment_id.len() <= 256
+            && self.fence > 0
+            && !self.tunnel_id.is_empty()
+            && self.tunnel_id.len() <= 256
+            && self
+                .tunnel_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+            && gateway_valid
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+pub enum RuntimeAccessBootstrap {
+    Tailscale(TailscaleRuntimeAccessBootstrap),
+    Managed(ManagedRuntimeAccessBootstrap),
+}
+
+impl RuntimeAccessBootstrap {
+    pub fn valid(&self) -> bool {
+        match self {
+            Self::Tailscale(access) => {
+                access.provider.kind == RuntimeAccessProviderKind::Tailscale && access.valid()
+            }
+            Self::Managed(access) => access.valid(),
+        }
+    }
+
+    pub fn provider_kind(&self) -> RuntimeAccessProviderKind {
+        match self {
+            Self::Tailscale(access) => access.provider.kind,
+            Self::Managed(access) => access.provider.kind,
+        }
+    }
+
+    pub fn attachment_id(&self) -> &str {
+        match self {
+            Self::Tailscale(access) => &access.attachment_id,
+            Self::Managed(access) => &access.attachment_id,
+        }
+    }
+
+    pub fn fence(&self) -> u64 {
+        match self {
+            Self::Tailscale(access) => access.fence,
+            Self::Managed(access) => access.fence,
+        }
+    }
+
+    pub fn binding_attrs(&self) -> Value {
+        json!({
+            "attachmentId": self.attachment_id(),
+            "fence": self.fence(),
+            "providerKind": match self.provider_kind() {
+                RuntimeAccessProviderKind::Tailscale => "tailscale",
+                RuntimeAccessProviderKind::Liskov => "liskov",
+            },
+        })
     }
 }
 
@@ -766,15 +860,24 @@ mod tests {
         });
         let parsed = validate_response(&request, &serde_json::to_vec(&response).unwrap()).unwrap();
         assert_eq!(
-            parsed.access.as_ref().unwrap().provider.kind,
+            parsed.access.as_ref().unwrap().provider_kind(),
             RuntimeAccessProviderKind::Tailscale
         );
-        assert_eq!(parsed.access.unwrap().launch_profile, None);
+        assert_eq!(
+            match parsed.access.unwrap() {
+                RuntimeAccessBootstrap::Tailscale(access) => access.launch_profile,
+                RuntimeAccessBootstrap::Managed(_) => panic!("expected Tailscale bootstrap"),
+            },
+            None
+        );
 
         response["access"]["launchProfile"] = json!("tailscale_acurast_proot_v1");
         let parsed = validate_response(&request, &serde_json::to_vec(&response).unwrap()).unwrap();
         assert_eq!(
-            parsed.access.unwrap().launch_profile,
+            match parsed.access.unwrap() {
+                RuntimeAccessBootstrap::Tailscale(access) => access.launch_profile,
+                RuntimeAccessBootstrap::Managed(_) => panic!("expected Tailscale bootstrap"),
+            },
             Some(RuntimeAccessLaunchProfile::TailscaleAcurastProotV1)
         );
 
@@ -809,6 +912,27 @@ mod tests {
             .unwrap()
             .remove("futureProviderConfig");
         response["access"]["launchProfile"] = json!("future_profile");
+        assert!(matches!(
+            validate_response(&request, &serde_json::to_vec(&response).unwrap()),
+            Err(ProtocolError::InvalidResponse)
+        ));
+
+        response["access"] = json!({
+            "provider": {"kind": "liskov"},
+            "attachmentId": "att-managed-1",
+            "fence": 1,
+            "gatewayUrl": "wss://access.example",
+            "tunnelId": "tunnel_managed_1",
+            "protocol": "liskov_access_v0",
+            "setupDeadlineMs": 60_000,
+        });
+        let parsed = validate_response(&request, &serde_json::to_vec(&response).unwrap()).unwrap();
+        assert_eq!(
+            parsed.access.as_ref().unwrap().provider_kind(),
+            RuntimeAccessProviderKind::Liskov
+        );
+        assert_eq!(parsed.access.unwrap().attachment_id(), "att-managed-1");
+        response["access"]["gatewayUrl"] = json!("wss://access.example?token=secret");
         assert!(matches!(
             validate_response(&request, &serde_json::to_vec(&response).unwrap()),
             Err(ProtocolError::InvalidResponse)

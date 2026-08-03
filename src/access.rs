@@ -1,4 +1,6 @@
-//! Customer-owned Tailscale adapter for the Runtime SSH private preview.
+//! Closed Runtime SSH provider adapter used after signed first contact.
+
+mod managed;
 
 use std::ffi::OsString;
 use std::fs::OpenOptions;
@@ -24,7 +26,7 @@ use zeroize::{Zeroize, Zeroizing};
 use crate::logging::RuntimeSshLogEmitter;
 use crate::protocol::{
     RuntimeAccessBootstrap, RuntimeAccessLaunchProfile, RuntimeAccessProviderKind,
-    RuntimeBootstrapResponse,
+    RuntimeBootstrapResponse, TailscaleRuntimeAccessBootstrap,
 };
 
 pub const RUNTIME_SSH_CREDENTIAL_ENV: &str = "LISKOV_RUNTIME_SSH_CREDENTIAL_V1";
@@ -51,9 +53,9 @@ impl AccessError {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct RuntimeSshCredentialV1 {
+struct TailscaleRuntimeSshCredentialV1 {
     schema: String,
-    provider: RuntimeSshCredentialProvider,
+    provider: TailscaleRuntimeSshCredentialProvider,
     organization_id: String,
     integration_id: String,
     attachment_id: String,
@@ -66,14 +68,14 @@ struct RuntimeSshCredentialV1 {
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-enum RuntimeSshCredentialProvider {
+enum TailscaleRuntimeSshCredentialProvider {
     Tailscale {
         #[serde(rename = "authKey")]
         auth_key: String,
     },
 }
 
-impl Drop for RuntimeSshCredentialProvider {
+impl Drop for TailscaleRuntimeSshCredentialProvider {
     fn drop(&mut self) {
         match self {
             Self::Tailscale { auth_key } => auth_key.zeroize(),
@@ -81,7 +83,57 @@ impl Drop for RuntimeSshCredentialProvider {
     }
 }
 
-pub struct AccessSession {
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct ManagedRuntimeSshCredentialV1 {
+    schema: String,
+    provider: ManagedRuntimeSshCredentialProvider,
+    organization_id: String,
+    attachment_id: String,
+    application_uid: String,
+    deployment_id: String,
+    job_id: String,
+    policy_digest: String,
+    fence: u64,
+    expires_at_ms: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub(super) enum ManagedRuntimeSshCredentialProvider {
+    Liskov {
+        connector_token: String,
+        operator_public_key: String,
+    },
+}
+
+impl Drop for ManagedRuntimeSshCredentialProvider {
+    fn drop(&mut self) {
+        match self {
+            Self::Liskov {
+                connector_token,
+                operator_public_key,
+            } => {
+                connector_token.zeroize();
+                operator_public_key.zeroize();
+            }
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum RuntimeSshCredentialV1 {
+    Tailscale(TailscaleRuntimeSshCredentialV1),
+    Managed(ManagedRuntimeSshCredentialV1),
+}
+
+pub enum AccessSession {
+    Tailscale(TailscaleAccessSession),
+    Managed(managed::ManagedAccessSession),
+}
+
+pub struct TailscaleAccessSession {
     daemon: DaemonProcess,
     root: PathBuf,
     pub attachment_id: String,
@@ -95,6 +147,42 @@ pub struct AccessSession {
 
 impl AccessSession {
     pub fn binding_attrs(&self) -> serde_json::Value {
+        match self {
+            Self::Tailscale(session) => session.binding_attrs(),
+            Self::Managed(session) => session.binding_attrs(),
+        }
+    }
+
+    pub fn ready_attrs(&self) -> serde_json::Value {
+        match self {
+            Self::Tailscale(session) => session.ready_attrs(),
+            Self::Managed(session) => session.ready_attrs(),
+        }
+    }
+
+    pub fn newly_crashed(&mut self) -> bool {
+        match self {
+            Self::Tailscale(session) => session.newly_crashed(),
+            Self::Managed(session) => session.newly_crashed(),
+        }
+    }
+
+    pub fn stop(&mut self) -> Result<(), AccessError> {
+        match self {
+            Self::Tailscale(session) => session.stop(),
+            Self::Managed(session) => session.stop(),
+        }
+    }
+}
+
+impl Drop for AccessSession {
+    fn drop(&mut self) {
+        let _ = self.stop();
+    }
+}
+
+impl TailscaleAccessSession {
+    fn binding_attrs(&self) -> serde_json::Value {
         serde_json::json!({
             "attachmentId": self.attachment_id,
             "fence": self.fence,
@@ -102,7 +190,7 @@ impl AccessSession {
         })
     }
 
-    pub fn ready_attrs(&self) -> serde_json::Value {
+    fn ready_attrs(&self) -> serde_json::Value {
         serde_json::json!({
             "attachmentId": self.attachment_id,
             "fence": self.fence,
@@ -114,7 +202,7 @@ impl AccessSession {
         })
     }
 
-    pub fn newly_crashed(&mut self) -> bool {
+    fn newly_crashed(&mut self) -> bool {
         if self.degraded_reported {
             return false;
         }
@@ -125,17 +213,11 @@ impl AccessSession {
         crashed
     }
 
-    pub fn stop(&mut self) -> Result<(), AccessError> {
+    fn stop(&mut self) -> Result<(), AccessError> {
         self.daemon.stop()?;
         std::fs::remove_dir_all(&self.root)
             .map_err(|_| AccessError::new("access_cleanup_failed"))?;
         Ok(())
-    }
-}
-
-impl Drop for AccessSession {
-    fn drop(&mut self) {
-        let _ = self.stop();
     }
 }
 
@@ -216,7 +298,7 @@ impl Drop for DaemonGuard {
     }
 }
 
-fn terminate_child(child: &mut Child) -> Result<(), AccessError> {
+pub(super) fn terminate_child(child: &mut Child) -> Result<(), AccessError> {
     if child
         .try_wait()
         .map_err(|_| AccessError::new("access_cleanup_failed"))?
@@ -285,32 +367,44 @@ pub fn setup_runtime_access_with_logger(
         Zeroizing::new(raw_credential.ok_or_else(|| AccessError::new("access_setup_failed"))?);
     let credential = serde_json::from_str::<RuntimeSshCredentialV1>(&raw_credential)
         .map_err(|_| AccessError::new("access_setup_failed"))?;
-    let auth_key = validate_binding(bootstrap, access, credential)?;
-    let deadline = setup_deadline(access.setup_deadline_ms)?;
-    let archive = download_artifact(access, deadline)?;
-    let root = private_root(&access.attachment_id)?;
-    let setup = setup_in_root(
-        bootstrap,
-        access,
-        &root,
-        &archive,
-        &auth_key,
-        deadline,
-        provider_logger,
-    );
-    match setup {
-        Ok(session) => Ok(Some(session)),
-        Err(error) => {
-            let _ = std::fs::remove_dir_all(root);
-            Err(error)
+    match (access, credential) {
+        (
+            RuntimeAccessBootstrap::Tailscale(access),
+            RuntimeSshCredentialV1::Tailscale(credential),
+        ) => {
+            let auth_key = validate_tailscale_binding(bootstrap, access, credential)?;
+            let deadline = setup_deadline(access.setup_deadline_ms)?;
+            let archive = download_artifact(access, deadline)?;
+            let root = private_root(&access.attachment_id)?;
+            let setup = setup_in_root(
+                bootstrap,
+                access,
+                &root,
+                &archive,
+                &auth_key,
+                deadline,
+                provider_logger,
+            );
+            match setup {
+                Ok(session) => Ok(Some(AccessSession::Tailscale(session))),
+                Err(error) => {
+                    let _ = std::fs::remove_dir_all(root);
+                    Err(error)
+                }
+            }
         }
+        (RuntimeAccessBootstrap::Managed(access), RuntimeSshCredentialV1::Managed(credential)) => {
+            managed::setup(bootstrap, access, credential)
+                .map(|session| Some(AccessSession::Managed(session)))
+        }
+        _ => Err(AccessError::new("access_setup_failed")),
     }
 }
 
-fn validate_binding(
+fn validate_tailscale_binding(
     bootstrap: &RuntimeBootstrapResponse,
-    access: &RuntimeAccessBootstrap,
-    mut credential: RuntimeSshCredentialV1,
+    access: &TailscaleRuntimeAccessBootstrap,
+    mut credential: TailscaleRuntimeSshCredentialV1,
 ) -> Result<Zeroizing<String>, AccessError> {
     let now_ms = unix_time_ms().ok_or_else(|| AccessError::new("access_setup_failed"))?;
     if credential.schema != CREDENTIAL_SCHEMA
@@ -329,7 +423,7 @@ fn validate_binding(
         return Err(AccessError::new("access_setup_failed"));
     }
     match &mut credential.provider {
-        RuntimeSshCredentialProvider::Tailscale { auth_key }
+        TailscaleRuntimeSshCredentialProvider::Tailscale { auth_key }
             if !auth_key.is_empty() && auth_key.len() <= 512 =>
         {
             Ok(Zeroizing::new(std::mem::take(auth_key)))
@@ -427,7 +521,7 @@ fn nested_origin_bytes(value: &Value) -> Option<[u8; 32]> {
 }
 
 fn download_artifact(
-    access: &RuntimeAccessBootstrap,
+    access: &TailscaleRuntimeAccessBootstrap,
     deadline: std::time::Instant,
 ) -> Result<Vec<u8>, AccessError> {
     let timeout = remaining_timeout(deadline)?;
@@ -463,7 +557,7 @@ fn download_artifact(
     Ok(bytes)
 }
 
-fn private_root(attachment_id: &str) -> Result<PathBuf, AccessError> {
+pub(super) fn private_root(attachment_id: &str) -> Result<PathBuf, AccessError> {
     let mut random = [0_u8; 8];
     getrandom::fill(&mut random).map_err(|_| AccessError::new("access_setup_failed"))?;
     let name = format!(
@@ -480,13 +574,13 @@ fn private_root(attachment_id: &str) -> Result<PathBuf, AccessError> {
 
 fn setup_in_root(
     bootstrap: &RuntimeBootstrapResponse,
-    access: &RuntimeAccessBootstrap,
+    access: &TailscaleRuntimeAccessBootstrap,
     root: &Path,
     archive: &[u8],
     auth_key: &str,
     deadline: std::time::Instant,
     provider_logger: Option<RuntimeSshLogEmitter>,
-) -> Result<AccessSession, AccessError> {
+) -> Result<TailscaleAccessSession, AccessError> {
     let (tailscale, tailscaled) = extract_binaries(archive)?;
     let tailscale_path = root.join("tailscale");
     let tailscaled_path = root.join("tailscaled");
@@ -559,7 +653,7 @@ fn setup_in_root(
     {
         return Err(AccessError::new("access_setup_failed"));
     }
-    Ok(AccessSession {
+    Ok(TailscaleAccessSession {
         daemon: daemon.take(),
         root: root.to_path_buf(),
         attachment_id: access.attachment_id.clone(),
@@ -1180,7 +1274,7 @@ mod tests {
         })
         .to_string();
         let deadline = unix_time_ms().unwrap() + 60_000;
-        let access = RuntimeAccessBootstrap {
+        let access = TailscaleRuntimeAccessBootstrap {
             provider: RuntimeAccessProvider {
                 kind: RuntimeAccessProviderKind::Tailscale,
             },
@@ -1213,7 +1307,7 @@ mod tests {
             logging: None,
             logging_outage_canary: false,
             diagnostics: None,
-            access: Some(access.clone()),
+            access: Some(RuntimeAccessBootstrap::Tailscale(access.clone())),
         };
         let raw = serde_json::json!({
             "schema": CREDENTIAL_SCHEMA,
@@ -1227,18 +1321,20 @@ mod tests {
             "policyDigest": "sha256:policy",
             "expiresAtMs": deadline,
         });
-        let credential: RuntimeSshCredentialV1 = serde_json::from_value(raw.clone()).unwrap();
+        let credential: TailscaleRuntimeSshCredentialV1 =
+            serde_json::from_value(raw.clone()).unwrap();
         assert_eq!(
-            validate_binding(&bootstrap, &access, credential)
+            validate_tailscale_binding(&bootstrap, &access, credential)
                 .unwrap()
                 .as_str(),
             "tskey-auth-secret"
         );
         let mut substituted = raw;
         substituted["jobId"] = serde_json::json!("other-job");
-        let credential: RuntimeSshCredentialV1 = serde_json::from_value(substituted).unwrap();
+        let credential: TailscaleRuntimeSshCredentialV1 =
+            serde_json::from_value(substituted).unwrap();
         assert_eq!(
-            validate_binding(&bootstrap, &access, credential)
+            validate_tailscale_binding(&bootstrap, &access, credential)
                 .unwrap_err()
                 .code,
             "access_setup_failed"
