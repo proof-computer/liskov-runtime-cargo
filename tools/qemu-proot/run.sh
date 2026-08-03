@@ -97,9 +97,10 @@ rootfs="${emulator_root}/${rootfs_name}"
 }
 mkdir -p "${rootfs}/root" "${rootfs}/workspace"
 
+qemu_aarch64=$(command -v qemu-aarch64-static)
 proot_args=(
   proot
-  -q "$(command -v qemu-aarch64-static)"
+  -q "${qemu_aarch64}"
   -0
   --kill-on-exit
   --link2symlink
@@ -109,6 +110,7 @@ proot_args=(
   -b /sys
   -b /dev/pts
   -b /workspace
+  -b "${qemu_aarch64}:/tmp/liskov-qemu-aarch64-static"
   -w /root
 )
 if [[ ${self_test} -eq 1 ]]; then

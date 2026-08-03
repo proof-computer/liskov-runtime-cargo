@@ -54,6 +54,13 @@ host_key=${private_root}/dropbear-ed25519-host-key
 operator_key=${private_root}/operator-ed25519
 pid_file=${private_root}/dropbear.pid
 known_hosts=${private_root}/known_hosts
+dropbear_log=${private_root}/dropbear.log
+openssh_log=${private_root}/openssh.log
+qemu_aarch64=/tmp/liskov-qemu-aarch64-static
+if [ ! -x "${qemu_aarch64}" ]; then
+  echo "managed access smoke: explicit QEMU runner is unavailable" >&2
+  exit 2
+fi
 
 "${dropbearkey}" -t ed25519 -f "${host_key}" >/dev/null
 chmod 0600 "${host_key}"
@@ -80,12 +87,16 @@ if kill -0 "${low_port_pid}" 2>/dev/null; then
 fi
 wait "${low_port_pid}" 2>/dev/null || true
 
-"${dropbear}" -F -E -s -g -j -k \
+# Dropbear re-executes accepted connections through /proc/self/fd for ASLR.
+# QEMU user mode cannot redispatch that anonymous AArch64 executable, so make
+# argv[0] intentionally unopenable and exercise Dropbear's straight-fork
+# fallback. The release binary and production hardening flags remain exact.
+"${qemu_aarch64}" -0 /tmp/liskov-dropbear-qemu-no-reexec "${dropbear}" -F -E -s -g -j -k \
   -p 127.0.0.1:2222 \
   -r "${host_key}" \
   -D "${authorization_dir}" \
   -P "${pid_file}" \
-  >/dev/null 2>&1 &
+  >"${dropbear_log}" 2>&1 &
 dropbear_pid=$!
 sleep 1
 kill -0 "${dropbear_pid}"
@@ -102,8 +113,9 @@ printf 'liskov-managed-canary %s\n' "${host_public_key}" >"${known_hosts}"
 chmod 0600 "${known_hosts}"
 
 marker=liskov-managed-qemu-proot-marker
+set +e
 observed=$(
-  "${stock_loader}" --library-path "${stock_library_dir}" "${ssh_client}" -T \
+  "${stock_loader}" --library-path "${stock_library_dir}" "${ssh_client}" -vvv -T \
     -o BatchMode=yes \
     -o ClearAllForwardings=yes \
     -o HostKeyAlias=liskov-managed-canary \
@@ -113,8 +125,17 @@ observed=$(
     -o StrictHostKeyChecking=yes \
     -o "UserKnownHostsFile=${known_hosts}" \
     root@liskov-managed-canary \
-    "test -r /etc/os-release && test -z \"\${LISKOV_RUNTIME_SSH_CREDENTIAL_V1-}\" && printf '%s' '${marker}'"
+    "test -r /etc/os-release && test -z \"\${LISKOV_RUNTIME_SSH_CREDENTIAL_V1-}\" && printf '%s' '${marker}'" \
+    2>"${openssh_log}"
 )
+ssh_status=$?
+set -e
+if [ "${ssh_status}" -ne 0 ]; then
+  echo "managed access smoke: stock OpenSSH failed with status ${ssh_status}" >&2
+  sed -n '1,160p' "${openssh_log}" >&2
+  sed -n '1,120p' "${dropbear_log}" >&2
+  exit "${ssh_status}"
+fi
 test "${observed}" = "${marker}"
 
 # Access-sidecar failure is independent of the customer's exact exit result.

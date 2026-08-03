@@ -246,6 +246,12 @@ binds, `/root` as its working directory, and the documented `PATH` and `HOME`.
 The Liskov `getifaddrs` loopback shim is preloaded by default, as it is in the
 generated Cargo launcher.
 
+The managed-access smoke uses the release Dropbear binary and production
+hardening flags. For that smoke only, it gives QEMU an unopenable `argv[0]` so
+Dropbear takes its built-in straight-fork fallback: QEMU user mode cannot
+redispatch Dropbear's per-connection `/proc/self/fd` AArch64 re-exec. Native
+AArch64 execution retains the normal per-connection re-exec behavior.
+
 `processor-like` leaves route netlink available. That matches Acurast's current
 documentation, which says PRoot can expose Android's real interfaces through
 netlink. `netlink-denied` is a deliberate seccomp fault profile which returns
