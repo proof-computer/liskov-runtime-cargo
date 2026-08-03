@@ -74,6 +74,16 @@ jobs:
           install -m 0755 /usr/bin/ssh candidate-dist/test-openssh
           install -m 0755 /usr/bin/ssh-keygen candidate-dist/test-ssh-keygen
           install -m 0755 /usr/bin/nc candidate-dist/test-nc
+          install -m 0755 /lib/ld-linux-aarch64.so.1 candidate-dist/test-ld-linux
+          mkdir candidate-dist/test-libs
+          mapfile -t stock_client_libraries < <(
+            ldd /usr/bin/ssh /usr/bin/ssh-keygen /usr/bin/nc \
+              | awk '/=> \/.*/ { print $3 } /^\// { print $1 }' \
+              | sort -u
+          )
+          for library in "${stock_client_libraries[@]}"; do
+            install -m 0644 "$library" "candidate-dist/test-libs/$(basename "$library")"
+          done
       - name: Upload exact AArch64 candidate
         uses: actions/upload-artifact@v4
         with:
@@ -104,7 +114,8 @@ jobs:
             candidate/liskov-dropbearkey \
             candidate/test-openssh \
             candidate/test-ssh-keygen \
-            candidate/test-nc
+            candidate/test-nc \
+            candidate/test-ld-linux
       - name: Exercise helper under QEMU/PRoot
         run: scripts/smoke-qemu-proot.sh candidate/liskov-runtime-contact
       - name: Exercise reusable local emulator profiles
@@ -117,6 +128,8 @@ jobs:
             /workspace/tools/qemu-proot/managed-access-smoke.sh \
             /workspace/candidate/liskov-dropbear \
             /workspace/candidate/liskov-dropbearkey \
+            /workspace/candidate/test-ld-linux \
+            /workspace/candidate/test-libs \
             /workspace/candidate/test-openssh \
             /workspace/candidate/test-ssh-keygen \
             /workspace/candidate/test-nc

@@ -1,22 +1,28 @@
 #!/bin/sh
 set -eu
 
-if [ "$#" -ne 5 ]; then
-  echo "usage: $0 <liskov-dropbear> <liskov-dropbearkey> <stock-ssh> <stock-ssh-keygen> <stock-nc>" >&2
+if [ "$#" -ne 7 ]; then
+  echo "usage: $0 <liskov-dropbear> <liskov-dropbearkey> <stock-loader> <stock-library-dir> <stock-ssh> <stock-ssh-keygen> <stock-nc>" >&2
   exit 2
 fi
 
 dropbear=$1
 dropbearkey=$2
-ssh_client=$3
-ssh_keygen=$4
-netcat=$5
-for artifact in "${dropbear}" "${dropbearkey}" "${ssh_client}" "${ssh_keygen}" "${netcat}"; do
+stock_loader=$3
+stock_library_dir=$4
+ssh_client=$5
+ssh_keygen=$6
+netcat=$7
+for artifact in "${dropbear}" "${dropbearkey}" "${stock_loader}" "${ssh_client}" "${ssh_keygen}" "${netcat}"; do
   if [ ! -f "${artifact}" ] || [ ! -x "${artifact}" ]; then
     echo "managed access smoke: injected test artifact is unavailable" >&2
     exit 2
   fi
 done
+if [ ! -d "${stock_library_dir}" ]; then
+  echo "managed access smoke: stock client library directory is unavailable" >&2
+  exit 2
+fi
 
 private_root=/tmp/liskov-managed-access-smoke
 dropbear_pid=
@@ -51,7 +57,8 @@ known_hosts=${private_root}/known_hosts
 
 "${dropbearkey}" -t ed25519 -f "${host_key}" >/dev/null
 chmod 0600 "${host_key}"
-"${ssh_keygen}" -q -t ed25519 -N '' -f "${operator_key}"
+"${stock_loader}" --library-path "${stock_library_dir}" \
+  "${ssh_keygen}" -q -t ed25519 -N '' -f "${operator_key}"
 chmod 0600 "${operator_key}"
 cp "${operator_key}.pub" "${authorization_dir}/authorized_keys"
 chmod 0600 "${authorization_dir}/authorized_keys"
@@ -96,13 +103,13 @@ chmod 0600 "${known_hosts}"
 
 marker=liskov-managed-qemu-proot-marker
 observed=$(
-  "${ssh_client}" -T \
+  "${stock_loader}" --library-path "${stock_library_dir}" "${ssh_client}" -T \
     -o BatchMode=yes \
     -o ClearAllForwardings=yes \
     -o HostKeyAlias=liskov-managed-canary \
     -o IdentitiesOnly=yes \
     -o "IdentityFile=${operator_key}" \
-    -o "ProxyCommand=${netcat} 127.0.0.1 2222" \
+    -o "ProxyCommand=${stock_loader} --library-path ${stock_library_dir} ${netcat} 127.0.0.1 2222" \
     -o StrictHostKeyChecking=yes \
     -o "UserKnownHostsFile=${known_hosts}" \
     root@liskov-managed-canary \

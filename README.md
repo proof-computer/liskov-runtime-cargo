@@ -227,6 +227,8 @@ scripts/run-qemu-proot-runtime.sh --no-shim -- \
   /workspace/tools/qemu-proot/managed-access-smoke.sh \
   /workspace/candidate/liskov-dropbear \
   /workspace/candidate/liskov-dropbearkey \
+  /workspace/candidate/test-ld-linux \
+  /workspace/candidate/test-libs \
   /workspace/candidate/test-openssh \
   /workspace/candidate/test-ssh-keygen \
   /workspace/candidate/test-nc
@@ -260,13 +262,13 @@ a mode-0600 file below the selected workspace and let the candidate consume the
 file.
 
 The managed-access smoke injects the same pinned static Dropbear and keygen
-companions as the release bundle plus test-only stock OpenSSH and netcat
-binaries staged by the native ARM runner. It confirms port 22 is denied, starts
-the fixed loopback port-2222 Dropbear command, and uses stock OpenSSH through a
-local byte relay with a pinned host key. It performs no package-manager
-operation inside the maintained runtime image. The stock client binaries are
-not release assets. The smoke also confirms killing the access sidecar does not
-change an independently running customer's exact exit.
+companions as the release bundle plus the native ARM runner's test-only stock
+OpenSSH/netcat binaries, loader, and exact shared-library closure. It confirms
+port 22 is denied, starts the fixed loopback port-2222 Dropbear command, and
+uses stock OpenSSH through a local byte relay with a pinned host key. It
+performs no package-manager operation inside the maintained runtime image. The
+stock client bundle is not a release asset. The smoke also confirms killing the
+access sidecar does not change an independently running customer's exact exit.
 
 ### Opt-in Tailscale SaaS Runtime SSH gate
 
