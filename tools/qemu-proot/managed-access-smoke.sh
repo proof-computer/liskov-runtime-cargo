@@ -35,7 +35,7 @@ for option in -D -F -E -s -g -j -k -p -r -P; do
   case "${help}" in
     *"${option}"*) ;;
     *)
-      echo "managed access smoke: Dropbear option missing" >&2
+      echo "managed access smoke: Dropbear option missing: ${option}" >&2
       exit 1
       ;;
   esac

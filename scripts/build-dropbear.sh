@@ -30,10 +30,11 @@ source_dir="${build_root}/dropbear-${version}"
   cd "$source_dir"
   # Configure must see the static mode before its hardening probes so it skips
   # PIE flags; setting STATIC only at make time leaves a PT_INTERP segment.
+  # Keep syslog support compiled so the fixed runtime invocation can use -E
+  # to route Dropbear diagnostics exclusively to its supervised stderr.
   CC=musl-gcc ./configure \
     --enable-static \
     --disable-zlib \
-    --disable-syslog \
     --disable-lastlog \
     --disable-utmp \
     --disable-utmpx \
