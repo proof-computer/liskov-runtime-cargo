@@ -37,7 +37,7 @@ jobs:
         run: |
           rustup target add aarch64-unknown-linux-musl
           sudo apt-get update
-          sudo apt-get install --yes binutils file musl-tools
+          sudo apt-get install --yes binutils file musl-tools netcat-openbsd openssh-client
       - name: Build release helper
         run: cargo build --release --locked --target aarch64-unknown-linux-musl --bin liskov-runtime-contact
       - name: Build pinned static Dropbear toolchain
@@ -71,6 +71,9 @@ jobs:
           install -m 0755 target/aarch64-unknown-linux-musl/release/liskov-runtime-contact candidate-dist/liskov-runtime-contact
           install -m 0755 target/dropbear-static/liskov-dropbear candidate-dist/liskov-dropbear
           install -m 0755 target/dropbear-static/liskov-dropbearkey candidate-dist/liskov-dropbearkey
+          install -m 0755 /usr/bin/ssh candidate-dist/test-openssh
+          install -m 0755 /usr/bin/ssh-keygen candidate-dist/test-ssh-keygen
+          install -m 0755 /usr/bin/nc candidate-dist/test-nc
       - name: Upload exact AArch64 candidate
         uses: actions/upload-artifact@v4
         with:
@@ -104,7 +107,10 @@ jobs:
           scripts/run-qemu-proot-runtime.sh --no-shim -- \
             /workspace/tools/qemu-proot/managed-access-smoke.sh \
             /workspace/candidate/liskov-dropbear \
-            /workspace/candidate/liskov-dropbearkey
+            /workspace/candidate/liskov-dropbearkey \
+            /workspace/candidate/test-openssh \
+            /workspace/candidate/test-ssh-keygen \
+            /workspace/candidate/test-nc
       - name: Validate opt-in provider-real gate syntax
         run: |
           bash -n scripts/test-tailscale-saas-runtime-ssh.sh

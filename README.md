@@ -223,7 +223,13 @@ Liskov Debian rootfs without installing QEMU or PRoot on the workstation:
 scripts/run-qemu-proot-runtime.sh --self-test
 scripts/run-qemu-proot-runtime.sh -- /workspace/path/to/aarch64-candidate --version
 scripts/run-qemu-proot-runtime.sh --profile netlink-denied --self-test
-scripts/run-qemu-proot-runtime.sh --no-shim -- /workspace/tools/qemu-proot/managed-access-smoke.sh
+scripts/run-qemu-proot-runtime.sh --no-shim -- \
+  /workspace/tools/qemu-proot/managed-access-smoke.sh \
+  /workspace/candidate/liskov-dropbear \
+  /workspace/candidate/liskov-dropbearkey \
+  /workspace/candidate/test-openssh \
+  /workspace/candidate/test-ssh-keygen \
+  /workspace/candidate/test-nc
 ```
 
 The wrapper bind-mounts the invocation directory read-only at `/workspace` and
@@ -254,11 +260,13 @@ a mode-0600 file below the selected workspace and let the candidate consume the
 file.
 
 The managed-access smoke injects the same pinned static Dropbear and keygen
-companions as the release bundle, confirms port 22 is denied, starts the fixed
-loopback port-2222 Dropbear command, and uses stock OpenSSH through a local byte
-relay with a pinned host key. It performs no package-manager operation. It also
-confirms killing the access sidecar does not change an independently running
-customer's exact exit.
+companions as the release bundle plus test-only stock OpenSSH and netcat
+binaries staged by the native ARM runner. It confirms port 22 is denied, starts
+the fixed loopback port-2222 Dropbear command, and uses stock OpenSSH through a
+local byte relay with a pinned host key. It performs no package-manager
+operation inside the maintained runtime image. The stock client binaries are
+not release assets. The smoke also confirms killing the access sidecar does not
+change an independently running customer's exact exit.
 
 ### Opt-in Tailscale SaaS Runtime SSH gate
 
