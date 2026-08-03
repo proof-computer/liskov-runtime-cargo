@@ -28,7 +28,10 @@ source_dir="${build_root}/dropbear-${version}"
 
 (
   cd "$source_dir"
+  # Configure must see the static mode before its hardening probes so it skips
+  # PIE flags; setting STATIC only at make time leaves a PT_INTERP segment.
   CC=musl-gcc ./configure \
+    --enable-static \
     --disable-zlib \
     --disable-syslog \
     --disable-lastlog \
@@ -42,6 +45,13 @@ source_dir="${build_root}/dropbear-${version}"
     --disable-openpty
   make -j2 PROGRAMS="dropbear dropbearkey" STATIC=1
 )
+
+for artifact in "${source_dir}/dropbear" "${source_dir}/dropbearkey"; do
+  if readelf -l "$artifact" | grep -q 'Requesting program interpreter'; then
+    echo "Dropbear artifact unexpectedly contains a dynamic interpreter" >&2
+    exit 1
+  fi
+done
 
 mkdir -p "$output_dir"
 install -m 0755 "${source_dir}/dropbear" "${output_dir}/liskov-dropbear"
