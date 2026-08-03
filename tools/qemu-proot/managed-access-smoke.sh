@@ -1,6 +1,26 @@
 #!/bin/sh
 set -eu
 
+if [ "$#" -ne 2 ]; then
+  echo "usage: $0 <liskov-dropbear> <liskov-dropbearkey>" >&2
+  exit 2
+fi
+
+dropbear=$1
+dropbearkey=$2
+for artifact in "${dropbear}" "${dropbearkey}"; do
+  if [ ! -f "${artifact}" ] || [ ! -x "${artifact}" ]; then
+    echo "managed access smoke: injected toolchain artifact is unavailable" >&2
+    exit 2
+  fi
+done
+for tool in ssh ssh-keygen nc; do
+  command -v "${tool}" >/dev/null || {
+    echo "managed access smoke: maintained image lacks ${tool}" >&2
+    exit 2
+  }
+done
+
 private_root=/tmp/liskov-managed-access-smoke
 dropbear_pid=
 
@@ -13,13 +33,7 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
-# The maintained image has no package index. Refresh it, then keep the actual
-# compatibility install identical to the helper's required no-shell argv.
-apt-get update
-apt-get install -y dropbear
-apt-get install -y openssh-client netcat-openbsd
-
-help=$(dropbear -h 2>&1 || true)
+help=$("${dropbear}" -h 2>&1 || true)
 for option in -D -F -E -s -g -j -k -p -r -P; do
   case "${help}" in
     *"${option}"*) ;;
@@ -38,7 +52,7 @@ operator_key=${private_root}/operator-ed25519
 pid_file=${private_root}/dropbear.pid
 known_hosts=${private_root}/known_hosts
 
-dropbearkey -t ed25519 -f "${host_key}" >/dev/null
+"${dropbearkey}" -t ed25519 -f "${host_key}" >/dev/null
 chmod 0600 "${host_key}"
 ssh-keygen -q -t ed25519 -N '' -f "${operator_key}"
 chmod 0600 "${operator_key}"
@@ -46,7 +60,7 @@ cp "${operator_key}.pub" "${authorization_dir}/authorized_keys"
 chmod 0600 "${authorization_dir}/authorized_keys"
 
 # The processor-shaped container fixes unprivileged_port_start at 1024.
-dropbear -F -E -s -g -j -k \
+"${dropbear}" -F -E -s -g -j -k \
   -p 127.0.0.1:22 \
   -r "${host_key}" \
   -D "${authorization_dir}" \
@@ -62,7 +76,7 @@ if kill -0 "${low_port_pid}" 2>/dev/null; then
 fi
 wait "${low_port_pid}" 2>/dev/null || true
 
-dropbear -F -E -s -g -j -k \
+"${dropbear}" -F -E -s -g -j -k \
   -p 127.0.0.1:2222 \
   -r "${host_key}" \
   -D "${authorization_dir}" \
@@ -72,7 +86,7 @@ dropbear_pid=$!
 sleep 1
 kill -0 "${dropbear_pid}"
 
-host_public_key=$(dropbearkey -y -f "${host_key}" 2>/dev/null | sed -n 's/^\(ssh-ed25519 [^ ]*\).*$/\1/p')
+host_public_key=$("${dropbearkey}" -y -f "${host_key}" 2>/dev/null | sed -n 's/^\(ssh-ed25519 [^ ]*\).*$/\1/p')
 case "${host_public_key}" in
   "ssh-ed25519 "*) ;;
   *)
@@ -111,4 +125,4 @@ customer_status=$?
 set -e
 test "${customer_status}" -eq 23
 
-echo "managed access smoke passed: low-port=denied loopback-2222=openssh customer-exit=23"
+echo "managed access smoke passed: injected-static-toolchain low-port=denied loopback-2222=openssh customer-exit=23"

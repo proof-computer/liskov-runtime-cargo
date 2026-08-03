@@ -40,6 +40,12 @@ jobs:
           sudo apt-get install --yes binutils file musl-tools
       - name: Build release helper
         run: cargo build --release --locked --target aarch64-unknown-linux-musl --bin liskov-runtime-contact
+      - name: Build pinned static Dropbear toolchain
+        run: |
+          curl --fail --location --silent --show-error \
+            --output /tmp/dropbear-2026.94.tar.bz2 \
+            https://matt.ucc.asn.au/dropbear/releases/dropbear-2026.94.tar.bz2
+          scripts/build-dropbear.sh /tmp/dropbear-2026.94.tar.bz2 target/dropbear-static
       - name: Verify executable and static ELF
         run: |
           artifact=target/aarch64-unknown-linux-musl/release/liskov-runtime-contact
@@ -51,11 +57,25 @@ jobs:
             echo "artifact unexpectedly contains a dynamic interpreter" >&2
             exit 1
           fi
+          for artifact in target/dropbear-static/liskov-dropbear target/dropbear-static/liskov-dropbearkey; do
+            file "$artifact" | grep -q 'ELF 64-bit LSB.*ARM aarch64'
+            readelf -h "$artifact" | grep -q 'Machine:.*AArch64'
+            if readelf -l "$artifact" | grep -q 'Requesting program interpreter'; then
+              echo "$artifact unexpectedly contains a dynamic interpreter" >&2
+              exit 1
+            fi
+          done
+      - name: Stage exact runtime toolchain candidate
+        run: |
+          mkdir candidate-dist
+          install -m 0755 target/aarch64-unknown-linux-musl/release/liskov-runtime-contact candidate-dist/liskov-runtime-contact
+          install -m 0755 target/dropbear-static/liskov-dropbear candidate-dist/liskov-dropbear
+          install -m 0755 target/dropbear-static/liskov-dropbearkey candidate-dist/liskov-dropbearkey
       - name: Upload exact AArch64 candidate
         uses: actions/upload-artifact@v4
         with:
           name: liskov-runtime-contact-aarch64-candidate
-          path: target/aarch64-unknown-linux-musl/release/liskov-runtime-contact
+          path: candidate-dist
           if-no-files-found: error
 
   qemu-proot:
@@ -80,7 +100,11 @@ jobs:
           scripts/run-qemu-proot-runtime.sh --self-test
           scripts/run-qemu-proot-runtime.sh --profile netlink-denied --self-test
       - name: Exercise managed Dropbear access through stock OpenSSH
-        run: scripts/run-qemu-proot-runtime.sh --no-shim -- /workspace/tools/qemu-proot/managed-access-smoke.sh
+        run: |
+          scripts/run-qemu-proot-runtime.sh --no-shim -- \
+            /workspace/tools/qemu-proot/managed-access-smoke.sh \
+            /workspace/candidate/liskov-dropbear \
+            /workspace/candidate/liskov-dropbearkey
       - name: Validate opt-in provider-real gate syntax
         run: |
           bash -n scripts/test-tailscale-saas-runtime-ssh.sh

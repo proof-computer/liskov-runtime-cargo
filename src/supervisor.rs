@@ -1268,7 +1268,7 @@ mod tests {
             "serverTimeMs": 1,
             "scheduleEndMs": 60_001,
         }));
-        never.access = Some(RuntimeAccessBootstrap::Managed(
+        never.access = Some(RuntimeAccessBootstrap::Managed(Box::new(
             crate::protocol::ManagedRuntimeAccessBootstrap {
                 provider: crate::protocol::RuntimeAccessProvider {
                     kind: crate::protocol::RuntimeAccessProviderKind::Liskov,
@@ -1279,8 +1279,11 @@ mod tests {
                 tunnel_id: "tunnel_managed_test".into(),
                 protocol: crate::protocol::ManagedRuntimeAccessProtocol::LiskovAccessV0,
                 setup_deadline_ms: u64::MAX,
+                binding: None,
+                authorized_key_fingerprints: Vec::new(),
+                toolchain: None,
             },
-        ));
+        )));
         let bridge = Arc::new(crate::bridge::UnixBridge::new("unused-test-bridge").unwrap());
         assert_eq!(
             supervise_with_environment_and_access(

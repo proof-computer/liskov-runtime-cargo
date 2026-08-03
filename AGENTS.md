@@ -2,7 +2,7 @@
 
 This repository owns native first contact for Liskov-managed Acurast
 Cargo/PRoot workloads. It produces the static AArch64
-`liskov-runtime-contact` helper.
+`liskov-runtime-contact` helper and its pinned static Dropbear companions.
 
 ## Scope
 
@@ -12,7 +12,8 @@ Cargo/PRoot workloads. It produces the static AArch64
   retrieval, and exact customer-process handoff. Lockbox, provider adapters,
   and bootstrap ZIP integration remain separate work.
 - Distribution is through GitHub Releases, not crates.io and not a runtime
-  download.
+  download. Release-manifest v2 separately identifies and attests the helper,
+  Dropbear server, and Dropbear key generator.
 
 ## Security invariants
 

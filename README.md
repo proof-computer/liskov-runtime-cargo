@@ -182,13 +182,18 @@ Each release publishes:
 ```text
 liskov-runtime-contact-v<VERSION>-aarch64-unknown-linux-musl
 liskov-runtime-contact-v<VERSION>-aarch64-unknown-linux-musl.tar.gz
+liskov-dropbear-2026.94-v<VERSION>-aarch64-unknown-linux-musl
+liskov-dropbearkey-2026.94-v<VERSION>-aarch64-unknown-linux-musl
 runtime-contact-release.json
 SHA256SUMS
 ```
 
-The raw binary, archive, and release manifest are attested. The manifest binds
-the immutable tag and source commit to their exact digests and byte sizes. The
-archive contains the helper binary, this README, and the Apache-2.0 license.
+The raw helper, the two static Dropbear executables, and release-manifest v2
+are attested separately. The manifest binds the immutable tag and source commit
+to every exact digest and byte size. The archive contains the helper and its
+fixed sibling `liskov-dropbear` and `liskov-dropbearkey` executables, plus this
+README and the Apache-2.0 license. Runtime access verifies all three executable
+digests before use and never installs packages inside the customer image.
 Verify the checksums before use:
 
 ```sh
@@ -248,11 +253,12 @@ final processor canary remains required. Do not put auth keys in argv; provide
 a mode-0600 file below the selected workspace and let the candidate consume the
 file.
 
-The managed-access smoke installs the same Debian Dropbear package with the
-helper's exact `apt-get install -y dropbear` argv, confirms port 22 is denied,
-starts the fixed loopback port-2222 Dropbear command, and uses stock OpenSSH
-through a local byte relay with a pinned host key. It also confirms killing the
-access sidecar does not change an independently running customer's exact exit.
+The managed-access smoke injects the same pinned static Dropbear and keygen
+companions as the release bundle, confirms port 22 is denied, starts the fixed
+loopback port-2222 Dropbear command, and uses stock OpenSSH through a local byte
+relay with a pinned host key. It performs no package-manager operation. It also
+confirms killing the access sidecar does not change an independently running
+customer's exact exit.
 
 ### Opt-in Tailscale SaaS Runtime SSH gate
 
