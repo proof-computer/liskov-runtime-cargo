@@ -96,6 +96,15 @@ jobs:
         with:
           name: liskov-runtime-contact-aarch64-candidate
           path: candidate
+      - name: Restore exact candidate executable modes
+        run: |
+          chmod 0755 \
+            candidate/liskov-runtime-contact \
+            candidate/liskov-dropbear \
+            candidate/liskov-dropbearkey \
+            candidate/test-openssh \
+            candidate/test-ssh-keygen \
+            candidate/test-nc
       - name: Exercise helper under QEMU/PRoot
         run: scripts/smoke-qemu-proot.sh candidate/liskov-runtime-contact
       - name: Exercise reusable local emulator profiles
