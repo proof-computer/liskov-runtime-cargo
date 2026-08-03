@@ -24,9 +24,9 @@ use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use zeroize::{Zeroize, Zeroizing};
 
 use super::{
-    AccessError, CREDENTIAL_SCHEMA, ManagedRuntimeSshCredentialProvider,
-    ManagedRuntimeSshCredentialV1, private_root, runtime_job_ids_match, terminate_child,
-    unix_time_ms,
+    AccessError, CREDENTIAL_SCHEMA, MANAGED_CREDENTIAL_SCHEMA_V2, ManagedRuntimeSshCredential,
+    ManagedRuntimeSshCredentialProvider, ManagedRuntimeSshCredentialProviderV2, private_root,
+    runtime_job_ids_match, terminate_child, unix_time_ms,
 };
 use crate::protocol::{
     ManagedRuntimeAccessBootstrap, ManagedRuntimeAccessProtocol, RuntimeAccessProviderKind,
@@ -39,8 +39,12 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_COMMAND_OUTPUT: usize = 64 * 1024;
 const MAX_FRAME_BYTES: usize = 64 * 1024;
 const MAX_DIRECTION_BYTES: u64 = 1024 * 1024 * 1024;
-const CONNECTOR_SUBPROTOCOL: &str = "liskov-access.v0";
+const CONNECTOR_SUBPROTOCOL_V0: &str = "liskov-access.v0";
+const CONNECTOR_SUBPROTOCOL_V1: &str = "liskov-access.v1";
 const FIXED_SSH_TARGET: &str = "127.0.0.1:2222";
+const DROPBEAR_FILENAME: &str = "liskov-dropbear";
+const DROPBEARKEY_FILENAME: &str = "liskov-dropbearkey";
+const MAX_TOOLCHAIN_BINARY_BYTES: u64 = 32 * 1024 * 1024;
 
 pub struct ManagedAccessSession {
     dropbear: Child,
@@ -133,7 +137,7 @@ impl Drop for ConnectorWorker {
 pub(super) fn setup(
     bootstrap: &RuntimeBootstrapResponse,
     access: &ManagedRuntimeAccessBootstrap,
-    credential: ManagedRuntimeSshCredentialV1,
+    credential: ManagedRuntimeSshCredential,
 ) -> Result<ManagedAccessSession, AccessError> {
     let now_ms = unix_time_ms().ok_or_else(|| AccessError::new("access_setup_failed"))?;
     let setup_deadline = setup_deadline(access.setup_deadline_ms, now_ms)?;
@@ -148,46 +152,123 @@ pub(super) fn setup(
 
 struct ValidatedCredential {
     connector_token: Zeroizing<String>,
-    operator_public_key: Zeroizing<String>,
+    authorized_keys: Zeroizing<Vec<String>>,
+    toolchain: Option<VerifiedToolchain>,
     expires_at_ms: u64,
+}
+
+struct VerifiedToolchain {
+    dropbear: PathBuf,
+    dropbearkey: PathBuf,
 }
 
 fn validate_binding(
     bootstrap: &RuntimeBootstrapResponse,
     access: &ManagedRuntimeAccessBootstrap,
-    mut credential: ManagedRuntimeSshCredentialV1,
+    credential: ManagedRuntimeSshCredential,
     now_ms: u64,
 ) -> Result<ValidatedCredential, AccessError> {
-    if credential.schema != CREDENTIAL_SCHEMA
-        || credential.organization_id.is_empty()
-        || credential.attachment_id != access.attachment_id
-        || credential.application_uid != bootstrap.application_uid
-        || credential.deployment_id != bootstrap.deployment_id
-        || !runtime_job_ids_match(&credential.job_id, &bootstrap.job_id)
-        || credential.policy_digest != bootstrap.policy_digest
-        || credential.fence != access.fence
-        || credential.expires_at_ms < access.setup_deadline_ms
-        || credential.expires_at_ms <= now_ms
-        || access.setup_deadline_ms <= now_ms
+    if access.setup_deadline_ms <= now_ms
         || access.provider.kind != RuntimeAccessProviderKind::Liskov
-        || access.protocol != ManagedRuntimeAccessProtocol::LiskovAccessV0
     {
         return Err(AccessError::new("access_setup_failed"));
     }
-    match &mut credential.provider {
-        ManagedRuntimeSshCredentialProvider::Liskov {
-            connector_token,
-            operator_public_key,
-        } if valid_connector_token(connector_token)
-            && parse_ed25519_public_key(operator_public_key).is_some() =>
-        {
-            Ok(ValidatedCredential {
-                connector_token: Zeroizing::new(std::mem::take(connector_token)),
-                operator_public_key: Zeroizing::new(std::mem::take(operator_public_key)),
-                expires_at_ms: credential.expires_at_ms,
-            })
+    match credential {
+        ManagedRuntimeSshCredential::V0(mut credential) => {
+            if credential.schema != CREDENTIAL_SCHEMA
+                || credential.organization_id.is_empty()
+                || credential.attachment_id != access.attachment_id
+                || credential.application_uid != bootstrap.application_uid
+                || credential.deployment_id != bootstrap.deployment_id
+                || !runtime_job_ids_match(&credential.job_id, &bootstrap.job_id)
+                || credential.policy_digest != bootstrap.policy_digest
+                || credential.fence != access.fence
+                || credential.expires_at_ms < access.setup_deadline_ms
+                || credential.expires_at_ms <= now_ms
+                || access.protocol != ManagedRuntimeAccessProtocol::LiskovAccessV0
+            {
+                return Err(AccessError::new("access_setup_failed"));
+            }
+            match &mut credential.provider {
+                ManagedRuntimeSshCredentialProvider::Liskov {
+                    connector_token,
+                    operator_public_key,
+                } if valid_connector_token(connector_token) => {
+                    let key = parse_ed25519_public_key(operator_public_key)
+                        .ok_or_else(|| AccessError::new("access_setup_failed"))?;
+                    Ok(ValidatedCredential {
+                        connector_token: Zeroizing::new(std::mem::take(connector_token)),
+                        authorized_keys: Zeroizing::new(vec![key]),
+                        toolchain: None,
+                        expires_at_ms: credential.expires_at_ms,
+                    })
+                }
+                _ => Err(AccessError::new("access_setup_failed")),
+            }
         }
-        _ => Err(AccessError::new("access_setup_failed")),
+        ManagedRuntimeSshCredential::V1(mut credential) => {
+            let Some(binding) = access.binding.as_ref() else {
+                return Err(AccessError::new("access_setup_failed"));
+            };
+            let Some(expected_toolchain) = access.toolchain.as_ref() else {
+                return Err(AccessError::new("access_setup_failed"));
+            };
+            if credential.schema != MANAGED_CREDENTIAL_SCHEMA_V2
+                || credential.organization_id != binding.organization_id
+                || credential.attachment_id != access.attachment_id
+                || credential.application_id != bootstrap.application_id
+                || credential.application_id != binding.application_id
+                || credential.application_uid != bootstrap.application_uid
+                || credential.application_uid != binding.application_uid
+                || credential.liskov_deployment_id != binding.liskov_deployment_id
+                || credential.deployment_id != binding.deployment_id
+                || credential.deployment_id != bootstrap.deployment_id
+                || credential.liskov_job_id != binding.liskov_job_id
+                || credential.job_id != binding.job_id
+                || !runtime_job_ids_match(&credential.job_id, &bootstrap.job_id)
+                || credential.policy_digest != binding.policy_digest
+                || credential.policy_digest != bootstrap.policy_digest
+                || credential.fence != access.fence
+                || credential.expires_at_ms < access.setup_deadline_ms
+                || credential.expires_at_ms <= now_ms
+                || access.protocol != ManagedRuntimeAccessProtocol::LiskovAccessV1
+            {
+                return Err(AccessError::new("access_setup_failed"));
+            }
+            match &mut credential.provider {
+                ManagedRuntimeSshCredentialProviderV2::Liskov {
+                    connector_token,
+                    authorized_keys,
+                    toolchain,
+                } if valid_connector_token(connector_token)
+                    && toolchain.runtime_contact_sha256
+                        == expected_toolchain.runtime_contact_sha256
+                    && toolchain.dropbear_sha256 == expected_toolchain.dropbear_sha256
+                    && toolchain.dropbearkey_sha256 == expected_toolchain.dropbearkey_sha256 =>
+                {
+                    let keys = normalized_authorized_keys(authorized_keys)?;
+                    let fingerprints = keys
+                        .iter()
+                        .map(|key| ssh_public_key_fingerprint(key))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    if fingerprints != access.authorized_key_fingerprints {
+                        return Err(AccessError::new("access_setup_failed"));
+                    }
+                    let verified = verify_fixed_toolchain(
+                        &toolchain.runtime_contact_sha256,
+                        &toolchain.dropbear_sha256,
+                        &toolchain.dropbearkey_sha256,
+                    )?;
+                    Ok(ValidatedCredential {
+                        connector_token: Zeroizing::new(std::mem::take(connector_token)),
+                        authorized_keys: Zeroizing::new(keys),
+                        toolchain: Some(verified),
+                        expires_at_ms: credential.expires_at_ms,
+                    })
+                }
+                _ => Err(AccessError::new("access_setup_failed")),
+            }
+        }
     }
 }
 
@@ -201,18 +282,102 @@ fn setup_deadline(setup_deadline_ms: u64, now_ms: u64) -> Result<Instant, Access
         .ok_or_else(|| AccessError::new("access_setup_failed"))
 }
 
+fn normalized_authorized_keys(values: &[String]) -> Result<Vec<String>, AccessError> {
+    if !(1..=8).contains(&values.len()) {
+        return Err(AccessError::new("access_setup_failed"));
+    }
+    let keys = values
+        .iter()
+        .map(|value| parse_ed25519_public_key(value))
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| AccessError::new("access_setup_failed"))?;
+    let unique = keys.iter().collect::<std::collections::BTreeSet<_>>();
+    (unique.len() == keys.len())
+        .then_some(keys)
+        .ok_or_else(|| AccessError::new("access_setup_failed"))
+}
+
+fn ssh_public_key_fingerprint(value: &str) -> Result<String, AccessError> {
+    let encoded = value
+        .split(' ')
+        .nth(1)
+        .ok_or_else(|| AccessError::new("access_setup_failed"))?;
+    let blob = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|_| AccessError::new("access_setup_failed"))?;
+    Ok(format!(
+        "SHA256:{}",
+        STANDARD_NO_PAD.encode(Sha256::digest(blob))
+    ))
+}
+
+fn verify_fixed_toolchain(
+    runtime_contact_sha256: &str,
+    dropbear_sha256: &str,
+    dropbearkey_sha256: &str,
+) -> Result<VerifiedToolchain, AccessError> {
+    let helper = std::env::current_exe().map_err(|_| AccessError::new("access_setup_failed"))?;
+    let directory = helper
+        .parent()
+        .ok_or_else(|| AccessError::new("access_setup_failed"))?;
+    let dropbear = directory.join(DROPBEAR_FILENAME);
+    let dropbearkey = directory.join(DROPBEARKEY_FILENAME);
+    verify_toolchain_binary(&helper, runtime_contact_sha256)?;
+    verify_toolchain_binary(&dropbear, dropbear_sha256)?;
+    verify_toolchain_binary(&dropbearkey, dropbearkey_sha256)?;
+    Ok(VerifiedToolchain {
+        dropbear,
+        dropbearkey,
+    })
+}
+
+fn verify_toolchain_binary(path: &Path, expected_sha256: &str) -> Result<(), AccessError> {
+    if expected_sha256.len() != 64
+        || !expected_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(AccessError::new("access_toolchain_digest_invalid"));
+    }
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|_| AccessError::new("access_toolchain_missing"))?;
+    if !metadata.file_type().is_file() || metadata.len() > MAX_TOOLCHAIN_BINARY_BYTES {
+        return Err(AccessError::new("access_toolchain_invalid"));
+    }
+    let file =
+        std::fs::File::open(path).map_err(|_| AccessError::new("access_toolchain_missing"))?;
+    let mut bytes = Vec::new();
+    file.take(MAX_TOOLCHAIN_BINARY_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| AccessError::new("access_toolchain_invalid"))?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_TOOLCHAIN_BINARY_BYTES
+        || hex::encode(Sha256::digest(&bytes)) != expected_sha256
+    {
+        bytes.zeroize();
+        return Err(AccessError::new("access_toolchain_digest_mismatch"));
+    }
+    bytes.zeroize();
+    Ok(())
+}
+
 fn setup_in_root(
     access: &ManagedRuntimeAccessBootstrap,
     credential: ValidatedCredential,
     root: &Path,
     deadline: Instant,
 ) -> Result<ManagedAccessSession, AccessError> {
-    install_dropbear(deadline)?;
-    verify_dropbear_options(deadline)?;
+    let (dropbear, dropbearkey) = match credential.toolchain.as_ref() {
+        Some(toolchain) => (
+            toolchain.dropbear.as_path(),
+            toolchain.dropbearkey.as_path(),
+        ),
+        None => (Path::new("dropbear"), Path::new("dropbearkey")),
+    };
+    verify_dropbear_options(dropbear, deadline)?;
 
     let host_key_path = root.join("dropbear-ed25519-host-key");
     run_checked(
-        "dropbearkey",
+        dropbearkey,
         &[
             OsString::from("-t"),
             OsString::from("ed25519"),
@@ -224,7 +389,7 @@ fn setup_in_root(
     std::fs::set_permissions(&host_key_path, std::fs::Permissions::from_mode(0o600))
         .map_err(|_| AccessError::new("access_setup_failed"))?;
     let public_output = run_capture(
-        "dropbearkey",
+        dropbearkey,
         &[
             OsString::from("-y"),
             OsString::from("-f"),
@@ -241,12 +406,13 @@ fn setup_in_root(
         .map_err(|_| AccessError::new("access_setup_failed"))?;
     write_private(
         &authorization_dir.join("authorized_keys"),
-        format!("{}\n", credential.operator_public_key.as_str()).as_bytes(),
+        format!("{}\n", credential.authorized_keys.join("\n")).as_bytes(),
     )?;
 
     let pid_file = root.join("dropbear.pid");
-    let endpoint = connector_endpoint(&access.gateway_url, &access.tunnel_id)?;
-    let mut dropbear = spawn_dropbear(&host_key_path, &authorization_dir, &pid_file)?;
+    let endpoint = connector_endpoint(&access.gateway_url, &access.tunnel_id, access.protocol)?;
+    let subprotocol = connector_subprotocol(access.protocol);
+    let mut dropbear = spawn_dropbear(dropbear, &host_key_path, &authorization_dir, &pid_file)?;
     let start_check = Instant::now() + Duration::from_millis(150);
     while Instant::now() < start_check {
         if dropbear
@@ -264,6 +430,7 @@ fn setup_in_root(
         endpoint,
         credential.connector_token,
         credential.expires_at_ms,
+        subprotocol,
         registered_sender,
     ) {
         Ok(connector) => connector,
@@ -295,22 +462,8 @@ fn setup_in_root(
     })
 }
 
-fn install_dropbear(deadline: Instant) -> Result<(), AccessError> {
-    run_checked("apt-get", &[OsString::from("update")], deadline)?;
-    let (program, arguments) = dropbear_install_argv();
-    run_checked(
-        program,
-        &arguments.iter().map(OsString::from).collect::<Vec<_>>(),
-        deadline,
-    )
-}
-
-fn dropbear_install_argv() -> (&'static str, [&'static str; 3]) {
-    ("apt-get", ["install", "-y", "dropbear"])
-}
-
-fn verify_dropbear_options(deadline: Instant) -> Result<(), AccessError> {
-    let output = run_capture("dropbear", &[OsString::from("-h")], deadline, false)?;
+fn verify_dropbear_options(dropbear: &Path, deadline: Instant) -> Result<(), AccessError> {
+    let output = run_capture(dropbear, &[OsString::from("-h")], deadline, false)?;
     let text = String::from_utf8_lossy(&output);
     for required in ["-D", "-F", "-E", "-s", "-g", "-j", "-k", "-p", "-r", "-P"] {
         if !text.contains(required) {
@@ -321,11 +474,12 @@ fn verify_dropbear_options(deadline: Instant) -> Result<(), AccessError> {
 }
 
 fn spawn_dropbear(
+    dropbear: &Path,
     host_key_path: &Path,
     authorization_dir: &Path,
     pid_file: &Path,
 ) -> Result<Child, AccessError> {
-    let mut command = Command::new("dropbear");
+    let mut command = Command::new(dropbear);
     command
         .args(["-F", "-E", "-s", "-g", "-j", "-k", "-p", FIXED_SSH_TARGET])
         .arg("-r")
@@ -353,7 +507,7 @@ fn spawn_dropbear(
 }
 
 fn run_checked(
-    program: &str,
+    program: &Path,
     arguments: &[OsString],
     deadline: Instant,
 ) -> Result<(), AccessError> {
@@ -371,7 +525,7 @@ fn run_checked(
 }
 
 fn run_capture(
-    program: &str,
+    program: &Path,
     arguments: &[OsString],
     deadline: Instant,
     require_success: bool,
@@ -502,9 +656,17 @@ fn valid_connector_token(value: &str) -> bool {
     !value.is_empty() && value.len() <= 1024 && value.bytes().all(|byte| byte.is_ascii_graphic())
 }
 
-fn connector_endpoint(gateway_url: &str, tunnel_id: &str) -> Result<String, AccessError> {
+fn connector_endpoint(
+    gateway_url: &str,
+    tunnel_id: &str,
+    protocol: ManagedRuntimeAccessProtocol,
+) -> Result<String, AccessError> {
+    let version = match protocol {
+        ManagedRuntimeAccessProtocol::LiskovAccessV0 => "v0",
+        ManagedRuntimeAccessProtocol::LiskovAccessV1 => "v1",
+    };
     let url = format!(
-        "{}/v0/connectors/{tunnel_id}",
+        "{}/{version}/connectors/{tunnel_id}",
         gateway_url.trim_end_matches('/')
     );
     let parsed = url::Url::parse(&url).map_err(|_| AccessError::new("access_setup_failed"))?;
@@ -520,10 +682,18 @@ fn connector_endpoint(gateway_url: &str, tunnel_id: &str) -> Result<String, Acce
     Ok(url)
 }
 
+fn connector_subprotocol(protocol: ManagedRuntimeAccessProtocol) -> &'static str {
+    match protocol {
+        ManagedRuntimeAccessProtocol::LiskovAccessV0 => CONNECTOR_SUBPROTOCOL_V0,
+        ManagedRuntimeAccessProtocol::LiskovAccessV1 => CONNECTOR_SUBPROTOCOL_V1,
+    }
+}
+
 fn spawn_connector(
     endpoint: String,
     token: Zeroizing<String>,
     expires_at_ms: u64,
+    subprotocol: &'static str,
     registered: mpsc::SyncSender<()>,
 ) -> Result<ConnectorWorker, AccessError> {
     let cancel = Arc::new(AtomicBool::new(false));
@@ -539,6 +709,7 @@ fn spawn_connector(
                     endpoint,
                     token,
                     expires_at_ms,
+                    subprotocol,
                     worker_cancel,
                     registered,
                 ));
@@ -555,6 +726,7 @@ async fn connector_loop(
     endpoint: String,
     token: Zeroizing<String>,
     expires_at_ms: u64,
+    subprotocol: &'static str,
     cancel: Arc<AtomicBool>,
     registered: mpsc::SyncSender<()>,
 ) {
@@ -563,7 +735,15 @@ async fn connector_loop(
     while !cancel.load(Ordering::Acquire)
         && unix_time_ms().is_some_and(|now_ms| now_ms < expires_at_ms)
     {
-        match connect_once(&endpoint, &token, cancel.clone(), registered.as_ref()).await {
+        match connect_once(
+            &endpoint,
+            &token,
+            subprotocol,
+            cancel.clone(),
+            registered.as_ref(),
+        )
+        .await
+        {
             Ok(()) => {
                 registered = None;
                 attempt = 0;
@@ -582,16 +762,16 @@ async fn connector_loop(
 async fn connect_once(
     endpoint: &str,
     token: &str,
+    subprotocol: &'static str,
     cancel: Arc<AtomicBool>,
     registered: Option<&mpsc::SyncSender<()>>,
 ) -> Result<(), ()> {
     let mut request = endpoint.into_client_request().map_err(|_| ())?;
     let authorization = format!("Bearer {token}").parse().map_err(|_| ())?;
     request.headers_mut().insert(AUTHORIZATION, authorization);
-    request.headers_mut().insert(
-        SEC_WEBSOCKET_PROTOCOL,
-        CONNECTOR_SUBPROTOCOL.parse().map_err(|_| ())?,
-    );
+    request
+        .headers_mut()
+        .insert(SEC_WEBSOCKET_PROTOCOL, subprotocol.parse().map_err(|_| ())?);
     let mut config = WebSocketConfig::default();
     config.max_message_size = Some(MAX_FRAME_BYTES);
     config.max_frame_size = Some(MAX_FRAME_BYTES);
@@ -604,7 +784,7 @@ async fn connect_once(
         .headers()
         .get(SEC_WEBSOCKET_PROTOCOL)
         .and_then(|value| value.to_str().ok())
-        != Some(CONNECTOR_SUBPROTOCOL)
+        != Some(subprotocol)
     {
         let _ = websocket.close(None).await;
         return Err(());
@@ -720,17 +900,13 @@ async fn wait_cancelled(cancel: Arc<AtomicBool>, duration: Duration) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::access::{ManagedCredentialToolchain, ManagedRuntimeSshCredentialV2};
+    use crate::protocol::{
+        ManagedRuntimeAccessBinding, ManagedRuntimeAccessToolchain, RuntimeAccessProvider,
+    };
 
     const PUBLIC_KEY: &str =
         "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-
-    #[test]
-    fn compatibility_install_uses_exact_argv_without_a_shell() {
-        assert_eq!(
-            dropbear_install_argv(),
-            ("apt-get", ["install", "-y", "dropbear"])
-        );
-    }
 
     #[test]
     fn operator_key_and_host_evidence_are_strict_ed25519_openssh() {
@@ -751,11 +927,32 @@ mod tests {
     #[test]
     fn connector_endpoint_and_target_are_fixed_and_credential_free() {
         assert_eq!(
-            connector_endpoint("wss://access.example", "tunnel_123").unwrap(),
+            connector_endpoint(
+                "wss://access.example",
+                "tunnel_123",
+                ManagedRuntimeAccessProtocol::LiskovAccessV1,
+            )
+            .unwrap(),
+            "wss://access.example/v1/connectors/tunnel_123"
+        );
+        assert_eq!(
+            connector_endpoint(
+                "wss://access.example",
+                "tunnel_123",
+                ManagedRuntimeAccessProtocol::LiskovAccessV0,
+            )
+            .unwrap(),
             "wss://access.example/v0/connectors/tunnel_123"
         );
         assert_eq!(FIXED_SSH_TARGET, "127.0.0.1:2222");
-        assert!(connector_endpoint("ws://access.example", "tunnel_123").is_err());
+        assert!(
+            connector_endpoint(
+                "ws://access.example",
+                "tunnel_123",
+                ManagedRuntimeAccessProtocol::LiskovAccessV1,
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -765,5 +962,102 @@ mod tests {
             assert!(delay >= Duration::from_millis(250));
             assert!(delay <= Duration::from_millis(8_250));
         }
+    }
+
+    #[test]
+    fn fixed_toolchain_digest_verification_rejects_tampering() {
+        let root = private_root("toolchain-test").unwrap();
+        let binary = root.join("liskov-dropbear");
+        std::fs::write(&binary, b"static-toolchain-fixture").unwrap();
+        let digest = hex::encode(Sha256::digest(b"static-toolchain-fixture"));
+        verify_toolchain_binary(&binary, &digest).unwrap();
+
+        std::fs::write(&binary, b"tampered-toolchain-fixture").unwrap();
+        assert_eq!(
+            verify_toolchain_binary(&binary, &digest).unwrap_err().code,
+            "access_toolchain_digest_mismatch"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn v2_credential_rejects_a_substituted_application_identity() {
+        let now_ms = unix_time_ms().unwrap();
+        let expires_at_ms = now_ms + 60_000;
+        let bootstrap = RuntimeBootstrapResponse {
+            ok: true,
+            domain: "proof.liskov.runtime-bootstrap-response.v2".into(),
+            application_uid: "app-uid".into(),
+            application_id: "app-id".into(),
+            policy_digest: "sha256:policy".into(),
+            deployment_id: "provider-deployment".into(),
+            job_id: "provider-job".into(),
+            processor_id: "processor".into(),
+            runtime_instance_id: "instance".into(),
+            slipway_url: "https://liskov.example".into(),
+            runtime_env: None,
+            supervision: None,
+            logging: None,
+            logging_outage_canary: false,
+            diagnostics: None,
+            access: None,
+        };
+        let access = ManagedRuntimeAccessBootstrap {
+            provider: RuntimeAccessProvider {
+                kind: RuntimeAccessProviderKind::Liskov,
+            },
+            attachment_id: "att-1".into(),
+            fence: 1,
+            gateway_url: "wss://gateway.example".into(),
+            tunnel_id: "tun_1".into(),
+            protocol: ManagedRuntimeAccessProtocol::LiskovAccessV1,
+            setup_deadline_ms: now_ms + 30_000,
+            binding: Some(ManagedRuntimeAccessBinding {
+                organization_id: "org-1".into(),
+                application_id: "app-id".into(),
+                application_uid: "app-uid".into(),
+                liskov_deployment_id: "canonical-deployment".into(),
+                deployment_id: "provider-deployment".into(),
+                liskov_job_id: "canonical-job".into(),
+                job_id: "provider-job".into(),
+                policy_digest: "sha256:policy".into(),
+            }),
+            authorized_key_fingerprints: vec!["SHA256:key".into()],
+            toolchain: Some(ManagedRuntimeAccessToolchain {
+                runtime_contact_sha256: "1".repeat(64),
+                dropbear_sha256: "2".repeat(64),
+                dropbearkey_sha256: "3".repeat(64),
+            }),
+        };
+        let credential = ManagedRuntimeSshCredential::V1(ManagedRuntimeSshCredentialV2 {
+            schema: MANAGED_CREDENTIAL_SCHEMA_V2.into(),
+            provider: ManagedRuntimeSshCredentialProviderV2::Liskov {
+                connector_token: "a.b.c".into(),
+                authorized_keys: vec![PUBLIC_KEY.into()],
+                toolchain: ManagedCredentialToolchain {
+                    runtime_contact_sha256: "1".repeat(64),
+                    dropbear_sha256: "2".repeat(64),
+                    dropbearkey_sha256: "3".repeat(64),
+                },
+            },
+            organization_id: "org-1".into(),
+            attachment_id: "att-1".into(),
+            application_id: "substituted-app".into(),
+            application_uid: "app-uid".into(),
+            liskov_deployment_id: "canonical-deployment".into(),
+            deployment_id: "provider-deployment".into(),
+            liskov_job_id: "canonical-job".into(),
+            job_id: "provider-job".into(),
+            policy_digest: "sha256:policy".into(),
+            fence: 1,
+            expires_at_ms,
+        });
+        assert_eq!(
+            validate_binding(&bootstrap, &access, credential, now_ms)
+                .err()
+                .unwrap()
+                .code,
+            "access_setup_failed"
+        );
     }
 }

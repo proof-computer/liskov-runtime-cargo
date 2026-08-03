@@ -31,6 +31,7 @@ use crate::protocol::{
 
 pub const RUNTIME_SSH_CREDENTIAL_ENV: &str = "LISKOV_RUNTIME_SSH_CREDENTIAL_V1";
 const CREDENTIAL_SCHEMA: &str = "proof.liskov.runtime-ssh-credential.v1";
+const MANAGED_CREDENTIAL_SCHEMA_V2: &str = "proof.liskov.runtime-ssh-credential.v2";
 const MAX_ARTIFACT_BYTES: usize = 128 * 1024 * 1024;
 const MAX_BINARY_BYTES: u64 = 96 * 1024 * 1024;
 const MAX_COMMAND_OUTPUT_BYTES: usize = 1024 * 1024;
@@ -107,6 +108,62 @@ pub(super) enum ManagedRuntimeSshCredentialProvider {
     },
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct ManagedRuntimeSshCredentialV2 {
+    schema: String,
+    provider: ManagedRuntimeSshCredentialProviderV2,
+    organization_id: String,
+    attachment_id: String,
+    application_id: String,
+    application_uid: String,
+    liskov_deployment_id: String,
+    deployment_id: String,
+    liskov_job_id: String,
+    job_id: String,
+    policy_digest: String,
+    fence: u64,
+    expires_at_ms: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub(super) enum ManagedRuntimeSshCredentialProviderV2 {
+    Liskov {
+        connector_token: String,
+        authorized_keys: Vec<String>,
+        toolchain: ManagedCredentialToolchain,
+    },
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct ManagedCredentialToolchain {
+    runtime_contact_sha256: String,
+    dropbear_sha256: String,
+    dropbearkey_sha256: String,
+}
+
+impl Drop for ManagedRuntimeSshCredentialProviderV2 {
+    fn drop(&mut self) {
+        match self {
+            Self::Liskov {
+                connector_token,
+                authorized_keys,
+                ..
+            } => {
+                connector_token.zeroize();
+                authorized_keys.zeroize();
+            }
+        }
+    }
+}
+
+pub(super) enum ManagedRuntimeSshCredential {
+    V0(ManagedRuntimeSshCredentialV1),
+    V1(ManagedRuntimeSshCredentialV2),
+}
+
 impl Drop for ManagedRuntimeSshCredentialProvider {
     fn drop(&mut self) {
         match self {
@@ -125,7 +182,8 @@ impl Drop for ManagedRuntimeSshCredentialProvider {
 #[serde(untagged)]
 enum RuntimeSshCredentialV1 {
     Tailscale(TailscaleRuntimeSshCredentialV1),
-    Managed(ManagedRuntimeSshCredentialV1),
+    ManagedV1(ManagedRuntimeSshCredentialV2),
+    ManagedV0(ManagedRuntimeSshCredentialV1),
 }
 
 pub enum AccessSession {
@@ -393,10 +451,24 @@ pub fn setup_runtime_access_with_logger(
                 }
             }
         }
-        (RuntimeAccessBootstrap::Managed(access), RuntimeSshCredentialV1::Managed(credential)) => {
-            managed::setup(bootstrap, access, credential)
-                .map(|session| Some(AccessSession::Managed(session)))
-        }
+        (
+            RuntimeAccessBootstrap::Managed(access),
+            RuntimeSshCredentialV1::ManagedV1(credential),
+        ) => managed::setup(
+            bootstrap,
+            access,
+            ManagedRuntimeSshCredential::V1(credential),
+        )
+        .map(|session| Some(AccessSession::Managed(session))),
+        (
+            RuntimeAccessBootstrap::Managed(access),
+            RuntimeSshCredentialV1::ManagedV0(credential),
+        ) => managed::setup(
+            bootstrap,
+            access,
+            ManagedRuntimeSshCredential::V0(credential),
+        )
+        .map(|session| Some(AccessSession::Managed(session))),
         _ => Err(AccessError::new("access_setup_failed")),
     }
 }

@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use thiserror::Error;
@@ -172,6 +173,28 @@ impl TailscaleRuntimeAccessBootstrap {
 #[serde(rename_all = "snake_case")]
 pub enum ManagedRuntimeAccessProtocol {
     LiskovAccessV0,
+    LiskovAccessV1,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManagedRuntimeAccessBinding {
+    pub organization_id: String,
+    pub application_id: String,
+    pub application_uid: String,
+    pub liskov_deployment_id: String,
+    pub deployment_id: String,
+    pub liskov_job_id: String,
+    pub job_id: String,
+    pub policy_digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManagedRuntimeAccessToolchain {
+    pub runtime_contact_sha256: String,
+    pub dropbear_sha256: String,
+    pub dropbearkey_sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -184,6 +207,12 @@ pub struct ManagedRuntimeAccessBootstrap {
     pub tunnel_id: String,
     pub protocol: ManagedRuntimeAccessProtocol,
     pub setup_deadline_ms: u64,
+    #[serde(default)]
+    pub binding: Option<ManagedRuntimeAccessBinding>,
+    #[serde(default)]
+    pub authorized_key_fingerprints: Vec<String>,
+    #[serde(default)]
+    pub toolchain: Option<ManagedRuntimeAccessToolchain>,
 }
 
 impl ManagedRuntimeAccessBootstrap {
@@ -197,6 +226,27 @@ impl ManagedRuntimeAccessBootstrap {
                 && url.fragment().is_none()
                 && matches!(url.path(), "" | "/")
         });
+        let v1_valid = match self.protocol {
+            ManagedRuntimeAccessProtocol::LiskovAccessV0 => {
+                self.binding.is_none()
+                    && self.authorized_key_fingerprints.is_empty()
+                    && self.toolchain.is_none()
+            }
+            ManagedRuntimeAccessProtocol::LiskovAccessV1 => {
+                self.binding.as_ref().is_some_and(valid_managed_binding)
+                    && (1..=8).contains(&self.authorized_key_fingerprints.len())
+                    && unique_values(&self.authorized_key_fingerprints)
+                    && self
+                        .authorized_key_fingerprints
+                        .iter()
+                        .all(|value| valid_ssh_fingerprint(value))
+                    && self.toolchain.as_ref().is_some_and(|toolchain| {
+                        valid_sha256(&toolchain.runtime_contact_sha256)
+                            && valid_sha256(&toolchain.dropbear_sha256)
+                            && valid_sha256(&toolchain.dropbearkey_sha256)
+                    })
+            }
+        };
         self.provider.kind == RuntimeAccessProviderKind::Liskov
             && !self.attachment_id.is_empty()
             && self.attachment_id.len() <= 256
@@ -208,14 +258,53 @@ impl ManagedRuntimeAccessBootstrap {
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
             && gateway_valid
+            && v1_valid
     }
+}
+
+fn valid_managed_binding(binding: &ManagedRuntimeAccessBinding) -> bool {
+    [
+        binding.organization_id.as_str(),
+        binding.application_id.as_str(),
+        binding.application_uid.as_str(),
+        binding.liskov_deployment_id.as_str(),
+        binding.deployment_id.as_str(),
+        binding.liskov_job_id.as_str(),
+        binding.job_id.as_str(),
+        binding.policy_digest.as_str(),
+    ]
+    .iter()
+    .all(|value| !value.is_empty() && value.len() <= 512 && !value.contains(['\r', '\n', '\0']))
+}
+
+fn valid_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn valid_ssh_fingerprint(value: &str) -> bool {
+    let Some(encoded) = value.strip_prefix("SHA256:") else {
+        return false;
+    };
+    !encoded.is_empty()
+        && !encoded.contains('=')
+        && base64::engine::general_purpose::STANDARD_NO_PAD
+            .decode(encoded)
+            .is_ok_and(|bytes| bytes.len() == 32)
+}
+
+fn unique_values(values: &[String]) -> bool {
+    let unique = values.iter().collect::<std::collections::BTreeSet<_>>();
+    unique.len() == values.len()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(untagged)]
 pub enum RuntimeAccessBootstrap {
     Tailscale(TailscaleRuntimeAccessBootstrap),
-    Managed(ManagedRuntimeAccessBootstrap),
+    Managed(Box<ManagedRuntimeAccessBootstrap>),
 }
 
 impl RuntimeAccessBootstrap {
@@ -933,6 +1022,44 @@ mod tests {
         );
         assert_eq!(parsed.access.unwrap().attachment_id(), "att-managed-1");
         response["access"]["gatewayUrl"] = json!("wss://access.example?token=secret");
+        assert!(matches!(
+            validate_response(&request, &serde_json::to_vec(&response).unwrap()),
+            Err(ProtocolError::InvalidResponse)
+        ));
+
+        response["access"] = json!({
+            "provider": {"kind": "liskov"},
+            "attachmentId": "att-managed-1",
+            "fence": 1,
+            "gatewayUrl": "wss://access.example",
+            "tunnelId": "tunnel_managed_1",
+            "protocol": "liskov_access_v1",
+            "setupDeadlineMs": 60_000,
+            "binding": {
+                "organizationId": "org-1",
+                "applicationId": "app-1",
+                "applicationUid": "app-uid-1",
+                "liskovDeploymentId": "liskov-dep-1",
+                "deploymentId": "dep-1",
+                "liskovJobId": "liskov-job-1",
+                "jobId": request.job_id,
+                "policyDigest": "sha256:policy",
+            },
+            "authorizedKeyFingerprints": [format!(
+                "SHA256:{}",
+                base64::engine::general_purpose::STANDARD_NO_PAD.encode([1_u8; 32])
+            )],
+            "toolchain": {
+                "runtimeContactSha256": "1".repeat(64),
+                "dropbearSha256": "2".repeat(64),
+                "dropbearkeySha256": "3".repeat(64),
+            }
+        });
+        assert!(validate_response(&request, &serde_json::to_vec(&response).unwrap()).is_ok());
+        response["access"]["binding"]
+            .as_object_mut()
+            .unwrap()
+            .remove("applicationId");
         assert!(matches!(
             validate_response(&request, &serde_json::to_vec(&response).unwrap()),
             Err(ProtocolError::InvalidResponse)

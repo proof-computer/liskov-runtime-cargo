@@ -182,13 +182,18 @@ Each release publishes:
 ```text
 liskov-runtime-contact-v<VERSION>-aarch64-unknown-linux-musl
 liskov-runtime-contact-v<VERSION>-aarch64-unknown-linux-musl.tar.gz
+liskov-dropbear-2026.94-v<VERSION>-aarch64-unknown-linux-musl
+liskov-dropbearkey-2026.94-v<VERSION>-aarch64-unknown-linux-musl
 runtime-contact-release.json
 SHA256SUMS
 ```
 
-The raw binary, archive, and release manifest are attested. The manifest binds
-the immutable tag and source commit to their exact digests and byte sizes. The
-archive contains the helper binary, this README, and the Apache-2.0 license.
+The raw helper, the two static Dropbear executables, and release-manifest v2
+are attested separately. The manifest binds the immutable tag and source commit
+to every exact digest and byte size. The archive contains the helper and its
+fixed sibling `liskov-dropbear` and `liskov-dropbearkey` executables, plus this
+README and the Apache-2.0 license. Runtime access verifies all three executable
+digests before use and never installs packages inside the customer image.
 Verify the checksums before use:
 
 ```sh
@@ -218,7 +223,15 @@ Liskov Debian rootfs without installing QEMU or PRoot on the workstation:
 scripts/run-qemu-proot-runtime.sh --self-test
 scripts/run-qemu-proot-runtime.sh -- /workspace/path/to/aarch64-candidate --version
 scripts/run-qemu-proot-runtime.sh --profile netlink-denied --self-test
-scripts/run-qemu-proot-runtime.sh --no-shim -- /workspace/tools/qemu-proot/managed-access-smoke.sh
+scripts/run-qemu-proot-runtime.sh --no-shim -- \
+  /workspace/tools/qemu-proot/managed-access-smoke.sh \
+  /workspace/candidate/liskov-dropbear \
+  /workspace/candidate/liskov-dropbearkey \
+  /workspace/candidate/test-ld-linux \
+  /workspace/candidate/test-libs \
+  /workspace/candidate/test-openssh \
+  /workspace/candidate/test-ssh-keygen \
+  /workspace/candidate/test-nc
 ```
 
 The wrapper bind-mounts the invocation directory read-only at `/workspace` and
@@ -232,6 +245,12 @@ processor 1.27.0-rc1 APK and uses the APK's PRoot shape: fake root,
 binds, `/root` as its working directory, and the documented `PATH` and `HOME`.
 The Liskov `getifaddrs` loopback shim is preloaded by default, as it is in the
 generated Cargo launcher.
+
+The managed-access smoke uses the release Dropbear binary and production
+hardening flags. For that smoke only, it gives QEMU an unopenable `argv[0]` so
+Dropbear takes its built-in straight-fork fallback: QEMU user mode cannot
+redispatch Dropbear's per-connection `/proc/self/fd` AArch64 re-exec. Native
+AArch64 execution retains the normal per-connection re-exec behavior.
 
 `processor-like` leaves route netlink available. That matches Acurast's current
 documentation, which says PRoot can expose Android's real interfaces through
@@ -248,10 +267,13 @@ final processor canary remains required. Do not put auth keys in argv; provide
 a mode-0600 file below the selected workspace and let the candidate consume the
 file.
 
-The managed-access smoke installs the same Debian Dropbear package with the
-helper's exact `apt-get install -y dropbear` argv, confirms port 22 is denied,
-starts the fixed loopback port-2222 Dropbear command, and uses stock OpenSSH
-through a local byte relay with a pinned host key. It also confirms killing the
+The managed-access smoke injects the same pinned static Dropbear and keygen
+companions as the release bundle plus the native ARM runner's test-only stock
+OpenSSH/netcat binaries, loader, and exact shared-library closure. It confirms
+port 22 is denied, starts the fixed loopback port-2222 Dropbear command, and
+uses stock OpenSSH through a local byte relay with a pinned host key. It
+performs no package-manager operation inside the maintained runtime image. The
+stock client bundle is not a release asset. The smoke also confirms killing the
 access sidecar does not change an independently running customer's exact exit.
 
 ### Opt-in Tailscale SaaS Runtime SSH gate
