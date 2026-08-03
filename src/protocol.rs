@@ -61,7 +61,32 @@ pub struct RuntimeBootstrapResponse {
     #[serde(default)]
     pub logging_outage_canary: bool,
     #[serde(default)]
+    pub diagnostics: Option<RuntimeDiagnosticsBootstrap>,
+    #[serde(default)]
     pub access: Option<RuntimeAccessBootstrap>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderLogMode {
+    Disabled,
+    Sanitized,
+    RawTailscaledStderr,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProviderLogsBootstrap {
+    pub mode: ProviderLogMode,
+    #[serde(default)]
+    pub expires_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeDiagnosticsBootstrap {
+    #[serde(default)]
+    pub provider_logs: Option<ProviderLogsBootstrap>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -93,6 +118,13 @@ pub struct RuntimeAccessArtifact {
     pub byte_size: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeAccessLaunchProfile {
+    TailscaleStandardV1,
+    TailscaleAcurastProotV1,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeAccessBootstrap {
@@ -101,6 +133,8 @@ pub struct RuntimeAccessBootstrap {
     pub expected_tailnet: String,
     pub setup_deadline_ms: u64,
     pub fence: u64,
+    #[serde(default)]
+    pub launch_profile: Option<RuntimeAccessLaunchProfile>,
     pub artifact: RuntimeAccessArtifact,
 }
 
@@ -167,6 +201,50 @@ impl RuntimeBootstrapResponse {
     /// affect only an otherwise-valid, explicitly enabled logging transport.
     pub fn logging_outage_canary_enabled(&self) -> bool {
         self.logging_enabled() && self.logging_outage_canary
+    }
+
+    /// Returns the server-authored provider-log mode only when the complete
+    /// closed diagnostics shape is valid. Raw capture additionally requires a
+    /// future expiry; stale or malformed controls fail closed to disabled.
+    pub fn provider_log_mode(&self, now_ms: u64) -> ProviderLogMode {
+        if !self.logging_enabled() || self.access.is_none() {
+            return ProviderLogMode::Disabled;
+        }
+        let Some(provider_logs) = self
+            .diagnostics
+            .as_ref()
+            .and_then(|diagnostics| diagnostics.provider_logs.as_ref())
+        else {
+            return ProviderLogMode::Disabled;
+        };
+        match provider_logs.mode {
+            ProviderLogMode::Disabled => ProviderLogMode::Disabled,
+            ProviderLogMode::Sanitized => {
+                if provider_logs.expires_at_ms.is_none() {
+                    ProviderLogMode::Sanitized
+                } else {
+                    ProviderLogMode::Disabled
+                }
+            }
+            ProviderLogMode::RawTailscaledStderr => {
+                if provider_logs.expires_at_ms.is_some_and(|expires_at_ms| {
+                    expires_at_ms > now_ms
+                        && now_ms
+                            .checked_add(60 * 60 * 1000)
+                            .is_some_and(|ceiling| expires_at_ms <= ceiling)
+                }) {
+                    ProviderLogMode::RawTailscaledStderr
+                } else {
+                    ProviderLogMode::Disabled
+                }
+            }
+        }
+    }
+
+    pub fn provider_log_expiry_ms(&self) -> Option<u64> {
+        let provider_logs = self.diagnostics.as_ref()?.provider_logs.as_ref()?;
+        (provider_logs.mode == ProviderLogMode::RawTailscaledStderr)
+            .then_some(provider_logs.expires_at_ms?)
     }
 
     /// Parse the optional server-owned supervision decision. Any missing,
@@ -688,8 +766,16 @@ mod tests {
         });
         let parsed = validate_response(&request, &serde_json::to_vec(&response).unwrap()).unwrap();
         assert_eq!(
-            parsed.access.unwrap().provider.kind,
+            parsed.access.as_ref().unwrap().provider.kind,
             RuntimeAccessProviderKind::Tailscale
+        );
+        assert_eq!(parsed.access.unwrap().launch_profile, None);
+
+        response["access"]["launchProfile"] = json!("tailscale_acurast_proot_v1");
+        let parsed = validate_response(&request, &serde_json::to_vec(&response).unwrap()).unwrap();
+        assert_eq!(
+            parsed.access.unwrap().launch_profile,
+            Some(RuntimeAccessLaunchProfile::TailscaleAcurastProotV1)
         );
 
         for invalid in [
@@ -713,6 +799,16 @@ mod tests {
             ));
         }
         response["access"]["futureProviderConfig"] = json!(true);
+        assert!(matches!(
+            validate_response(&request, &serde_json::to_vec(&response).unwrap()),
+            Err(ProtocolError::InvalidResponse)
+        ));
+
+        response["access"]
+            .as_object_mut()
+            .unwrap()
+            .remove("futureProviderConfig");
+        response["access"]["launchProfile"] = json!("future_profile");
         assert!(matches!(
             validate_response(&request, &serde_json::to_vec(&response).unwrap()),
             Err(ProtocolError::InvalidResponse)
@@ -861,5 +957,72 @@ mod tests {
         response["logging"] = json!({"enabled": true});
         let parsed = validate_response(&request, &serde_json::to_vec(&response).unwrap()).unwrap();
         assert!(parsed.logging_outage_canary_enabled());
+    }
+
+    #[test]
+    fn provider_log_diagnostics_are_closed_and_expire_fail_closed() {
+        let request = signed_request();
+        let mut response = json!({
+            "ok": true,
+            "domain": RUNTIME_BOOTSTRAP_RESPONSE_DOMAIN_V2,
+            "applicationUid": "app-uid-1",
+            "applicationId": "app-1",
+            "policyDigest": "sha256:policy",
+            "deploymentId": "dep-1",
+            "jobId": request.job_id,
+            "processorId": request.processor_id,
+            "runtimeInstanceId": request.nonce,
+            "slipwayUrl": "https://liskov.example",
+            "logging": {"enabled": true},
+            "access": {
+                "provider": {"kind": "tailscale"},
+                "attachmentId": "att-1",
+                "expectedTailnet": "example.com",
+                "setupDeadlineMs": 60_000,
+                "fence": 1,
+                "artifact": {
+                    "descriptorId": "descriptor-1",
+                    "version": "1.98.10-liskov.1",
+                    "url": "https://liskov.example/api/runtime-ssh/provider-clients/sha.tgz",
+                    "sha256": "1".repeat(64),
+                    "byteSize": 123,
+                }
+            },
+            "diagnostics": {
+                "providerLogs": {
+                    "mode": "raw_tailscaled_stderr",
+                    "expiresAtMs": 1_500_000,
+                }
+            }
+        });
+        let parsed = validate_response(&request, &serde_json::to_vec(&response).unwrap()).unwrap();
+        assert_eq!(
+            parsed.provider_log_mode(1_000_000),
+            ProviderLogMode::RawTailscaledStderr
+        );
+        assert_eq!(
+            parsed.provider_log_mode(1_500_000),
+            ProviderLogMode::Disabled
+        );
+
+        response["diagnostics"]["providerLogs"]["expiresAtMs"] = json!(5_000_001);
+        let parsed = validate_response(&request, &serde_json::to_vec(&response).unwrap()).unwrap();
+        assert_eq!(
+            parsed.provider_log_mode(1_000_000),
+            ProviderLogMode::Disabled
+        );
+
+        response["diagnostics"]["providerLogs"] = json!({"mode": "sanitized"});
+        let parsed = validate_response(&request, &serde_json::to_vec(&response).unwrap()).unwrap();
+        assert_eq!(
+            parsed.provider_log_mode(1_000_000),
+            ProviderLogMode::Sanitized
+        );
+
+        response["diagnostics"]["providerLogs"] = json!({"mode": "future"});
+        assert!(matches!(
+            validate_response(&request, &serde_json::to_vec(&response).unwrap()),
+            Err(ProtocolError::InvalidResponse)
+        ));
     }
 }

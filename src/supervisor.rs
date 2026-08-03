@@ -12,14 +12,14 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
-use crate::access::{AccessSession, setup_runtime_access};
+use crate::access::{AccessSession, setup_runtime_access_with_logger};
 use crate::bridge::Bridge;
 use crate::diagnostics::{
     AsyncDiagnosticReporter, DIAGNOSTIC_HTTP_TIMEOUT, DiagnosticStatus,
     MAX_DIAGNOSTIC_RESPONSE_BYTES,
 };
 use crate::http::{HttpClient, UreqHttpClient};
-use crate::logging::OutputLogger;
+use crate::logging::{LoggingController, OutputLogger, RuntimeSshLogEmitter};
 use crate::protocol::{RestartLimit, RuntimeBootstrapResponse, SupervisionMode, SupervisionPolicy};
 
 const HEALTH_CADENCE: Duration = Duration::from_secs(30);
@@ -112,6 +112,8 @@ pub fn supervise_with_environment_and_access(
         MAX_DIAGNOSTIC_RESPONSE_BYTES,
     ));
     let mut reporter = AsyncDiagnosticReporter::spawn(bootstrap, bridge, http);
+    let mut logging = LoggingController::from_environment(bootstrap);
+    let runtime_ssh_logs = logging.as_ref().and_then(LoggingController::runtime_ssh);
     let access_binding = bootstrap.access.as_ref().map(|access| {
         json!({
             "attachmentId": access.attachment_id,
@@ -120,6 +122,11 @@ pub fn supervise_with_environment_and_access(
         })
     });
     if let Some(attrs) = access_binding.clone() {
+        log_access(
+            runtime_ssh_logs.as_ref(),
+            "runtime.access.setup_started",
+            None,
+        );
         report(
             &mut reporter
                 .as_mut()
@@ -130,10 +137,19 @@ pub fn supervise_with_environment_and_access(
             attrs,
         );
     }
-    let mut access_session = match setup_runtime_access(bootstrap, runtime_access_credential) {
+    let mut access_session = match setup_runtime_access_with_logger(
+        bootstrap,
+        runtime_access_credential,
+        runtime_ssh_logs.clone(),
+    ) {
         Ok(session) => session,
         Err(error) => {
             if let Some(attrs) = access_binding {
+                log_access(
+                    runtime_ssh_logs.as_ref(),
+                    "runtime.access.degraded",
+                    Some(error.code),
+                );
                 report(
                     &mut reporter
                         .as_mut()
@@ -148,6 +164,7 @@ pub fn supervise_with_environment_and_access(
         }
     };
     if let Some(session) = access_session.as_ref() {
+        log_access(runtime_ssh_logs.as_ref(), "runtime.access.ready", None);
         report(
             &mut reporter
                 .as_mut()
@@ -167,6 +184,8 @@ pub fn supervise_with_environment_and_access(
             .as_mut()
             .map(|reporter| reporter as &mut dyn RuntimeReporter),
         access_session.as_mut(),
+        logging.as_ref().map(LoggingController::customer),
+        runtime_ssh_logs.as_ref(),
     );
     if let Some(session) = access_session.as_mut() {
         let attrs = session.binding_attrs();
@@ -178,6 +197,7 @@ pub fn supervise_with_environment_and_access(
                 Some("access_cleanup_failed"),
             ),
         };
+        log_access(runtime_ssh_logs.as_ref(), stage, code);
         report(
             &mut reporter
                 .as_mut()
@@ -188,7 +208,20 @@ pub fn supervise_with_environment_and_access(
             attrs,
         );
     }
+    if let Some(logging) = &mut logging {
+        logging.finish();
+    }
     result
+}
+
+fn log_access(
+    logger: Option<&RuntimeSshLogEmitter>,
+    event: &'static str,
+    code: Option<&'static str>,
+) {
+    if let Some(logger) = logger {
+        logger.lifecycle(event, code);
+    }
 }
 
 trait RuntimeReporter {
@@ -227,9 +260,12 @@ fn supervise_with_reporter(
         &BTreeMap::new(),
         reporter,
         None,
+        None,
+        None,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn supervise_with_reporter_and_environment(
     command: &[OsString],
     bootstrap: &RuntimeBootstrapResponse,
@@ -237,6 +273,8 @@ fn supervise_with_reporter_and_environment(
     runtime_environment: &BTreeMap<String, String>,
     mut reporter: Option<&mut dyn RuntimeReporter>,
     mut access_session: Option<&mut AccessSession>,
+    output_logger: Option<&OutputLogger>,
+    runtime_ssh_logs: Option<&RuntimeSshLogEmitter>,
 ) -> SupervisorExit {
     if command.is_empty() {
         report(
@@ -268,7 +306,6 @@ fn supervise_with_reporter_and_environment(
         Instant::now(),
     );
     let environment = sanitized_environment(runtime_environment);
-    let output_logger = OutputLogger::from_environment(bootstrap);
     let mut process_attempt = 0_u64;
     let mut restart_count = 0_u64;
     let mut consecutive_failures = 0_u32;
@@ -276,6 +313,11 @@ fn supervise_with_reporter_and_environment(
     loop {
         if let Some(session) = access_session.as_deref_mut() {
             if session.newly_crashed() {
+                log_access(
+                    runtime_ssh_logs,
+                    "runtime.access.crashed",
+                    Some("access_sidecar_failed"),
+                );
                 report(
                     &mut reporter,
                     "runtime.access.degraded",
@@ -306,9 +348,8 @@ fn supervise_with_reporter_and_environment(
                 return SupervisorExit::Code(126);
             }
         };
-        let output_attempt = output_logger
-            .as_ref()
-            .map(|logger| logger.capture_child(&mut child, process_attempt));
+        let output_attempt =
+            output_logger.map(|logger| logger.capture_child(&mut child, process_attempt));
         let process_group = i32::try_from(child.id()).unwrap_or(i32::MAX);
         report(
             &mut reporter,
@@ -328,6 +369,11 @@ fn supervise_with_reporter_and_environment(
         let status = loop {
             if let Some(session) = access_session.as_deref_mut() {
                 if session.newly_crashed() {
+                    log_access(
+                        runtime_ssh_logs,
+                        "runtime.access.crashed",
+                        Some("access_sidecar_failed"),
+                    );
                     report(
                         &mut reporter,
                         "runtime.access.degraded",
@@ -1004,6 +1050,7 @@ mod tests {
             supervision: Some(supervision),
             logging: None,
             logging_outage_canary: false,
+            diagnostics: None,
             access: None,
         }
     }
@@ -1204,6 +1251,8 @@ mod tests {
                 &never,
                 Duration::ZERO,
                 &runtime_environment,
+                None,
+                None,
                 None,
                 None,
             ),
