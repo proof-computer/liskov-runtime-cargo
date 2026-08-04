@@ -188,8 +188,24 @@ fn main() -> ExitCode {
     let runtime_environment = match load_runtime_environment(&bootstrap, &bridge) {
         Ok(environment) => environment,
         Err(error) => {
+            if let Some(reporter) = &reporter {
+                let outcome = reporter.report_failed(
+                    &diagnostic_http,
+                    DiagnosticFailure::from_runtime_env(&error),
+                );
+                if cli.bridge_probe {
+                    if let Err(report_error) = outcome {
+                        emit_precontact_probe("failed", &report_error);
+                    }
+                }
+            }
             eprintln!("liskov-runtime-contact: {error}");
-            return ExitCode::from(error.exit_status());
+            let status = if cli.diagnostic_exit_codes {
+                error.diagnostic_exit_code()
+            } else {
+                error.exit_status()
+            };
+            return ExitCode::from(status);
         }
     };
     match supervise_with_environment_and_access(

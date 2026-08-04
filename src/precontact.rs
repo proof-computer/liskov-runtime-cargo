@@ -11,6 +11,7 @@ use crate::bridge::BridgeError;
 use crate::contact::ContactError;
 use crate::http::{HttpClient, HttpError};
 use crate::protocol::ProtocolError;
+use crate::runtime_env::RuntimeEnvError;
 
 pub const PRECONTACT_DIAGNOSTIC_DOMAIN: &str = "proof.liskov.runtime-precontact-diagnostic.v1";
 pub const PRECONTACT_HTTP_TIMEOUT: Duration = Duration::from_secs(2);
@@ -214,6 +215,68 @@ impl DiagnosticFailure {
                 stage: "runtime-bootstrap.http",
                 method: "runtime_bootstrap",
                 code: "http_response_binding",
+                rpc_code: None,
+            },
+        }
+    }
+
+    pub fn from_runtime_env(error: &RuntimeEnvError) -> Self {
+        match error {
+            RuntimeEnvError::Signing(error) => {
+                Self::bridge("runtime-env.signing", "signer_sign", error)
+            }
+            RuntimeEnvError::InvalidSignature => Self {
+                stage: "runtime-env.signing",
+                method: "signer_sign",
+                code: "bridge_signing",
+                rpc_code: None,
+            },
+            RuntimeEnvError::InvalidEndpoint => Self {
+                stage: "runtime-env.http",
+                method: "runtime_env",
+                code: "runtime_env_endpoint",
+                rpc_code: None,
+            },
+            RuntimeEnvError::Randomness => Self {
+                stage: "runtime-env.http",
+                method: "runtime_env",
+                code: "runtime_randomness",
+                rpc_code: None,
+            },
+            RuntimeEnvError::Clock | RuntimeEnvError::TimestampOverflow => Self {
+                stage: "runtime-env.http",
+                method: "runtime_env",
+                code: "runtime_clock",
+                rpc_code: None,
+            },
+            RuntimeEnvError::Serialization(_) => Self {
+                stage: "runtime-env.http",
+                method: "runtime_env",
+                code: "runtime_request",
+                rpc_code: None,
+            },
+            RuntimeEnvError::Transport => Self {
+                stage: "runtime-env.http",
+                method: "runtime_env",
+                code: "http_transport",
+                rpc_code: None,
+            },
+            RuntimeEnvError::Rejected => Self {
+                stage: "runtime-env.http",
+                method: "runtime_env",
+                code: "runtime_env_rejected",
+                rpc_code: None,
+            },
+            RuntimeEnvError::InvalidResponse => Self {
+                stage: "runtime-env.http",
+                method: "runtime_env",
+                code: "runtime_env_invalid_response",
+                rpc_code: None,
+            },
+            RuntimeEnvError::ResponseBinding => Self {
+                stage: "runtime-env.http",
+                method: "runtime_env",
+                code: "runtime_env_response_binding",
                 rpc_code: None,
             },
         }
@@ -524,6 +587,49 @@ mod tests {
             assert_eq!(error.probe_code(), expected);
             assert!(!error.probe_code().contains("lrp1_"));
             assert!(!error.probe_code().contains("http"));
+        }
+    }
+
+    #[test]
+    fn runtime_environment_failures_use_only_closed_sanitized_evidence() {
+        let cases = [
+            (
+                RuntimeEnvError::Rejected,
+                "runtime-env.http",
+                "runtime_env",
+                "runtime_env_rejected",
+            ),
+            (
+                RuntimeEnvError::InvalidResponse,
+                "runtime-env.http",
+                "runtime_env",
+                "runtime_env_invalid_response",
+            ),
+            (
+                RuntimeEnvError::ResponseBinding,
+                "runtime-env.http",
+                "runtime_env",
+                "runtime_env_response_binding",
+            ),
+            (
+                RuntimeEnvError::Signing(BridgeError::RpcError {
+                    code: Some(-32_000),
+                }),
+                "runtime-env.signing",
+                "signer_sign",
+                "bridge_rpc_error",
+            ),
+        ];
+        for (error, stage, method, code) in cases {
+            let failure = DiagnosticFailure::from_runtime_env(&error);
+            assert_eq!(failure.stage, stage);
+            assert_eq!(failure.method, method);
+            assert_eq!(failure.code, code);
+            for forbidden in ["https://", "lrp1_", "signature", "response body"] {
+                assert!(!failure.stage.contains(forbidden));
+                assert!(!failure.method.contains(forbidden));
+                assert!(!failure.code.contains(forbidden));
+            }
         }
     }
 
