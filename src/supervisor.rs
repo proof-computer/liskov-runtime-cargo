@@ -115,7 +115,7 @@ pub fn supervise_with_environment_and_access(
         MAX_DIAGNOSTIC_RESPONSE_BYTES,
     ));
     let mut reporter = AsyncDiagnosticReporter::spawn(bootstrap, bridge, http);
-    let mut logging = LoggingController::from_environment(bootstrap);
+    let mut logging = LoggingController::from_environment(bootstrap, runtime_environment);
     let runtime_ssh_logs = logging.as_ref().and_then(LoggingController::runtime_ssh);
     let access_binding = bootstrap
         .access

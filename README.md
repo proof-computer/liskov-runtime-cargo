@@ -66,12 +66,15 @@ workload execution.
 Output forwarding starts only when the signed bootstrap response contains the
 exact policy decision `{"logging":{"enabled":true}}` and
 `BLACKBOX_LOG_CONFIG` validates against the same application, deployment, and
-job. The supervisor tees stdout and stderr to their normal local destinations,
-then forwards separately encrypted records through Liskov's canonical
-Blackbox sink protocol. UTF-8 chunks are labeled as text; binary chunks use
-base64url framing. Every encrypted record binds the stream, process attempt,
-monotonic output sequence, runtime instance, timestamp, byte length, and
-truncation state.
+job. The signed runtime-environment value takes precedence over an inherited
+process value, which preserves compatibility while allowing the controller to
+start immediately after the runtime-environment exchange and before Runtime
+SSH setup. The supervisor tees stdout and stderr to their normal local
+destinations, then forwards separately encrypted records through Liskov's
+canonical Blackbox sink protocol. UTF-8 chunks are labeled as text; binary
+chunks use base64url framing. Every encrypted record binds the stream, process
+attempt, monotonic output sequence, runtime instance, timestamp, byte length,
+and truncation state.
 
 Capture uses 3-KiB chunks, a 256-KiB-per-second admission limit, a 128-item
 in-memory queue, at most 32 records and 256 KiB per request, five-second
