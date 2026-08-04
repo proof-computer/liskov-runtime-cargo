@@ -427,14 +427,21 @@ pub(super) fn terminate_child(child: &mut Child) -> Result<(), AccessError> {
     Ok(())
 }
 
-pub fn take_environment_credential() -> Option<String> {
-    let value = std::env::var(RUNTIME_SSH_CREDENTIAL_ENV).ok();
+pub fn take_runtime_access_credential(bootstrap: &mut RuntimeBootstrapResponse) -> Option<String> {
+    let signed_bootstrap_value = match bootstrap.access.as_mut() {
+        Some(RuntimeAccessBootstrap::Managed(access)) => access
+            .credential
+            .take()
+            .and_then(|credential| serde_json::to_string(&credential).ok()),
+        Some(RuntimeAccessBootstrap::Tailscale(_)) | None => None,
+    };
+    let environment_value = std::env::var(RUNTIME_SSH_CREDENTIAL_ENV).ok();
     // SAFETY: the binary calls this during single-threaded startup, before the
     // diagnostics/logging workers or any customer process are created.
     unsafe {
         std::env::remove_var(RUNTIME_SSH_CREDENTIAL_ENV);
     }
-    value
+    signed_bootstrap_value.or(environment_value)
 }
 
 pub fn setup_runtime_access(
@@ -1157,6 +1164,8 @@ struct TailscaleSelf {
 
 #[cfg(test)]
 mod tests {
+    use base64::Engine as _;
+
     use super::*;
     use crate::protocol::{
         RuntimeAccessArtifact, RuntimeAccessProvider, RuntimeAccessProviderKind,
@@ -1504,5 +1513,71 @@ mod tests {
             serde_json::from_value::<RuntimeSshCredentialV1>(full).unwrap(),
             RuntimeSshCredentialV1::ManagedV1Full(_)
         ));
+    }
+
+    #[test]
+    fn signed_runtime_bootstrap_credential_is_taken_before_workload_launch() {
+        let mut bootstrap: RuntimeBootstrapResponse = serde_json::from_value(serde_json::json!({
+            "ok": true,
+            "domain": "proof.liskov.runtime-bootstrap-response.v2",
+            "applicationUid": "app-uid-1",
+            "applicationId": "app-1",
+            "policyDigest": "sha256:policy",
+            "deploymentId": "dep-1",
+            "jobId": "job-1",
+            "processorId": "processor-1",
+            "runtimeInstanceId": "instance-1",
+            "slipwayUrl": "https://liskov.example",
+            "access": {
+                "provider": {"kind": "liskov"},
+                "attachmentId": "att-1",
+                "fence": 7,
+                "gatewayUrl": "wss://gateway.example",
+                "tunnelId": "tunnel_1",
+                "protocol": "liskov_access_v1",
+                "setupDeadlineMs": 1_800_000_000_000_u64,
+                "binding": {
+                    "organizationId": "org-1",
+                    "applicationId": "app-1",
+                    "applicationUid": "app-uid-1",
+                    "liskovDeploymentId": "dep-1",
+                    "deploymentId": "provider-dep-1",
+                    "liskovJobId": "job-1",
+                    "jobId": "provider-job-1",
+                    "policyDigest": "sha256:policy"
+                },
+                "authorizedKeyFingerprints": [format!(
+                    "SHA256:{}",
+                    base64::engine::general_purpose::STANDARD_NO_PAD.encode([1_u8; 32])
+                )],
+                "toolchain": {
+                    "runtimeContactSha256": "1".repeat(64),
+                    "dropbearSha256": "2".repeat(64),
+                    "dropbearkeySha256": "3".repeat(64)
+                },
+                "credential": {
+                    "schema": MANAGED_CREDENTIAL_SCHEMA_V2,
+                    "provider": {
+                        "kind": "liskov",
+                        "connectorToken": "header.payload.signature"
+                    },
+                    "attachmentId": "att-1",
+                    "fence": 7,
+                    "expiresAtMs": 1_800_000_000_000_u64
+                }
+            }
+        }))
+        .unwrap();
+
+        let raw = take_runtime_access_credential(&mut bootstrap).unwrap();
+        let credential: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(
+            credential["provider"]["connectorToken"],
+            "header.payload.signature"
+        );
+        let RuntimeAccessBootstrap::Managed(access) = bootstrap.access.unwrap() else {
+            panic!("managed access expected");
+        };
+        assert!(access.credential.is_none());
     }
 }

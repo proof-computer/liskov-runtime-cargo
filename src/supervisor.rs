@@ -1283,6 +1283,7 @@ mod tests {
                 authorized_keys: Vec::new(),
                 authorized_key_fingerprints: Vec::new(),
                 toolchain: None,
+                credential: None,
             },
         )));
         let bridge = Arc::new(crate::bridge::UnixBridge::new("unused-test-bridge").unwrap());

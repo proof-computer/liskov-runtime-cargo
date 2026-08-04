@@ -1091,6 +1091,7 @@ mod tests {
                 dropbear_sha256: "2".repeat(64),
                 dropbearkey_sha256: "3".repeat(64),
             }),
+            credential: None,
         };
         let credential = ManagedRuntimeSshCredential::V1Full(ManagedRuntimeSshCredentialV2 {
             schema: MANAGED_CREDENTIAL_SCHEMA_V2.into(),
@@ -1173,6 +1174,7 @@ mod tests {
                 dropbear_sha256: "2".repeat(64),
                 dropbearkey_sha256: "3".repeat(64),
             }),
+            credential: None,
         };
         let credential =
             ManagedRuntimeSshCredential::V1Compact(CompactManagedRuntimeSshCredentialV2 {

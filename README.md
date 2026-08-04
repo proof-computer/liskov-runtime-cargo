@@ -68,10 +68,12 @@ exact policy decision `{"logging":{"enabled":true}}` and
 `BLACKBOX_LOG_CONFIG` validates against the same application, deployment, and
 job. A signed runtime-environment value takes precedence over an inherited
 process value. When neither contains the config, the supervisor uses the
-job-bound `PROOF_LOCKBOX_BOOTSTRAP` contract to request only
-`blackbox-log-config`, signs the request and decrypts its response through the
-Acurast bridge, and verifies the response, encrypted-payload, AAD, plaintext,
-and secret bindings before installing the value in memory. This narrow lookup
+signed `/api/jobs/secret-bootstrap` protocol to discover the exact job grant,
+then requests only `blackbox-log-config` and decrypts its response through the
+Acurast bridge. The transitional job-bound `PROOF_LOCKBOX_BOOTSTRAP` value is
+still accepted when present. Both paths verify the response,
+encrypted-payload, AAD, plaintext, and secret bindings before installing the
+value in memory. This narrow lookup
 lets the controller start before Runtime SSH without making the supervisor the
 owner of customer secrets. Lookup failure is non-fatal to the workload and
 access attachment.
@@ -135,10 +137,13 @@ schedule runway.
 Non-default restart policy is currently limited to exact applications selected
 by the Liskov control plane through `LISKOV_CARGO_SUPERVISION_CANARY_JSON`. The
 variable is an internal fail-closed canary control, is removed before customer
-startup, and is not a customer-authored policy surface. The bootstrap secret,
-supervision canary control, and reserved Runtime SSH credential are removed
-from the captured customer environment. Runtime values cannot reintroduce
-those protected names.
+startup, and is not a customer-authored policy surface. Managed Runtime SSH
+receives its exact-job connector credential in the authenticated
+runtime-bootstrap response and takes it out of that in-memory response before
+customer startup. The transitional bootstrap secret, supervision canary
+control, and reserved Runtime SSH environment credential are removed from the
+captured customer environment. Runtime values cannot reintroduce those
+protected names.
 
 For bounded release canaries whose Shell host does not retain stderr,
 `--diagnostic-exit-codes` replaces status `70`/`75` with a non-secret stage
