@@ -24,9 +24,10 @@ use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use zeroize::{Zeroize, Zeroizing};
 
 use super::{
-    AccessError, CREDENTIAL_SCHEMA, MANAGED_CREDENTIAL_SCHEMA_V2, ManagedRuntimeSshCredential,
-    ManagedRuntimeSshCredentialProvider, ManagedRuntimeSshCredentialProviderV2, private_root,
-    runtime_job_ids_match, terminate_child, unix_time_ms,
+    AccessError, CREDENTIAL_SCHEMA, CompactManagedRuntimeSshCredentialProviderV2,
+    MANAGED_CREDENTIAL_SCHEMA_V2, ManagedRuntimeSshCredential, ManagedRuntimeSshCredentialProvider,
+    ManagedRuntimeSshCredentialProviderV2, private_root, runtime_job_ids_match, terminate_child,
+    unix_time_ms,
 };
 use crate::protocol::{
     ManagedRuntimeAccessBootstrap, ManagedRuntimeAccessProtocol, RuntimeAccessProviderKind,
@@ -206,28 +207,21 @@ fn validate_binding(
                 _ => Err(AccessError::new("access_setup_failed")),
             }
         }
-        ManagedRuntimeSshCredential::V1(mut credential) => {
-            let Some(binding) = access.binding.as_ref() else {
-                return Err(AccessError::new("access_setup_failed"));
-            };
+        ManagedRuntimeSshCredential::V1Full(mut credential) => {
+            let binding = validate_v1_bootstrap_binding(bootstrap, access)?;
             let Some(expected_toolchain) = access.toolchain.as_ref() else {
                 return Err(AccessError::new("access_setup_failed"));
             };
             if credential.schema != MANAGED_CREDENTIAL_SCHEMA_V2
                 || credential.organization_id != binding.organization_id
                 || credential.attachment_id != access.attachment_id
-                || credential.application_id != bootstrap.application_id
                 || credential.application_id != binding.application_id
-                || credential.application_uid != bootstrap.application_uid
                 || credential.application_uid != binding.application_uid
                 || credential.liskov_deployment_id != binding.liskov_deployment_id
                 || credential.deployment_id != binding.deployment_id
-                || credential.deployment_id != bootstrap.deployment_id
                 || credential.liskov_job_id != binding.liskov_job_id
                 || credential.job_id != binding.job_id
-                || !runtime_job_ids_match(&credential.job_id, &bootstrap.job_id)
                 || credential.policy_digest != binding.policy_digest
-                || credential.policy_digest != bootstrap.policy_digest
                 || credential.fence != access.fence
                 || credential.expires_at_ms < access.setup_deadline_ms
                 || credential.expires_at_ms <= now_ms
@@ -269,7 +263,71 @@ fn validate_binding(
                 _ => Err(AccessError::new("access_setup_failed")),
             }
         }
+        ManagedRuntimeSshCredential::V1Compact(mut credential) => {
+            validate_v1_bootstrap_binding(bootstrap, access)?;
+            let Some(expected_toolchain) = access.toolchain.as_ref() else {
+                return Err(AccessError::new("access_setup_failed"));
+            };
+            if credential.schema != MANAGED_CREDENTIAL_SCHEMA_V2
+                || credential.attachment_id != access.attachment_id
+                || credential.fence != access.fence
+                || credential.expires_at_ms < access.setup_deadline_ms
+                || credential.expires_at_ms <= now_ms
+                || access.protocol != ManagedRuntimeAccessProtocol::LiskovAccessV1
+            {
+                return Err(AccessError::new("access_setup_failed"));
+            }
+            match &mut credential.provider {
+                CompactManagedRuntimeSshCredentialProviderV2::Liskov {
+                    connector_token,
+                    authorized_keys,
+                } if valid_connector_token(connector_token) => {
+                    let keys = normalized_authorized_keys(authorized_keys)?;
+                    let fingerprints = keys
+                        .iter()
+                        .map(|key| ssh_public_key_fingerprint(key))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    if fingerprints != access.authorized_key_fingerprints {
+                        return Err(AccessError::new("access_setup_failed"));
+                    }
+                    let verified = verify_fixed_toolchain(
+                        &expected_toolchain.runtime_contact_sha256,
+                        &expected_toolchain.dropbear_sha256,
+                        &expected_toolchain.dropbearkey_sha256,
+                    )?;
+                    Ok(ValidatedCredential {
+                        connector_token: Zeroizing::new(std::mem::take(connector_token)),
+                        authorized_keys: Zeroizing::new(keys),
+                        toolchain: Some(verified),
+                        expires_at_ms: credential.expires_at_ms,
+                    })
+                }
+                _ => Err(AccessError::new("access_setup_failed")),
+            }
+        }
     }
+}
+
+fn validate_v1_bootstrap_binding<'a>(
+    bootstrap: &RuntimeBootstrapResponse,
+    access: &'a ManagedRuntimeAccessBootstrap,
+) -> Result<&'a crate::protocol::ManagedRuntimeAccessBinding, AccessError> {
+    let binding = access
+        .binding
+        .as_ref()
+        .ok_or_else(|| AccessError::new("access_setup_failed"))?;
+    if binding.organization_id.is_empty()
+        || binding.application_id != bootstrap.application_id
+        || binding.application_uid != bootstrap.application_uid
+        || binding.liskov_deployment_id.is_empty()
+        || binding.deployment_id != bootstrap.deployment_id
+        || binding.liskov_job_id.is_empty()
+        || !runtime_job_ids_match(&binding.job_id, &bootstrap.job_id)
+        || binding.policy_digest != bootstrap.policy_digest
+    {
+        return Err(AccessError::new("access_setup_failed"));
+    }
+    Ok(binding)
 }
 
 fn setup_deadline(setup_deadline_ms: u64, now_ms: u64) -> Result<Instant, AccessError> {
@@ -900,7 +958,10 @@ async fn wait_cancelled(cancel: Arc<AtomicBool>, duration: Duration) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::access::{ManagedCredentialToolchain, ManagedRuntimeSshCredentialV2};
+    use crate::access::{
+        CompactManagedRuntimeSshCredentialProviderV2, CompactManagedRuntimeSshCredentialV2,
+        ManagedCredentialToolchain, ManagedRuntimeSshCredentialV2,
+    };
     use crate::protocol::{
         ManagedRuntimeAccessBinding, ManagedRuntimeAccessToolchain, RuntimeAccessProvider,
     };
@@ -1029,7 +1090,7 @@ mod tests {
                 dropbearkey_sha256: "3".repeat(64),
             }),
         };
-        let credential = ManagedRuntimeSshCredential::V1(ManagedRuntimeSshCredentialV2 {
+        let credential = ManagedRuntimeSshCredential::V1Full(ManagedRuntimeSshCredentialV2 {
             schema: MANAGED_CREDENTIAL_SCHEMA_V2.into(),
             provider: ManagedRuntimeSshCredentialProviderV2::Liskov {
                 connector_token: "a.b.c".into(),
@@ -1052,6 +1113,75 @@ mod tests {
             fence: 1,
             expires_at_ms,
         });
+        assert_eq!(
+            validate_binding(&bootstrap, &access, credential, now_ms)
+                .err()
+                .unwrap()
+                .code,
+            "access_setup_failed"
+        );
+    }
+
+    #[test]
+    fn compact_v2_credential_rejects_a_substituted_signed_bootstrap_binding() {
+        let now_ms = unix_time_ms().unwrap();
+        let expires_at_ms = now_ms + 60_000;
+        let bootstrap = RuntimeBootstrapResponse {
+            ok: true,
+            domain: "proof.liskov.runtime-bootstrap-response.v2".into(),
+            application_uid: "app-uid".into(),
+            application_id: "substituted-app".into(),
+            policy_digest: "sha256:policy".into(),
+            deployment_id: "provider-deployment".into(),
+            job_id: "provider-job".into(),
+            processor_id: "processor".into(),
+            runtime_instance_id: "instance".into(),
+            slipway_url: "https://liskov.example".into(),
+            runtime_env: None,
+            supervision: None,
+            logging: None,
+            logging_outage_canary: false,
+            diagnostics: None,
+            access: None,
+        };
+        let access = ManagedRuntimeAccessBootstrap {
+            provider: RuntimeAccessProvider {
+                kind: RuntimeAccessProviderKind::Liskov,
+            },
+            attachment_id: "att-1".into(),
+            fence: 1,
+            gateway_url: "wss://gateway.example".into(),
+            tunnel_id: "tun_1".into(),
+            protocol: ManagedRuntimeAccessProtocol::LiskovAccessV1,
+            setup_deadline_ms: now_ms + 30_000,
+            binding: Some(ManagedRuntimeAccessBinding {
+                organization_id: "org-1".into(),
+                application_id: "app-id".into(),
+                application_uid: "app-uid".into(),
+                liskov_deployment_id: "canonical-deployment".into(),
+                deployment_id: "provider-deployment".into(),
+                liskov_job_id: "canonical-job".into(),
+                job_id: "provider-job".into(),
+                policy_digest: "sha256:policy".into(),
+            }),
+            authorized_key_fingerprints: vec!["SHA256:key".into()],
+            toolchain: Some(ManagedRuntimeAccessToolchain {
+                runtime_contact_sha256: "1".repeat(64),
+                dropbear_sha256: "2".repeat(64),
+                dropbearkey_sha256: "3".repeat(64),
+            }),
+        };
+        let credential =
+            ManagedRuntimeSshCredential::V1Compact(CompactManagedRuntimeSshCredentialV2 {
+                schema: MANAGED_CREDENTIAL_SCHEMA_V2.into(),
+                provider: CompactManagedRuntimeSshCredentialProviderV2::Liskov {
+                    connector_token: "a.b.c".into(),
+                    authorized_keys: vec![PUBLIC_KEY.into()],
+                },
+                attachment_id: "att-1".into(),
+                fence: 1,
+                expires_at_ms,
+            });
         assert_eq!(
             validate_binding(&bootstrap, &access, credential, now_ms)
                 .err()
