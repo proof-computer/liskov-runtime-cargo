@@ -42,8 +42,7 @@ source_dir="${build_root}/dropbear-${version}"
     --disable-wtmpx \
     --disable-loginfunc \
     --disable-pam \
-    --disable-shadow \
-    --disable-openpty
+    --disable-shadow
   make -j2 PROGRAMS="dropbear dropbearkey" STATIC=1
 )
 

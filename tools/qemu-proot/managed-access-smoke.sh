@@ -56,6 +56,7 @@ pid_file=${private_root}/dropbear.pid
 known_hosts=${private_root}/known_hosts
 dropbear_log=${private_root}/dropbear.log
 openssh_log=${private_root}/openssh.log
+pty_openssh_log=${private_root}/openssh-pty.log
 qemu_aarch64=/tmp/liskov-qemu-aarch64-static
 if [ ! -x "${qemu_aarch64}" ]; then
   echo "managed access smoke: explicit QEMU runner is unavailable" >&2
@@ -138,6 +139,36 @@ if [ "${ssh_status}" -ne 0 ]; then
 fi
 test "${observed}" = "${marker}"
 
+# The operator CLI opens an interactive PTY by default. Keep this separate from
+# the non-interactive command above so the release gate proves both Dropbear
+# session paths with the exact pinned server and stock OpenSSH client. Nested
+# QEMU/PRoot cannot model TIOCSCTTY for the guest child, so assert the SSH PTY
+# request itself here; the preceding command proves remote I/O and the processor
+# gate owns terminal control and PTY I/O.
+set +e
+"${stock_loader}" --library-path "${stock_library_dir}" "${ssh_client}" -vvv -tt \
+  -o BatchMode=yes \
+  -o ClearAllForwardings=yes \
+  -o HostKeyAlias=liskov-managed-canary \
+  -o IdentitiesOnly=yes \
+  -o "IdentityFile=${operator_key}" \
+  -o "ProxyCommand=${stock_loader} --library-path ${stock_library_dir} ${netcat} 127.0.0.1 2222" \
+  -o StrictHostKeyChecking=yes \
+  -o "UserKnownHostsFile=${known_hosts}" \
+  root@liskov-managed-canary \
+  true \
+  >/dev/null 2>"${pty_openssh_log}"
+set -e
+if ! grep -q 'PTY allocation request accepted on channel 0' "${pty_openssh_log}"; then
+  echo "managed access smoke: stock OpenSSH did not confirm PTY acceptance" >&2
+  sed -n '1,240p' "${pty_openssh_log}" >&2
+  exit 1
+fi
+if grep -q 'PTY allocation request failed' "${pty_openssh_log}"; then
+  echo "managed access smoke: stock OpenSSH reported a rejected PTY" >&2
+  exit 1
+fi
+
 # Access-sidecar failure is independent of the customer's exact exit result.
 /bin/sh -c 'sleep 1; exit 23' &
 customer_pid=$!
@@ -150,4 +181,4 @@ customer_status=$?
 set -e
 test "${customer_status}" -eq 23
 
-echo "managed access smoke passed: injected-static-toolchain low-port=denied loopback-2222=openssh customer-exit=23"
+echo "managed access smoke passed: injected-static-toolchain low-port=denied loopback-2222=openssh pty=request-accepted customer-exit=23"
