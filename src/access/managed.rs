@@ -3,6 +3,7 @@
 use std::ffi::OsString;
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpStream as StdTcpStream};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -43,6 +44,7 @@ const MAX_DIRECTION_BYTES: u64 = 1024 * 1024 * 1024;
 const CONNECTOR_SUBPROTOCOL_V0: &str = "liskov-access.v0";
 const CONNECTOR_SUBPROTOCOL_V1: &str = "liskov-access.v1";
 const FIXED_SSH_TARGET: &str = "127.0.0.1:2222";
+const DROPBEAR_ARGV0_NO_REEXEC: &str = "/liskov-dropbear-no-reexec";
 const DROPBEAR_FILENAME: &str = "liskov-dropbear";
 const DROPBEARKEY_FILENAME: &str = "liskov-dropbearkey";
 const MAX_TOOLCHAIN_BINARY_BYTES: u64 = 32 * 1024 * 1024;
@@ -483,6 +485,10 @@ fn setup_in_root(
         }
         thread::sleep(POLL_INTERVAL);
     }
+    if let Err(error) = verify_dropbear_listener(deadline) {
+        let _ = terminate_child(&mut dropbear);
+        return Err(error);
+    }
 
     let (registered_sender, registered_receiver) = mpsc::sync_channel(1);
     let mut connector = match spawn_connector(
@@ -540,6 +546,10 @@ fn spawn_dropbear(
 ) -> Result<Child, AccessError> {
     let mut command = Command::new(dropbear);
     command
+        // Live Acurast PRoot dogfood closed the accepted connection before an
+        // SSH banner on Dropbear's normal fexecve(2) path. Use Dropbear's built-
+        // in straight-fork fallback by giving it an unopenable argv[0].
+        .arg0(DROPBEAR_ARGV0_NO_REEXEC)
         .args(["-F", "-E", "-s", "-g", "-j", "-k", "-p", FIXED_SSH_TARGET])
         .arg("-r")
         .arg(host_key_path)
@@ -563,6 +573,51 @@ fn spawn_dropbear(
     command
         .spawn()
         .map_err(|_| AccessError::new("access_sidecar_spawn_failed"))
+}
+
+fn verify_dropbear_listener(deadline: Instant) -> Result<(), AccessError> {
+    let address: SocketAddr = FIXED_SSH_TARGET
+        .parse()
+        .map_err(|_| AccessError::new("access_sidecar_failed"))?;
+    let probe_deadline = deadline.min(Instant::now() + CONNECT_TIMEOUT);
+    loop {
+        let remaining = probe_deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(AccessError::new("access_sidecar_failed"));
+        }
+        let connect_timeout = remaining.min(Duration::from_secs(1));
+        match StdTcpStream::connect_timeout(&address, connect_timeout) {
+            Ok(mut stream) => {
+                stream
+                    .set_read_timeout(Some(remaining))
+                    .map_err(|_| AccessError::new("access_sidecar_failed"))?;
+                let banner = read_ssh_banner(&mut stream)?;
+                return valid_dropbear_banner(&banner)
+                    .then_some(())
+                    .ok_or_else(|| AccessError::new("access_sidecar_failed"));
+            }
+            Err(_) => thread::sleep(POLL_INTERVAL.min(remaining)),
+        }
+    }
+}
+
+fn read_ssh_banner(stream: &mut impl Read) -> Result<Vec<u8>, AccessError> {
+    let mut banner = Vec::with_capacity(64);
+    let mut byte = [0_u8; 1];
+    while banner.len() < 255 {
+        stream
+            .read_exact(&mut byte)
+            .map_err(|_| AccessError::new("access_sidecar_failed"))?;
+        banner.push(byte[0]);
+        if byte[0] == b'\n' {
+            return Ok(banner);
+        }
+    }
+    Err(AccessError::new("access_sidecar_failed"))
+}
+
+fn valid_dropbear_banner(banner: &[u8]) -> bool {
+    banner.starts_with(b"SSH-2.0-dropbear_") && banner.ends_with(b"\r\n")
 }
 
 fn run_checked(
@@ -1007,6 +1062,7 @@ mod tests {
             "wss://access.example/v0/connectors/tunnel_123"
         );
         assert_eq!(FIXED_SSH_TARGET, "127.0.0.1:2222");
+        assert_eq!(DROPBEAR_ARGV0_NO_REEXEC, "/liskov-dropbear-no-reexec");
         assert!(
             connector_endpoint(
                 "ws://access.example",
@@ -1014,6 +1070,23 @@ mod tests {
                 ManagedRuntimeAccessProtocol::LiskovAccessV1,
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn listener_probe_requires_a_bounded_dropbear_ssh_banner() {
+        let mut valid = std::io::Cursor::new(b"SSH-2.0-dropbear_2026.94\r\n".to_vec());
+        assert!(valid_dropbear_banner(&read_ssh_banner(&mut valid).unwrap()));
+
+        let mut substituted = std::io::Cursor::new(b"SSH-2.0-substituted\r\n".to_vec());
+        assert!(!valid_dropbear_banner(
+            &read_ssh_banner(&mut substituted).unwrap()
+        ));
+
+        let mut oversized = std::io::Cursor::new(vec![b'x'; 256]);
+        assert_eq!(
+            read_ssh_banner(&mut oversized).unwrap_err().code,
+            "access_sidecar_failed"
         );
     }
 
