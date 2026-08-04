@@ -56,6 +56,7 @@ pid_file=${private_root}/dropbear.pid
 known_hosts=${private_root}/known_hosts
 dropbear_log=${private_root}/dropbear.log
 openssh_log=${private_root}/openssh.log
+pty_openssh_log=${private_root}/openssh-pty.log
 qemu_aarch64=/tmp/liskov-qemu-aarch64-static
 if [ ! -x "${qemu_aarch64}" ]; then
   echo "managed access smoke: explicit QEMU runner is unavailable" >&2
@@ -140,11 +141,13 @@ test "${observed}" = "${marker}"
 
 # The operator CLI opens an interactive PTY by default. Keep this separate from
 # the non-interactive command above so the release gate proves both Dropbear
-# session paths with the exact pinned server and stock OpenSSH client.
+# session paths with the exact pinned server and stock OpenSSH client. Nested
+# QEMU/PRoot cannot model TIOCSCTTY for the guest child, so assert the SSH PTY
+# request itself plus remote I/O here; the processor gate owns terminal control.
 pty_marker=liskov-managed-qemu-proot-pty-marker
 set +e
 pty_observed=$(
-  "${stock_loader}" --library-path "${stock_library_dir}" "${ssh_client}" -tt \
+  "${stock_loader}" --library-path "${stock_library_dir}" "${ssh_client}" -vvv -tt \
     -o BatchMode=yes \
     -o ClearAllForwardings=yes \
     -o HostKeyAlias=liskov-managed-canary \
@@ -154,18 +157,23 @@ pty_observed=$(
     -o StrictHostKeyChecking=yes \
     -o "UserKnownHostsFile=${known_hosts}" \
     root@liskov-managed-canary \
-    "test -t 0 && test -t 1 && printf '%s\\n' '${pty_marker}'" \
-    2>>"${openssh_log}"
+    "printf '%s\\n' '${pty_marker}'" \
+    2>"${pty_openssh_log}"
 )
 pty_status=$?
 set -e
 if [ "${pty_status}" -ne 0 ]; then
   echo "managed access smoke: stock OpenSSH PTY failed with status ${pty_status}" >&2
-  sed -n '1,240p' "${openssh_log}" >&2
+  sed -n '1,240p' "${pty_openssh_log}" >&2
   sed -n '1,160p' "${dropbear_log}" >&2
   exit "${pty_status}"
 fi
 test "$(printf '%s' "${pty_observed}" | tr -d '\r')" = "${pty_marker}"
+grep -q 'PTY allocation request accepted on channel 0' "${pty_openssh_log}"
+if grep -q 'PTY allocation request failed' "${pty_openssh_log}"; then
+  echo "managed access smoke: stock OpenSSH reported a rejected PTY" >&2
+  exit 1
+fi
 
 # Access-sidecar failure is independent of the customer's exact exit result.
 /bin/sh -c 'sleep 1; exit 23' &
