@@ -1,6 +1,6 @@
 //! Policy-gated, bounded stdout/stderr forwarding to the canonical Blackbox sink.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::io::{Read, Write};
 use std::process::{Child, ChildStderr, ChildStdout};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -221,12 +221,16 @@ pub struct LoggingController {
 impl LoggingController {
     /// Creates the sole Blackbox owner before Runtime SSH setup. Customer and
     /// provider records use independent queues, budgets, and batches.
-    pub fn from_environment(bootstrap: &RuntimeBootstrapResponse) -> Option<Self> {
+    pub fn from_environment(
+        bootstrap: &RuntimeBootstrapResponse,
+        runtime_environment: &BTreeMap<String, String>,
+    ) -> Option<Self> {
         if !bootstrap.logging_enabled() {
             return None;
         }
-        let raw = std::env::var(BLACKBOX_CONFIG_ENV).ok()?;
-        let config = BlackboxConfig::parse(&raw, bootstrap).ok()?;
+        let inherited = std::env::var(BLACKBOX_CONFIG_ENV).ok();
+        let raw = select_blackbox_config(runtime_environment, inherited.as_deref())?;
+        let config = BlackboxConfig::parse(raw, bootstrap).ok()?;
         let http: Arc<dyn LogHttpClient> = if bootstrap.logging_outage_canary_enabled() {
             Arc::new(OutageCanaryHttp)
         } else {
@@ -302,6 +306,16 @@ impl LoggingController {
         self.customer.finish();
         self.runtime_ssh = None;
     }
+}
+
+fn select_blackbox_config<'a>(
+    runtime_environment: &'a BTreeMap<String, String>,
+    inherited: Option<&'a str>,
+) -> Option<&'a str> {
+    runtime_environment
+        .get(BLACKBOX_CONFIG_ENV)
+        .map(String::as_str)
+        .or(inherited)
 }
 
 impl Drop for LoggingController {
@@ -1830,6 +1844,43 @@ mod tests {
             &bootstrap(Some(json!({"enabled": true}))),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn signed_runtime_environment_blackbox_config_precedes_inherited_value() {
+        let runtime_environment = BTreeMap::from([(
+            BLACKBOX_CONFIG_ENV.to_string(),
+            "signed-runtime-config".to_string(),
+        )]);
+        assert_eq!(
+            select_blackbox_config(&runtime_environment, Some("inherited-config")),
+            Some("signed-runtime-config")
+        );
+        assert_eq!(
+            select_blackbox_config(&BTreeMap::new(), Some("inherited-config")),
+            Some("inherited-config")
+        );
+        assert_eq!(select_blackbox_config(&BTreeMap::new(), None), None);
+    }
+
+    #[test]
+    fn controller_accepts_config_from_signed_runtime_environment() {
+        let runtime_environment = BTreeMap::from([(
+            BLACKBOX_CONFIG_ENV.to_string(),
+            json!({
+                "sinkId": "sink-stable",
+                "jobId": "job",
+                "writeUrl": "https://blackbox.test/v1/sinks/sink-stable/events",
+                "dek": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+            })
+            .to_string(),
+        )]);
+        let mut controller = LoggingController::from_environment(
+            &bootstrap(Some(json!({"enabled": true}))),
+            &runtime_environment,
+        )
+        .expect("signed runtime-environment config enables logging");
+        controller.finish();
     }
 
     #[test]
