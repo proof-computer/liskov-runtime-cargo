@@ -12,8 +12,8 @@ use liskov_runtime_cargo::precontact::{
 };
 use liskov_runtime_cargo::probe::{SystemProbeRuntime, run_bridge_probe};
 use liskov_runtime_cargo::{
-    DEFAULT_CORE_URL, SupervisorExit, establish_runtime_contact, load_runtime_environment,
-    supervise_with_environment_and_access,
+    DEFAULT_CORE_URL, SupervisorExit, establish_runtime_contact, hydrate_blackbox_log_config,
+    load_runtime_environment, supervise_with_environment_and_access,
 };
 
 #[derive(Debug, Parser)]
@@ -185,7 +185,7 @@ fn main() -> ExitCode {
     // First contact is signed and bound before this reserved credential is
     // consumed; remove it before constructing the customer environment.
     let runtime_access_credential = liskov_runtime_cargo::access::take_environment_credential();
-    let runtime_environment = match load_runtime_environment(&bootstrap, &bridge) {
+    let mut runtime_environment = match load_runtime_environment(&bootstrap, &bridge) {
         Ok(environment) => environment,
         Err(error) => {
             if let Some(reporter) = &reporter {
@@ -208,6 +208,10 @@ fn main() -> ExitCode {
             return ExitCode::from(status);
         }
     };
+    // Provider logging is strictly best-effort. Resolve only the server-owned
+    // Blackbox config before Runtime SSH starts, but never let Lockbox or
+    // logging availability alter customer execution or access attachment state.
+    let _ = hydrate_blackbox_log_config(&bootstrap, &bridge, &mut runtime_environment);
     match supervise_with_environment_and_access(
         &cli.command,
         &bootstrap,

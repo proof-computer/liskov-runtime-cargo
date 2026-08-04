@@ -9,8 +9,10 @@ Cargo/PRoot workloads. It produces the static AArch64
 - Keep the helper independent of the `liskov-rs` checkout. It consumes the
   published signed runtime-bootstrap v2 contract.
 - The supervisor owns authenticated first contact, required runtime-environment
-  retrieval, and exact customer-process handoff. Lockbox, provider adapters,
-  and bootstrap ZIP integration remain separate work.
+  retrieval, exact customer-process handoff, provider adapters, and the narrow
+  job-bound Lockbox lookup for its server-owned Blackbox config. General
+  customer Lockbox installation and bootstrap ZIP integration remain separate
+  work.
 - Distribution is through GitHub Releases, not crates.io and not a runtime
   download. Release-manifest v2 separately identifies and attests the helper,
   Dropbear server, and Dropbear key generator.
