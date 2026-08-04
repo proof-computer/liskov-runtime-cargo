@@ -1280,6 +1280,7 @@ mod tests {
                 protocol: crate::protocol::ManagedRuntimeAccessProtocol::LiskovAccessV0,
                 setup_deadline_ms: u64::MAX,
                 binding: None,
+                authorized_keys: Vec::new(),
                 authorized_key_fingerprints: Vec::new(),
                 toolchain: None,
             },

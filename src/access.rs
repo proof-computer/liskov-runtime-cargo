@@ -156,8 +156,6 @@ pub(super) enum CompactManagedRuntimeSshCredentialProviderV2 {
     Liskov {
         #[serde(rename = "connectorToken", alias = "connector_token")]
         connector_token: String,
-        #[serde(rename = "authorizedKeys", alias = "authorized_keys")]
-        authorized_keys: Vec<String>,
     },
 }
 
@@ -187,12 +185,8 @@ impl Drop for ManagedRuntimeSshCredentialProviderV2 {
 impl Drop for CompactManagedRuntimeSshCredentialProviderV2 {
     fn drop(&mut self) {
         match self {
-            Self::Liskov {
-                connector_token,
-                authorized_keys,
-            } => {
+            Self::Liskov { connector_token } => {
                 connector_token.zeroize();
-                authorized_keys.zeroize();
             }
         }
     }
@@ -1469,10 +1463,7 @@ mod tests {
             "schema": MANAGED_CREDENTIAL_SCHEMA_V2,
             "provider": {
                 "kind": "liskov",
-                "connectorToken": "header.payload.signature",
-                "authorizedKeys": [
-                    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-                ]
+                "connectorToken": "header.payload.signature"
             },
             "attachmentId": "att-1",
             "fence": 7,
