@@ -6,7 +6,7 @@
 //! through the Acurast bridge. Customer secrets remain owned by the workload's
 //! runtime SDK.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -24,6 +24,9 @@ pub const BLACKBOX_LOG_CONFIG_ENV: &str = "BLACKBOX_LOG_CONFIG";
 const LOCKBOX_BOOTSTRAP_ENV: &str = "PROOF_LOCKBOX_BOOTSTRAP";
 const BLACKBOX_LOG_CONFIG_SECRET_ID: &str = "blackbox-log-config";
 const BLACKBOX_LOG_CONFIG_BUNDLE_ID: &str = "blackbox-log-config";
+const DEFAULT_SECRETS_URL: &str = "https://secrets.liskov.proof.computer";
+const SECRET_BOOTSTRAP_REQUEST_DOMAIN_V2: &str = "proof.liskov.secret-bootstrap-request.v2";
+const SECRET_BOOTSTRAP_RESPONSE_DOMAIN_V2: &str = "proof.liskov.secret-bootstrap-response.v2";
 const REQUEST_DOMAIN_V2: &str = "proof.lockbox.job-secret-request.v2";
 const RESPONSE_DOMAIN_V2: &str = "proof.lockbox.job-secret-response.v2";
 const ENCRYPTED_PAYLOAD_DOMAIN_V2: &str = "proof.lockbox.job-secret-response.encrypted-payload.v2";
@@ -103,6 +106,26 @@ struct SignedRequest<'a> {
     signature: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UnsignedSecretBootstrapRequest {
+    domain: &'static str,
+    job_id: String,
+    processor_id: String,
+    response_encryption_key: String,
+    nonce: String,
+    issued_at_ms: u64,
+    expires_at_ms: u64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SignedSecretBootstrapRequest<'a> {
+    #[serde(flatten)]
+    unsigned: &'a UnsignedSecretBootstrapRequest,
+    signature: String,
+}
+
 /// Populate the signed runtime-environment map with the exact job-bound
 /// Blackbox config when logging is enabled and no authoritative config is
 /// already present. Failure is deliberately returned to the caller so tests
@@ -116,27 +139,147 @@ pub fn hydrate_blackbox_log_config(
     if !bootstrap.logging_enabled() || runtime_environment.contains_key(BLACKBOX_LOG_CONFIG_ENV) {
         return Ok(());
     }
-    let raw_bootstrap = runtime_environment
+    let ambient_bootstrap = runtime_environment
         .get(LOCKBOX_BOOTSTRAP_ENV)
         .cloned()
         .or_else(|| std::env::var(LOCKBOX_BOOTSTRAP_ENV).ok());
-    let Some(raw_bootstrap) = raw_bootstrap else {
-        return Ok(());
-    };
-    let mut nonce = [0_u8; 16];
-    getrandom::fill(&mut nonce).map_err(|_| LogConfigSecretError::Randomness)?;
+    let mut bootstrap_nonce = [0_u8; 16];
+    getrandom::fill(&mut bootstrap_nonce).map_err(|_| LogConfigSecretError::Randomness)?;
+    let mut request_nonce = [0_u8; 16];
+    getrandom::fill(&mut request_nonce).map_err(|_| LogConfigSecretError::Randomness)?;
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| LogConfigSecretError::Clock)?
         .as_millis();
     let now_ms = u64::try_from(now_ms).map_err(|_| LogConfigSecretError::Clock)?;
     let http = UreqHttpClient::default();
-    if let Some(config) =
-        load_blackbox_log_config_with(bootstrap, bridge, &http, &raw_bootstrap, now_ms, nonce)?
-    {
+    let raw_bootstrap = match ambient_bootstrap {
+        Some(raw_bootstrap) => raw_bootstrap,
+        None => {
+            let Some(raw_bootstrap) = discover_lockbox_bootstrap_with(
+                bootstrap,
+                bridge,
+                &http,
+                DEFAULT_SECRETS_URL,
+                now_ms,
+                bootstrap_nonce,
+            )?
+            else {
+                return Ok(());
+            };
+            raw_bootstrap
+        }
+    };
+    if let Some(config) = load_blackbox_log_config_with(
+        bootstrap,
+        bridge,
+        &http,
+        &raw_bootstrap,
+        now_ms,
+        request_nonce,
+    )? {
         runtime_environment.insert(BLACKBOX_LOG_CONFIG_ENV.to_owned(), config);
     }
     Ok(())
+}
+
+fn discover_lockbox_bootstrap_with(
+    bootstrap: &RuntimeBootstrapResponse,
+    bridge: &dyn Bridge,
+    http: &dyn HttpClient,
+    secrets_url: &str,
+    now_ms: u64,
+    nonce: [u8; 16],
+) -> Result<Option<String>, LogConfigSecretError> {
+    let endpoint = secure_join(secrets_url, "/api/jobs/secret-bootstrap")?;
+    let unsigned = UnsignedSecretBootstrapRequest {
+        domain: SECRET_BOOTSTRAP_REQUEST_DOMAIN_V2,
+        job_id: bootstrap.job_id.clone(),
+        processor_id: bootstrap.processor_id.clone(),
+        response_encryption_key: encryption_public_key(bridge)?,
+        nonce: hex::encode(nonce),
+        issued_at_ms: now_ms,
+        expires_at_ms: now_ms
+            .checked_add(REQUEST_TTL_MS)
+            .ok_or(LogConfigSecretError::TimestampOverflow)?,
+    };
+    let message = canonical_json_bytes(
+        &serde_json::to_value(&unsigned).map_err(LogConfigSecretError::Serialization)?,
+    );
+    let signature = sign(bridge, &message)?;
+    let body = serde_json::to_vec(&SignedSecretBootstrapRequest {
+        unsigned: &unsigned,
+        signature,
+    })
+    .map_err(LogConfigSecretError::Serialization)?;
+    let response = http
+        .post(endpoint.as_str(), &body)
+        .map_err(|error| match error {
+            HttpError::Transport => LogConfigSecretError::Transport,
+            HttpError::ResponseTooLarge => LogConfigSecretError::InvalidResponse,
+        })?;
+    if !(200..300).contains(&response.status) {
+        return Err(LogConfigSecretError::Rejected);
+    }
+    let response: Value = serde_json::from_slice(&response.body)
+        .map_err(|_| LogConfigSecretError::InvalidResponse)?;
+    let policy_digest = normalize_policy_digest(&bootstrap.policy_digest)
+        .ok_or(LogConfigSecretError::ResponseBinding)?;
+    let grant_id = required_bounded_string(response.get("grantId"))?;
+    let lockbox_url = required_bounded_string(response.get("lockboxUrl"))?;
+    secure_join(lockbox_url, "/api/jobs/secret-requests")?;
+    let requested_secret_ids = response["requestedSecretIds"]
+        .as_array()
+        .filter(|items| {
+            items.len() <= 256
+                && items.iter().all(|item| {
+                    item.as_str()
+                        .is_some_and(|value| !value.is_empty() && value.len() <= 256)
+                })
+                && items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect::<BTreeSet<_>>()
+                    .len()
+                    == items.len()
+        })
+        .ok_or(LogConfigSecretError::InvalidResponse)?;
+    if response["ok"].as_bool() != Some(true)
+        || response["domain"].as_str() != Some(SECRET_BOOTSTRAP_RESPONSE_DOMAIN_V2)
+        || response["applicationUid"].as_str() != Some(bootstrap.application_uid.as_str())
+        || response["applicationId"].as_str() != Some(bootstrap.application_id.as_str())
+        || normalize_policy_digest(response["policyDigest"].as_str().unwrap_or_default()).as_deref()
+            != Some(policy_digest.as_str())
+        || response["deploymentId"].as_str() != Some(bootstrap.deployment_id.as_str())
+        || response["jobId"].as_str() != Some(unsigned.job_id.as_str())
+        || response["processorId"].as_str() != Some(unsigned.processor_id.as_str())
+    {
+        return Err(LogConfigSecretError::ResponseBinding);
+    }
+    if !requested_secret_ids
+        .iter()
+        .any(|secret_id| secret_id.as_str() == Some(BLACKBOX_LOG_CONFIG_SECRET_ID))
+    {
+        return Ok(None);
+    }
+    let requested_secret_ids = requested_secret_ids
+        .iter()
+        .filter_map(Value::as_str)
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    let compact = json!({
+        "v": 2,
+        "u": lockbox_url,
+        "uid": bootstrap.application_uid,
+        "a": bootstrap.application_id,
+        "g": grant_id,
+        "p": policy_digest,
+        "d": bootstrap.deployment_id,
+        "s": requested_secret_ids,
+    });
+    serde_json::to_string(&compact)
+        .map(Some)
+        .map_err(LogConfigSecretError::Serialization)
 }
 
 fn load_blackbox_log_config_with(
@@ -208,6 +351,10 @@ fn load_blackbox_log_config_with(
 }
 
 fn secure_endpoint(raw: &str) -> Result<url::Url, LogConfigSecretError> {
+    secure_join(raw, "/api/jobs/secret-requests")
+}
+
+fn secure_join(raw: &str, path: &str) -> Result<url::Url, LogConfigSecretError> {
     let base = url::Url::parse(raw).map_err(|_| LogConfigSecretError::InvalidBootstrap)?;
     if base.scheme() != "https"
         || base.host_str().is_none()
@@ -218,7 +365,7 @@ fn secure_endpoint(raw: &str) -> Result<url::Url, LogConfigSecretError> {
     {
         return Err(LogConfigSecretError::InvalidBootstrap);
     }
-    base.join("/api/jobs/secret-requests")
+    base.join(path)
         .map_err(|_| LogConfigSecretError::InvalidBootstrap)
 }
 
@@ -505,6 +652,22 @@ mod tests {
                 calls: Mutex::new(Vec::new()),
             }
         }
+
+        fn for_discovery(plaintext: &[u8]) -> Self {
+            Self {
+                replies: Mutex::new(
+                    [
+                        json!({"encryptionKeys": {"p256": P256_KEY}}),
+                        json!({"bytes": "11".repeat(64)}),
+                        json!({"encryptionKeys": {"p256": P256_KEY}}),
+                        json!({"bytes": "22".repeat(64)}),
+                        json!({"bytes": hex::encode(plaintext)}),
+                    ]
+                    .into(),
+                ),
+                calls: Mutex::new(Vec::new()),
+            }
+        }
     }
 
     impl Bridge for FakeBridge {
@@ -515,8 +678,17 @@ mod tests {
     }
 
     struct FakeHttp {
-        response: HttpResponse,
+        responses: Mutex<VecDeque<HttpResponse>>,
         calls: Mutex<Vec<(String, Vec<u8>)>>,
+    }
+
+    impl FakeHttp {
+        fn single(response: HttpResponse) -> Self {
+            Self {
+                responses: Mutex::new([response].into()),
+                calls: Mutex::new(Vec::new()),
+            }
+        }
     }
 
     impl HttpClient for FakeHttp {
@@ -525,7 +697,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push((url.to_owned(), body.to_vec()));
-            Ok(self.response.clone())
+            Ok(self.responses.lock().unwrap().pop_front().unwrap())
         }
     }
 
@@ -668,13 +840,10 @@ mod tests {
         .to_string();
         let plaintext = plaintext(&config);
         let bridge = FakeBridge::new(&plaintext);
-        let http = FakeHttp {
-            response: HttpResponse {
-                status: 200,
-                body: response_body(&plaintext),
-            },
-            calls: Mutex::new(Vec::new()),
-        };
+        let http = FakeHttp::single(HttpResponse {
+            status: 200,
+            body: response_body(&plaintext),
+        });
 
         let loaded = load_blackbox_log_config_with(
             &bootstrap(true),
@@ -707,6 +876,94 @@ mod tests {
     }
 
     #[test]
+    fn discovers_signed_job_grant_without_set_environment() {
+        let config = "signed-secret-bootstrap-config";
+        let plaintext = plaintext(config);
+        let bridge = FakeBridge::for_discovery(&plaintext);
+        let secret_bootstrap = serde_json::to_vec(&json!({
+            "ok": true,
+            "domain": SECRET_BOOTSTRAP_RESPONSE_DOMAIN_V2,
+            "lockboxUrl": "https://lockbox.example",
+            "applicationUid": APP_UID,
+            "applicationId": "app-1",
+            "grantId": "grant-1",
+            "policyDigest": POLICY_DIGEST,
+            "deploymentId": "dep-1",
+            "jobId": "job-1",
+            "processorId": "processor-1",
+            "requestedSecretIds": [BLACKBOX_LOG_CONFIG_SECRET_ID],
+        }))
+        .unwrap();
+        let http = FakeHttp {
+            responses: Mutex::new(
+                [
+                    HttpResponse {
+                        status: 200,
+                        body: secret_bootstrap,
+                    },
+                    HttpResponse {
+                        status: 200,
+                        body: response_body(&plaintext),
+                    },
+                ]
+                .into(),
+            ),
+            calls: Mutex::new(Vec::new()),
+        };
+
+        let raw_bootstrap = discover_lockbox_bootstrap_with(
+            &bootstrap(true),
+            &bridge,
+            &http,
+            DEFAULT_SECRETS_URL,
+            1_000,
+            [6; 16],
+        )
+        .unwrap()
+        .unwrap();
+        let loaded = load_blackbox_log_config_with(
+            &bootstrap(true),
+            &bridge,
+            &http,
+            &raw_bootstrap,
+            1_000,
+            [7; 16],
+        )
+        .unwrap();
+
+        assert_eq!(loaded.as_deref(), Some(config));
+        let http_calls = http.calls.lock().unwrap();
+        assert_eq!(
+            http_calls[0].0,
+            "https://secrets.liskov.proof.computer/api/jobs/secret-bootstrap"
+        );
+        let bootstrap_request: Value = serde_json::from_slice(&http_calls[0].1).unwrap();
+        assert_eq!(
+            bootstrap_request["domain"],
+            SECRET_BOOTSTRAP_REQUEST_DOMAIN_V2
+        );
+        assert_eq!(bootstrap_request["jobId"], "job-1");
+        assert_eq!(bootstrap_request["processorId"], "processor-1");
+        assert_eq!(bootstrap_request["responseEncryptionKey"], P256_KEY);
+        assert!(
+            bootstrap_request["signature"]
+                .as_str()
+                .unwrap()
+                .starts_with("0x")
+        );
+        assert_eq!(
+            http_calls[1].0,
+            "https://lockbox.example/api/jobs/secret-requests"
+        );
+        let bridge_calls = bridge.calls.lock().unwrap();
+        assert_eq!(bridge_calls[0].0, "deployment_encryptionKeys");
+        assert_eq!(bridge_calls[1].0, "signer_sign");
+        assert_eq!(bridge_calls[2].0, "deployment_encryptionKeys");
+        assert_eq!(bridge_calls[3].0, "signer_sign");
+        assert_eq!(bridge_calls[4].0, "signer_decrypt");
+    }
+
+    #[test]
     fn skips_lockbox_when_logging_is_disabled_or_config_is_already_signed() {
         let plaintext = plaintext("config");
         let bridge = FakeBridge::new(&plaintext);
@@ -728,13 +985,10 @@ mod tests {
         plaintext_value["jobId"] = json!("other-job");
         let plaintext = serde_json::to_vec(&plaintext_value).unwrap();
         let bridge = FakeBridge::new(&plaintext);
-        let http = FakeHttp {
-            response: HttpResponse {
-                status: 200,
-                body: response_body(&plaintext),
-            },
-            calls: Mutex::new(Vec::new()),
-        };
+        let http = FakeHttp::single(HttpResponse {
+            status: 200,
+            body: response_body(&plaintext),
+        });
 
         let error = load_blackbox_log_config_with(
             &bootstrap(true),
@@ -756,13 +1010,10 @@ mod tests {
         insecure["u"] = json!("http://lockbox.example");
         let plaintext = plaintext("config");
         let bridge = FakeBridge::new(&plaintext);
-        let http = FakeHttp {
-            response: HttpResponse {
-                status: 200,
-                body: response_body(&plaintext),
-            },
-            calls: Mutex::new(Vec::new()),
-        };
+        let http = FakeHttp::single(HttpResponse {
+            status: 200,
+            body: response_body(&plaintext),
+        });
         assert!(matches!(
             load_blackbox_log_config_with(
                 &bootstrap(true),

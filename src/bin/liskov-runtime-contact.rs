@@ -152,7 +152,7 @@ fn main() -> ExitCode {
     }
 
     let contact_started = Instant::now();
-    let bootstrap =
+    let mut bootstrap =
         match establish_runtime_contact(&core_url, &bridge_socket).inspect_err(|error| {
             if let Some(reporter) = &reporter {
                 let outcome = reporter
@@ -184,7 +184,8 @@ fn main() -> ExitCode {
     };
     // First contact is signed and bound before this reserved credential is
     // consumed; remove it before constructing the customer environment.
-    let runtime_access_credential = liskov_runtime_cargo::access::take_environment_credential();
+    let runtime_access_credential =
+        liskov_runtime_cargo::access::take_runtime_access_credential(&mut bootstrap);
     let mut runtime_environment = match load_runtime_environment(&bootstrap, &bridge) {
         Ok(environment) => environment,
         Err(error) => {

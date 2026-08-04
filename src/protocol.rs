@@ -197,6 +197,41 @@ pub struct ManagedRuntimeAccessToolchain {
     pub dropbearkey_sha256: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManagedRuntimeAccessCredential {
+    pub(crate) schema: String,
+    pub(crate) provider: ManagedRuntimeAccessCredentialProvider,
+    pub(crate) attachment_id: String,
+    pub(crate) fence: u64,
+    pub(crate) expires_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ManagedRuntimeAccessCredentialProvider {
+    Liskov {
+        #[serde(rename = "connectorToken")]
+        connector_token: String,
+    },
+}
+
+impl ManagedRuntimeAccessCredential {
+    fn valid_for(&self, access: &ManagedRuntimeAccessBootstrap) -> bool {
+        self.schema == "proof.liskov.runtime-ssh-credential.v2"
+            && self.attachment_id == access.attachment_id
+            && self.fence == access.fence
+            && self.expires_at_ms >= access.setup_deadline_ms
+            && match &self.provider {
+                ManagedRuntimeAccessCredentialProvider::Liskov { connector_token } => {
+                    connector_token.len() <= 4096
+                        && connector_token.split('.').count() == 3
+                        && connector_token.bytes().all(|byte| byte.is_ascii_graphic())
+                }
+            }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ManagedRuntimeAccessBootstrap {
@@ -215,6 +250,8 @@ pub struct ManagedRuntimeAccessBootstrap {
     pub authorized_key_fingerprints: Vec<String>,
     #[serde(default)]
     pub toolchain: Option<ManagedRuntimeAccessToolchain>,
+    #[serde(default)]
+    pub credential: Option<ManagedRuntimeAccessCredential>,
 }
 
 impl ManagedRuntimeAccessBootstrap {
@@ -256,6 +293,10 @@ impl ManagedRuntimeAccessBootstrap {
                             && valid_sha256(&toolchain.dropbear_sha256)
                             && valid_sha256(&toolchain.dropbearkey_sha256)
                     })
+                    && self
+                        .credential
+                        .as_ref()
+                        .is_none_or(|credential| credential.valid_for(self))
             }
         };
         self.provider.kind == RuntimeAccessProviderKind::Liskov
