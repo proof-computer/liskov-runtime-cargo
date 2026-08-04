@@ -1277,7 +1277,7 @@ mod tests {
                 fence: 1,
                 gateway_url: "wss://access.example".into(),
                 tunnel_id: "tunnel_managed_test".into(),
-                protocol: crate::protocol::ManagedRuntimeAccessProtocol::LiskovAccessV0,
+                protocol: crate::protocol::ManagedRuntimeAccessProtocol::LiskovAccessV1,
                 setup_deadline_ms: u64::MAX,
                 binding: None,
                 authorized_keys: Vec::new(),
