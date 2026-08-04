@@ -56,6 +56,24 @@ impl RuntimeEnvError {
             _ => 70,
         }
     }
+
+    /// Closed, canary-only stage code used by `--diagnostic-exit-codes`.
+    ///
+    /// Ordinary callers retain the stable public 70/75 categories. These
+    /// values contain no endpoint, response, signature, or environment data.
+    pub fn diagnostic_exit_code(&self) -> u8 {
+        match self {
+            Self::InvalidEndpoint => 96,
+            Self::Randomness => 97,
+            Self::Clock | Self::TimestampOverflow => 98,
+            Self::Signing(_) | Self::InvalidSignature => 99,
+            Self::Serialization(_) => 100,
+            Self::Transport => 101,
+            Self::Rejected => 102,
+            Self::InvalidResponse => 103,
+            Self::ResponseBinding => 104,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -458,5 +476,27 @@ mod tests {
             ),
             Err(RuntimeEnvError::ResponseBinding)
         ));
+    }
+
+    #[test]
+    fn diagnostic_exit_codes_are_closed_and_keep_public_categories_unchanged() {
+        let serialization = serde_json::from_str::<Value>("{").unwrap_err();
+        let cases = [
+            (RuntimeEnvError::InvalidEndpoint, 96, 70),
+            (RuntimeEnvError::Randomness, 97, 70),
+            (RuntimeEnvError::Clock, 98, 70),
+            (RuntimeEnvError::TimestampOverflow, 98, 70),
+            (RuntimeEnvError::Signing(BridgeError::Timeout), 99, 70),
+            (RuntimeEnvError::InvalidSignature, 99, 70),
+            (RuntimeEnvError::Serialization(serialization), 100, 70),
+            (RuntimeEnvError::Transport, 101, 75),
+            (RuntimeEnvError::Rejected, 102, 70),
+            (RuntimeEnvError::InvalidResponse, 103, 70),
+            (RuntimeEnvError::ResponseBinding, 104, 70),
+        ];
+        for (error, diagnostic, public) in cases {
+            assert_eq!(error.diagnostic_exit_code(), diagnostic);
+            assert_eq!(error.exit_status(), public);
+        }
     }
 }

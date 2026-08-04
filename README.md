@@ -147,6 +147,13 @@ surface:
 | `91`–`92` | Response validation or binding |
 | `93`–`94` | Runtime randomness or clock |
 | `95` | Retry exhaustion |
+| `96` | Runtime-environment endpoint construction |
+| `97`–`98` | Runtime-environment randomness or clock |
+| `99` | Runtime-environment signing |
+| `100` | Runtime-environment request serialization |
+| `101` | Runtime-environment transport |
+| `102` | Runtime-environment server rejection |
+| `103`–`104` | Runtime-environment response validation or binding |
 
 The flag changes only failure reporting: contact remains fail closed and the
 customer command is never started after an error.
