@@ -210,6 +210,8 @@ pub struct ManagedRuntimeAccessBootstrap {
     #[serde(default)]
     pub binding: Option<ManagedRuntimeAccessBinding>,
     #[serde(default)]
+    pub authorized_keys: Vec<String>,
+    #[serde(default)]
     pub authorized_key_fingerprints: Vec<String>,
     #[serde(default)]
     pub toolchain: Option<ManagedRuntimeAccessToolchain>,
@@ -229,11 +231,20 @@ impl ManagedRuntimeAccessBootstrap {
         let v1_valid = match self.protocol {
             ManagedRuntimeAccessProtocol::LiskovAccessV0 => {
                 self.binding.is_none()
+                    && self.authorized_keys.is_empty()
                     && self.authorized_key_fingerprints.is_empty()
                     && self.toolchain.is_none()
             }
             ManagedRuntimeAccessProtocol::LiskovAccessV1 => {
                 self.binding.as_ref().is_some_and(valid_managed_binding)
+                    && (self.authorized_keys.is_empty()
+                        || ((1..=8).contains(&self.authorized_keys.len())
+                            && unique_values(&self.authorized_keys)
+                            && self.authorized_keys.iter().all(|value| {
+                                value.starts_with("ssh-ed25519 ")
+                                    && value.len() <= 256
+                                    && !value.contains(['\r', '\n', '\0'])
+                            })))
                     && (1..=8).contains(&self.authorized_key_fingerprints.len())
                     && unique_values(&self.authorized_key_fingerprints)
                     && self
@@ -1049,6 +1060,9 @@ mod tests {
                 "SHA256:{}",
                 base64::engine::general_purpose::STANDARD_NO_PAD.encode([1_u8; 32])
             )],
+            "authorizedKeys": [
+                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+            ],
             "toolchain": {
                 "runtimeContactSha256": "1".repeat(64),
                 "dropbearSha256": "2".repeat(64),

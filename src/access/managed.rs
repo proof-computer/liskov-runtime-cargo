@@ -245,7 +245,9 @@ fn validate_binding(
                         .iter()
                         .map(|key| ssh_public_key_fingerprint(key))
                         .collect::<Result<Vec<_>, _>>()?;
-                    if fingerprints != access.authorized_key_fingerprints {
+                    if fingerprints != access.authorized_key_fingerprints
+                        || (!access.authorized_keys.is_empty() && keys != access.authorized_keys)
+                    {
                         return Err(AccessError::new("access_setup_failed"));
                     }
                     let verified = verify_fixed_toolchain(
@@ -278,11 +280,10 @@ fn validate_binding(
                 return Err(AccessError::new("access_setup_failed"));
             }
             match &mut credential.provider {
-                CompactManagedRuntimeSshCredentialProviderV2::Liskov {
-                    connector_token,
-                    authorized_keys,
-                } if valid_connector_token(connector_token) => {
-                    let keys = normalized_authorized_keys(authorized_keys)?;
+                CompactManagedRuntimeSshCredentialProviderV2::Liskov { connector_token }
+                    if valid_connector_token(connector_token) =>
+                {
+                    let keys = normalized_authorized_keys(&access.authorized_keys)?;
                     let fingerprints = keys
                         .iter()
                         .map(|key| ssh_public_key_fingerprint(key))
@@ -1083,6 +1084,7 @@ mod tests {
                 job_id: "provider-job".into(),
                 policy_digest: "sha256:policy".into(),
             }),
+            authorized_keys: vec![PUBLIC_KEY.into()],
             authorized_key_fingerprints: vec!["SHA256:key".into()],
             toolchain: Some(ManagedRuntimeAccessToolchain {
                 runtime_contact_sha256: "1".repeat(64),
@@ -1164,6 +1166,7 @@ mod tests {
                 job_id: "provider-job".into(),
                 policy_digest: "sha256:policy".into(),
             }),
+            authorized_keys: vec![PUBLIC_KEY.into()],
             authorized_key_fingerprints: vec!["SHA256:key".into()],
             toolchain: Some(ManagedRuntimeAccessToolchain {
                 runtime_contact_sha256: "1".repeat(64),
@@ -1176,7 +1179,6 @@ mod tests {
                 schema: MANAGED_CREDENTIAL_SCHEMA_V2.into(),
                 provider: CompactManagedRuntimeSshCredentialProviderV2::Liskov {
                     connector_token: "a.b.c".into(),
-                    authorized_keys: vec![PUBLIC_KEY.into()],
                 },
                 attachment_id: "att-1".into(),
                 fence: 1,
