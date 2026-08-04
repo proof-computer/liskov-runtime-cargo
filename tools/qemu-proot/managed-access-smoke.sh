@@ -138,6 +138,35 @@ if [ "${ssh_status}" -ne 0 ]; then
 fi
 test "${observed}" = "${marker}"
 
+# The operator CLI opens an interactive PTY by default. Keep this separate from
+# the non-interactive command above so the release gate proves both Dropbear
+# session paths with the exact pinned server and stock OpenSSH client.
+pty_marker=liskov-managed-qemu-proot-pty-marker
+set +e
+pty_observed=$(
+  "${stock_loader}" --library-path "${stock_library_dir}" "${ssh_client}" -tt \
+    -o BatchMode=yes \
+    -o ClearAllForwardings=yes \
+    -o HostKeyAlias=liskov-managed-canary \
+    -o IdentitiesOnly=yes \
+    -o "IdentityFile=${operator_key}" \
+    -o "ProxyCommand=${stock_loader} --library-path ${stock_library_dir} ${netcat} 127.0.0.1 2222" \
+    -o StrictHostKeyChecking=yes \
+    -o "UserKnownHostsFile=${known_hosts}" \
+    root@liskov-managed-canary \
+    "test -t 0 && test -t 1 && printf '%s\\n' '${pty_marker}'" \
+    2>>"${openssh_log}"
+)
+pty_status=$?
+set -e
+if [ "${pty_status}" -ne 0 ]; then
+  echo "managed access smoke: stock OpenSSH PTY failed with status ${pty_status}" >&2
+  sed -n '1,240p' "${openssh_log}" >&2
+  sed -n '1,160p' "${dropbear_log}" >&2
+  exit "${pty_status}"
+fi
+test "$(printf '%s' "${pty_observed}" | tr -d '\r')" = "${pty_marker}"
+
 # Access-sidecar failure is independent of the customer's exact exit result.
 /bin/sh -c 'sleep 1; exit 23' &
 customer_pid=$!
@@ -150,4 +179,4 @@ customer_status=$?
 set -e
 test "${customer_status}" -eq 23
 
-echo "managed access smoke passed: injected-static-toolchain low-port=denied loopback-2222=openssh customer-exit=23"
+echo "managed access smoke passed: injected-static-toolchain low-port=denied loopback-2222=openssh pty=openssh customer-exit=23"
