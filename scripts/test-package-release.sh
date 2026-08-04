@@ -13,8 +13,8 @@ chmod 0755 "${test_root}/helper"
 chmod 0755 "${test_root}/dropbear" "${test_root}/dropbearkey"
 source_commit=0123456789abcdef0123456789abcdef01234567
 
-scripts/package-release.sh v0.10.0 "$source_commit" "${test_root}/helper" "${test_root}/dropbear" "${test_root}/dropbearkey" "${test_root}/one"
-scripts/package-release.sh v0.10.0 "$source_commit" "${test_root}/helper" "${test_root}/dropbear" "${test_root}/dropbearkey" "${test_root}/two"
+scripts/package-release.sh v0.10.1 "$source_commit" "${test_root}/helper" "${test_root}/dropbear" "${test_root}/dropbearkey" "${test_root}/one"
+scripts/package-release.sh v0.10.1 "$source_commit" "${test_root}/helper" "${test_root}/dropbear" "${test_root}/dropbearkey" "${test_root}/two"
 
 diff -ru "${test_root}/one" "${test_root}/two"
 jq -e \
@@ -24,15 +24,15 @@ jq -e \
     .schemaVersion == 2 and
     .contractEpoch == 1 and
     .runtimeBootstrapDomain == "proof.liskov.runtime-bootstrap-request.v2" and
-    .tag == "v0.10.0" and
-    .version == "0.10.0" and
+    .tag == "v0.10.1" and
+    .version == "0.10.1" and
     .sourceCommit == $source_commit and
     .target == "aarch64-unknown-linux-musl" and
-    .binary.asset == "liskov-runtime-contact-v0.10.0-aarch64-unknown-linux-musl" and
-    .archive.asset == "liskov-runtime-contact-v0.10.0-aarch64-unknown-linux-musl.tar.gz" and
+    .binary.asset == "liskov-runtime-contact-v0.10.1-aarch64-unknown-linux-musl" and
+    .archive.asset == "liskov-runtime-contact-v0.10.1-aarch64-unknown-linux-musl.tar.gz" and
     .toolchain.dropbearVersion == "2026.94" and
-    .toolchain.dropbear.asset == "liskov-dropbear-2026.94-v0.10.0-aarch64-unknown-linux-musl" and
-    .toolchain.dropbearkey.asset == "liskov-dropbearkey-2026.94-v0.10.0-aarch64-unknown-linux-musl" and
+    .toolchain.dropbear.asset == "liskov-dropbear-2026.94-v0.10.1-aarch64-unknown-linux-musl" and
+    .toolchain.dropbearkey.asset == "liskov-dropbearkey-2026.94-v0.10.1-aarch64-unknown-linux-musl" and
     (.binary.sha256 | test("^[0-9a-f]{64}$")) and
     (.archive.sha256 | test("^[0-9a-f]{64}$")) and
     (.toolchain.dropbear.sha256 | test("^[0-9a-f]{64}$")) and
@@ -47,11 +47,11 @@ jq -e \
   sha256sum --check SHA256SUMS
 )
 
-if scripts/package-release.sh v0.10.0-rc.1 "$source_commit" "${test_root}/helper" "${test_root}/dropbear" "${test_root}/dropbearkey" "${test_root}/bad-tag"; then
+if scripts/package-release.sh v0.10.1-rc.1 "$source_commit" "${test_root}/helper" "${test_root}/dropbear" "${test_root}/dropbearkey" "${test_root}/bad-tag"; then
   echo "prerelease tag unexpectedly accepted" >&2
   exit 1
 fi
-if scripts/package-release.sh v0.10.0 ABCD "${test_root}/helper" "${test_root}/dropbear" "${test_root}/dropbearkey" "${test_root}/bad-commit"; then
+if scripts/package-release.sh v0.10.1 ABCD "${test_root}/helper" "${test_root}/dropbear" "${test_root}/dropbearkey" "${test_root}/bad-commit"; then
   echo "malformed source commit unexpectedly accepted" >&2
   exit 1
 fi
