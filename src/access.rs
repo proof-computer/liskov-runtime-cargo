@@ -430,10 +430,14 @@ pub fn setup_runtime_access_with_logger(
             RuntimeAccessBootstrap::Tailscale(access),
             RuntimeSshCredentialV1::Tailscale(credential),
         ) => {
-            let auth_key = validate_tailscale_binding(bootstrap, access, credential)?;
-            let deadline = setup_deadline(access.setup_deadline_ms)?;
-            let archive = download_artifact(access, deadline)?;
-            let root = private_root(&access.attachment_id)?;
+            let auth_key = validate_tailscale_binding(bootstrap, access, credential)
+                .map_err(stage_error("access_binding_invalid"))?;
+            let deadline = setup_deadline(access.setup_deadline_ms)
+                .map_err(stage_error("access_deadline_exceeded"))?;
+            let archive = download_artifact(access, deadline)
+                .map_err(stage_error("access_download_failed"))?;
+            let root = private_root(&access.attachment_id)
+                .map_err(stage_error("access_workspace_failed"))?;
             let setup = setup_in_root(
                 bootstrap,
                 access,
@@ -470,6 +474,20 @@ pub fn setup_runtime_access_with_logger(
         )
         .map(|session| Some(AccessSession::Managed(session))),
         _ => Err(AccessError::new("access_setup_failed")),
+    }
+}
+
+/// Narrow a stage's generic `access_setup_failed` into a stage-specific code
+/// while letting already-specific codes (e.g. `access_sidecar_*`) pass through
+/// unchanged. Purely diagnostic: every stage code still reports the same typed
+/// degradation channel and never alters setup behavior.
+fn stage_error(code: &'static str) -> impl Fn(AccessError) -> AccessError {
+    move |error| {
+        if error.code == "access_setup_failed" {
+            AccessError::new(code)
+        } else {
+            error
+        }
     }
 }
 
@@ -653,17 +671,23 @@ fn setup_in_root(
     deadline: std::time::Instant,
     provider_logger: Option<RuntimeSshLogEmitter>,
 ) -> Result<TailscaleAccessSession, AccessError> {
-    let (tailscale, tailscaled) = extract_binaries(archive)?;
+    let (tailscale, tailscaled) =
+        extract_binaries(archive).map_err(stage_error("access_extract_failed"))?;
     let tailscale_path = root.join("tailscale");
     let tailscaled_path = root.join("tailscaled");
-    write_private_file(&tailscale_path, &tailscale, 0o700)?;
-    write_private_file(&tailscaled_path, &tailscaled, 0o700)?;
+    write_private_file(&tailscale_path, &tailscale, 0o700)
+        .map_err(stage_error("access_workspace_failed"))?;
+    write_private_file(&tailscaled_path, &tailscaled, 0o700)
+        .map_err(stage_error("access_workspace_failed"))?;
     let auth_path = root.join("auth-key");
-    write_private_file(&auth_path, auth_key.as_bytes(), 0o600)?;
+    write_private_file(&auth_path, auth_key.as_bytes(), 0o600)
+        .map_err(stage_error("access_workspace_failed"))?;
     let socket = root.join("tailscaled.sock");
     let state_dir = root.join("state");
-    std::fs::create_dir(&state_dir).map_err(|_| AccessError::new("access_setup_failed"))?;
-    let daemon_deadline = subprocess_deadline(deadline)?;
+    std::fs::create_dir(&state_dir).map_err(|_| AccessError::new("access_workspace_failed"))?;
+    let daemon_deadline =
+        subprocess_deadline(deadline).map_err(stage_error("access_deadline_exceeded"))?;
+    let client_logger = provider_logger.clone();
     let mut daemon = DaemonGuard(Some(spawn_daemon(
         &tailscaled_path,
         &socket,
@@ -701,10 +725,11 @@ fn setup_in_root(
             OsString::from("--accept-dns=false"),
             OsString::from("--accept-routes=false"),
         ],
-        subprocess_deadline(deadline)?,
+        subprocess_deadline(deadline).map_err(stage_error("access_deadline_exceeded"))?,
+        client_logger.as_ref().map(|logger| (logger, auth_key)),
     );
-    std::fs::remove_file(&auth_path).map_err(|_| AccessError::new("access_setup_failed"))?;
-    up?;
+    std::fs::remove_file(&auth_path).map_err(|_| AccessError::new("access_workspace_failed"))?;
+    up.map_err(stage_error("access_up_failed"))?;
     let status = run_bounded_capture(
         &tailscale_path,
         &[
@@ -712,10 +737,12 @@ fn setup_in_root(
             OsString::from("status"),
             OsString::from("--json"),
         ],
-        subprocess_deadline(deadline)?,
-    )?;
+        subprocess_deadline(deadline).map_err(stage_error("access_deadline_exceeded"))?,
+        client_logger.as_ref().map(|logger| (logger, auth_key)),
+    )
+    .map_err(stage_error("access_status_invalid"))?;
     let status: TailscaleStatus =
-        serde_json::from_slice(&status).map_err(|_| AccessError::new("access_setup_failed"))?;
+        serde_json::from_slice(&status).map_err(|_| AccessError::new("access_status_invalid"))?;
     if status.backend_state != "Running"
         || status.current_tailnet.name != access.expected_tailnet
         || status.self_node.id.is_empty()
@@ -723,7 +750,7 @@ fn setup_in_root(
         || status.self_node.dns_name.is_empty()
         || status.self_node.dns_name.len() > 256
     {
-        return Err(AccessError::new("access_setup_failed"));
+        return Err(AccessError::new("access_status_unexpected"));
     }
     Ok(TailscaleAccessSession {
         daemon: daemon.take(),
@@ -955,33 +982,74 @@ fn classify_sidecar_exit(success: bool, startup_stderr: &[u8]) -> AccessError {
     AccessError::new(code)
 }
 
+/// Emit a failed client command's bounded stderr through the raw-after-redaction
+/// provider log channel — the same path daemon startup stderr uses — so typed
+/// `access_up_failed` / `access_status_invalid` degradations carry evidence.
+fn emit_command_stderr(
+    logger: &RuntimeSshLogEmitter,
+    exact_auth_key: &str,
+    stderr: &[u8],
+    stderr_truncated: bool,
+) {
+    let mut lines = stderr.split(|byte| *byte == b'\n').peekable();
+    while let Some(line) = lines.next() {
+        let last = lines.peek().is_none();
+        if last && line.is_empty() {
+            break;
+        }
+        logger.raw_tailscaled_line(line, exact_auth_key, last && stderr_truncated);
+    }
+}
+
 fn run_bounded(
     binary: &Path,
     args: &[OsString],
     deadline: std::time::Instant,
+    failure_logger: Option<(&RuntimeSshLogEmitter, &str)>,
 ) -> Result<(), AccessError> {
     let output = run_command(binary, args, deadline)?;
-    (output.status.success() && !output.output_too_large)
-        .then_some(())
-        .ok_or_else(|| AccessError::new("access_setup_failed"))
+    if output.status.is_some_and(|status| status.success()) && !output.output_too_large {
+        return Ok(());
+    }
+    if let Some((logger, exact_auth_key)) = failure_logger {
+        emit_command_stderr(
+            logger,
+            exact_auth_key,
+            &output.stderr,
+            output.stderr_truncated,
+        );
+    }
+    Err(AccessError::new("access_setup_failed"))
 }
 
 fn run_bounded_capture(
     binary: &Path,
     args: &[OsString],
     deadline: std::time::Instant,
+    failure_logger: Option<(&RuntimeSshLogEmitter, &str)>,
 ) -> Result<Vec<u8>, AccessError> {
     let output = run_command(binary, args, deadline)?;
-    if !output.status.success() || output.output_too_large {
+    if !output.status.is_some_and(|status| status.success()) || output.output_too_large {
+        if let Some((logger, exact_auth_key)) = failure_logger {
+            emit_command_stderr(
+                logger,
+                exact_auth_key,
+                &output.stderr,
+                output.stderr_truncated,
+            );
+        }
         return Err(AccessError::new("access_setup_failed"));
     }
     Ok(output.stdout)
 }
 
 struct CommandOutput {
-    status: std::process::ExitStatus,
+    /// `None` means the command exceeded its deadline and was killed.
+    status: Option<std::process::ExitStatus>,
     stdout: Vec<u8>,
     output_too_large: bool,
+    stderr: Vec<u8>,
+    stderr_truncated: bool,
 }
 
 fn run_command(
@@ -993,11 +1061,15 @@ fn run_command(
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .map_err(|_| AccessError::new("access_setup_failed"))?;
     let mut stdout = child
         .stdout
+        .take()
+        .ok_or_else(|| AccessError::new("access_setup_failed"))?;
+    let mut stderr = child
+        .stderr
         .take()
         .ok_or_else(|| AccessError::new("access_setup_failed"))?;
     let reader = thread::spawn(move || -> std::io::Result<(Vec<u8>, bool)> {
@@ -1015,18 +1087,31 @@ fn run_command(
         }
         Ok((captured, too_large))
     });
+    let stderr_reader = thread::spawn(move || -> (Vec<u8>, bool) {
+        let mut captured = Vec::with_capacity(MAX_STARTUP_STDERR_BYTES);
+        let mut truncated = false;
+        let mut buffer = [0_u8; 4 * 1024];
+        while let Ok(read) = stderr.read(&mut buffer) {
+            if read == 0 {
+                break;
+            }
+            let remaining = MAX_STARTUP_STDERR_BYTES.saturating_sub(captured.len());
+            captured.extend_from_slice(&buffer[..read.min(remaining)]);
+            truncated |= read > remaining;
+        }
+        (captured, truncated)
+    });
     let status = loop {
         if let Some(status) = child
             .try_wait()
             .map_err(|_| AccessError::new("access_setup_failed"))?
         {
-            break status;
+            break Some(status);
         }
         if std::time::Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
-            let _ = reader.join();
-            return Err(AccessError::new("access_setup_failed"));
+            break None;
         }
         thread::sleep(POLL_INTERVAL);
     };
@@ -1034,10 +1119,15 @@ fn run_command(
         .join()
         .map_err(|_| AccessError::new("access_setup_failed"))?
         .map_err(|_| AccessError::new("access_setup_failed"))?;
+    let (stderr, stderr_truncated) = stderr_reader
+        .join()
+        .map_err(|_| AccessError::new("access_setup_failed"))?;
     Ok(CommandOutput {
         status,
         stdout,
         output_too_large,
+        stderr,
+        stderr_truncated,
     })
 }
 
@@ -1204,6 +1294,63 @@ mod tests {
             OsString::from("--netmon-mode=permission-fallback-v4")
         );
         assert_eq!(constrained[2..], standard[1..]);
+    }
+
+    #[test]
+    fn stage_error_narrows_only_the_generic_code() {
+        assert_eq!(
+            stage_error("access_download_failed")(AccessError::new("access_setup_failed")).code,
+            "access_download_failed"
+        );
+        assert_eq!(
+            stage_error("access_up_failed")(AccessError::new(
+                "access_sidecar_network_monitor_failed"
+            ))
+            .code,
+            "access_sidecar_network_monitor_failed"
+        );
+    }
+
+    #[test]
+    fn run_command_captures_bounded_stderr_and_marks_deadline_kills() {
+        let _lock = crate::supervisor::tests::PROCESS_TEST_LOCK.lock().unwrap();
+        let shell = Path::new("/bin/sh");
+        let failed = run_command(
+            shell,
+            &[
+                OsString::from("-c"),
+                OsString::from("echo diagnostic-line >&2; exit 3"),
+            ],
+            std::time::Instant::now() + Duration::from_secs(10),
+        )
+        .unwrap();
+        assert_eq!(failed.status.map(|status| status.success()), Some(false));
+        assert_eq!(failed.stderr, b"diagnostic-line\n");
+        assert!(!failed.stderr_truncated);
+
+        let killed = run_command(
+            shell,
+            &[
+                OsString::from("-c"),
+                OsString::from("echo pre-timeout >&2; sleep 30"),
+            ],
+            std::time::Instant::now() + Duration::from_millis(300),
+        )
+        .unwrap();
+        assert_eq!(killed.status, None);
+        assert_eq!(killed.stderr, b"pre-timeout\n");
+
+        assert_eq!(
+            run_bounded(
+                shell,
+                &[OsString::from("-c"), OsString::from("exit 1")],
+                std::time::Instant::now() + Duration::from_secs(10),
+                None,
+            )
+            .unwrap_err()
+            .code,
+            "access_setup_failed"
+        );
     }
 
     #[test]
