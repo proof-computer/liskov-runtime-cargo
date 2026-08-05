@@ -1027,12 +1027,14 @@ fn reap_descendants() {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::sync::Mutex;
 
     use super::*;
 
-    static PROCESS_TEST_LOCK: Mutex<()> = Mutex::new(());
+    /// `reap_descendants` reaps *any* waitable child, so tests that spawn
+    /// processes must not overlap — including the access-module command tests.
+    pub(crate) static PROCESS_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn bootstrap(supervision: serde_json::Value) -> RuntimeBootstrapResponse {
         RuntimeBootstrapResponse {
