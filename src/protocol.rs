@@ -172,7 +172,6 @@ impl TailscaleRuntimeAccessBootstrap {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ManagedRuntimeAccessProtocol {
-    LiskovAccessV0,
     LiskovAccessV1,
 }
 
@@ -265,41 +264,32 @@ impl ManagedRuntimeAccessBootstrap {
                 && url.fragment().is_none()
                 && matches!(url.path(), "" | "/")
         });
-        let v1_valid = match self.protocol {
-            ManagedRuntimeAccessProtocol::LiskovAccessV0 => {
-                self.binding.is_none()
-                    && self.authorized_keys.is_empty()
-                    && self.authorized_key_fingerprints.is_empty()
-                    && self.toolchain.is_none()
-            }
-            ManagedRuntimeAccessProtocol::LiskovAccessV1 => {
-                self.binding.as_ref().is_some_and(valid_managed_binding)
-                    && (self.authorized_keys.is_empty()
-                        || ((1..=8).contains(&self.authorized_keys.len())
-                            && unique_values(&self.authorized_keys)
-                            && self.authorized_keys.iter().all(|value| {
-                                value.starts_with("ssh-ed25519 ")
-                                    && value.len() <= 256
-                                    && !value.contains(['\r', '\n', '\0'])
-                            })))
-                    && (1..=8).contains(&self.authorized_key_fingerprints.len())
-                    && unique_values(&self.authorized_key_fingerprints)
-                    && self
-                        .authorized_key_fingerprints
-                        .iter()
-                        .all(|value| valid_ssh_fingerprint(value))
-                    && self.toolchain.as_ref().is_some_and(|toolchain| {
-                        valid_sha256(&toolchain.runtime_contact_sha256)
-                            && valid_sha256(&toolchain.dropbear_sha256)
-                            && valid_sha256(&toolchain.dropbearkey_sha256)
-                    })
-                    && self
-                        .credential
-                        .as_ref()
-                        .is_none_or(|credential| credential.valid_for(self))
-            }
-        };
+        let v1_valid = self.binding.as_ref().is_some_and(valid_managed_binding)
+            && (self.authorized_keys.is_empty()
+                || ((1..=8).contains(&self.authorized_keys.len())
+                    && unique_values(&self.authorized_keys)
+                    && self.authorized_keys.iter().all(|value| {
+                        value.starts_with("ssh-ed25519 ")
+                            && value.len() <= 256
+                            && !value.contains(['\r', '\n', '\0'])
+                    })))
+            && (1..=8).contains(&self.authorized_key_fingerprints.len())
+            && unique_values(&self.authorized_key_fingerprints)
+            && self
+                .authorized_key_fingerprints
+                .iter()
+                .all(|value| valid_ssh_fingerprint(value))
+            && self.toolchain.as_ref().is_some_and(|toolchain| {
+                valid_sha256(&toolchain.runtime_contact_sha256)
+                    && valid_sha256(&toolchain.dropbear_sha256)
+                    && valid_sha256(&toolchain.dropbearkey_sha256)
+            })
+            && self
+                .credential
+                .as_ref()
+                .is_none_or(|credential| credential.valid_for(self));
         self.provider.kind == RuntimeAccessProviderKind::Liskov
+            && self.protocol == ManagedRuntimeAccessProtocol::LiskovAccessV1
             && !self.attachment_id.is_empty()
             && self.attachment_id.len() <= 256
             && self.fence > 0
@@ -1067,17 +1057,13 @@ mod tests {
             "protocol": "liskov_access_v0",
             "setupDeadlineMs": 60_000,
         });
-        let parsed = validate_response(&request, &serde_json::to_vec(&response).unwrap()).unwrap();
-        assert_eq!(
-            parsed.access.as_ref().unwrap().provider_kind(),
-            RuntimeAccessProviderKind::Liskov
+        assert!(
+            matches!(
+                validate_response(&request, &serde_json::to_vec(&response).unwrap()),
+                Err(ProtocolError::InvalidResponse)
+            ),
+            "the retired V0 protocol is rejected"
         );
-        assert_eq!(parsed.access.unwrap().attachment_id(), "att-managed-1");
-        response["access"]["gatewayUrl"] = json!("wss://access.example?token=secret");
-        assert!(matches!(
-            validate_response(&request, &serde_json::to_vec(&response).unwrap()),
-            Err(ProtocolError::InvalidResponse)
-        ));
 
         response["access"] = json!({
             "provider": {"kind": "liskov"},

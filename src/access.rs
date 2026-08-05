@@ -86,32 +86,6 @@ impl Drop for TailscaleRuntimeSshCredentialProvider {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct ManagedRuntimeSshCredentialV1 {
-    schema: String,
-    provider: ManagedRuntimeSshCredentialProvider,
-    organization_id: String,
-    attachment_id: String,
-    application_uid: String,
-    deployment_id: String,
-    job_id: String,
-    policy_digest: String,
-    fence: u64,
-    expires_at_ms: u64,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub(super) enum ManagedRuntimeSshCredentialProvider {
-    Liskov {
-        #[serde(rename = "connectorToken", alias = "connector_token")]
-        connector_token: String,
-        #[serde(rename = "operatorPublicKey", alias = "operator_public_key")]
-        operator_public_key: String,
-    },
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct ManagedRuntimeSshCredentialV2 {
     schema: String,
     provider: ManagedRuntimeSshCredentialProviderV2,
@@ -193,23 +167,8 @@ impl Drop for CompactManagedRuntimeSshCredentialProviderV2 {
 }
 
 pub(super) enum ManagedRuntimeSshCredential {
-    V0(ManagedRuntimeSshCredentialV1),
-    V1Full(ManagedRuntimeSshCredentialV2),
+    V1Full(Box<ManagedRuntimeSshCredentialV2>),
     V1Compact(CompactManagedRuntimeSshCredentialV2),
-}
-
-impl Drop for ManagedRuntimeSshCredentialProvider {
-    fn drop(&mut self) {
-        match self {
-            Self::Liskov {
-                connector_token,
-                operator_public_key,
-            } => {
-                connector_token.zeroize();
-                operator_public_key.zeroize();
-            }
-        }
-    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -217,8 +176,7 @@ impl Drop for ManagedRuntimeSshCredentialProvider {
 enum RuntimeSshCredentialV1 {
     Tailscale(TailscaleRuntimeSshCredentialV1),
     ManagedV1Compact(CompactManagedRuntimeSshCredentialV2),
-    ManagedV1Full(ManagedRuntimeSshCredentialV2),
-    ManagedV0(ManagedRuntimeSshCredentialV1),
+    ManagedV1Full(Box<ManagedRuntimeSshCredentialV2>),
 }
 
 pub enum AccessSession {
@@ -509,15 +467,6 @@ pub fn setup_runtime_access_with_logger(
             bootstrap,
             access,
             ManagedRuntimeSshCredential::V1Full(credential),
-        )
-        .map(|session| Some(AccessSession::Managed(session))),
-        (
-            RuntimeAccessBootstrap::Managed(access),
-            RuntimeSshCredentialV1::ManagedV0(credential),
-        ) => managed::setup(
-            bootstrap,
-            access,
-            ManagedRuntimeSshCredential::V0(credential),
         )
         .map(|session| Some(AccessSession::Managed(session))),
         _ => Err(AccessError::new("access_setup_failed")),
@@ -1513,6 +1462,24 @@ mod tests {
             serde_json::from_value::<RuntimeSshCredentialV1>(full).unwrap(),
             RuntimeSshCredentialV1::ManagedV1Full(_)
         ));
+
+        let retired_v0 = serde_json::json!({
+            "schema": CREDENTIAL_SCHEMA,
+            "provider": {
+                "kind": "liskov",
+                "connectorToken": "static-token",
+                "operatorPublicKey": "ssh-ed25519 retired"
+            },
+            "organizationId": "org-1",
+            "attachmentId": "att-1",
+            "applicationUid": "app-uid-1",
+            "deploymentId": "provider-dep-1",
+            "jobId": "provider-job-1",
+            "policyDigest": "sha256:policy",
+            "fence": 7,
+            "expiresAtMs": 1_800_000_000_000_u64
+        });
+        assert!(serde_json::from_value::<RuntimeSshCredentialV1>(retired_v0).is_err());
     }
 
     #[test]
