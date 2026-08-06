@@ -36,7 +36,25 @@ const MAX_ARTIFACT_BYTES: usize = 128 * 1024 * 1024;
 const MAX_BINARY_BYTES: u64 = 96 * 1024 * 1024;
 const MAX_COMMAND_OUTPUT_BYTES: usize = 1024 * 1024;
 const MAX_STARTUP_STDERR_BYTES: usize = 16 * 1024;
+/// Budget for short, chatty client commands such as `tailscale status --json`
+/// (52 ms when measured in-processor).
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+/// Budget for fetching the provider archive. Processors sit on wildly different
+/// links: the artifact took 1320 ms (~21 MB/s) on one measured device, but a
+/// processor on a slow connection needs far longer for the same 26.5 MB, and a
+/// timeout here is indistinguishable from a broken mirror. 44 KB/s still fits.
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
+/// Budget for `tailscale up`. Bringing the tunnel up spans a control-plane
+/// handshake, netmap delivery and DERP negotiation, so a high-latency link can
+/// take far longer than the 2001 ms measured on a fast one.
+const TUNNEL_UP_TIMEOUT: Duration = Duration::from_secs(240);
+/// `tailscale up` is told to give up this much earlier than the harness would
+/// kill it, so a link too slow to finish yields the client's own diagnostic on
+/// stderr instead of an opaque kill with no exit status.
+const TUNNEL_UP_CLIENT_MARGIN: Duration = Duration::from_secs(30);
+/// Budget for the daemon to create its LocalAPI socket (294 ms when measured,
+/// but a loaded device starting a 26 MB static binary can take longer).
+const DAEMON_SOCKET_TIMEOUT: Duration = Duration::from_secs(90);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const MAX_SAFE_JSON_INTEGER: u64 = 9_007_199_254_740_991;
 
@@ -614,7 +632,7 @@ fn download_artifact(
     access: &TailscaleRuntimeAccessBootstrap,
     deadline: std::time::Instant,
 ) -> Result<Vec<u8>, AccessError> {
-    let timeout = remaining_timeout(deadline)?;
+    let timeout = remaining_timeout(deadline, DOWNLOAD_TIMEOUT)?;
     let agent = ureq::AgentBuilder::new()
         .redirects(0)
         .timeout(timeout)
@@ -685,8 +703,8 @@ fn setup_in_root(
     let socket = root.join("tailscaled.sock");
     let state_dir = root.join("state");
     std::fs::create_dir(&state_dir).map_err(|_| AccessError::new("access_workspace_failed"))?;
-    let daemon_deadline =
-        subprocess_deadline(deadline).map_err(stage_error("access_deadline_exceeded"))?;
+    let daemon_deadline = subprocess_deadline(deadline, DAEMON_SOCKET_TIMEOUT)
+        .map_err(stage_error("access_deadline_exceeded"))?;
     let client_logger = provider_logger.clone();
     let mut daemon = DaemonGuard(Some(spawn_daemon(
         &tailscaled_path,
@@ -724,8 +742,15 @@ fn setup_in_root(
             OsString::from("--ssh"),
             OsString::from("--accept-dns=false"),
             OsString::from("--accept-routes=false"),
+            OsString::from(format!(
+                "--timeout={}s",
+                TUNNEL_UP_TIMEOUT
+                    .saturating_sub(TUNNEL_UP_CLIENT_MARGIN)
+                    .as_secs()
+            )),
         ],
-        subprocess_deadline(deadline).map_err(stage_error("access_deadline_exceeded"))?,
+        subprocess_deadline(deadline, TUNNEL_UP_TIMEOUT)
+            .map_err(stage_error("access_deadline_exceeded"))?,
         client_logger.as_ref().map(|logger| (logger, auth_key)),
     );
     std::fs::remove_file(&auth_path).map_err(|_| AccessError::new("access_workspace_failed"))?;
@@ -737,7 +762,8 @@ fn setup_in_root(
             OsString::from("status"),
             OsString::from("--json"),
         ],
-        subprocess_deadline(deadline).map_err(stage_error("access_deadline_exceeded"))?,
+        subprocess_deadline(deadline, COMMAND_TIMEOUT)
+            .map_err(stage_error("access_deadline_exceeded"))?,
         client_logger.as_ref().map(|logger| (logger, auth_key)),
     )
     .map_err(stage_error("access_status_invalid"))?;
@@ -1138,24 +1164,30 @@ fn setup_deadline(deadline_ms: u64) -> Result<std::time::Instant, AccessError> {
     Ok(std::time::Instant::now() + Duration::from_millis(remaining))
 }
 
+/// Per-leg budget, always still bounded by the absolute setup deadline so no
+/// leg can outlive the credential it was issued against.
 fn subprocess_deadline(
     absolute_deadline: std::time::Instant,
+    budget: Duration,
 ) -> Result<std::time::Instant, AccessError> {
     let now = std::time::Instant::now();
     if now >= absolute_deadline {
         return Err(AccessError::new("access_setup_failed"));
     }
-    Ok(absolute_deadline.min(now + COMMAND_TIMEOUT))
+    Ok(absolute_deadline.min(now + budget))
 }
 
-fn remaining_timeout(deadline: std::time::Instant) -> Result<Duration, AccessError> {
+fn remaining_timeout(
+    deadline: std::time::Instant,
+    budget: Duration,
+) -> Result<Duration, AccessError> {
     let now = std::time::Instant::now();
     if now >= deadline {
         return Err(AccessError::new("access_setup_failed"));
     }
     Ok(deadline
         .saturating_duration_since(now)
-        .min(COMMAND_TIMEOUT)
+        .min(budget)
         .max(Duration::from_millis(1)))
 }
 
@@ -1294,6 +1326,45 @@ mod tests {
             OsString::from("--netmon-mode=permission-fallback-v4")
         );
         assert_eq!(constrained[2..], standard[1..]);
+    }
+
+    /// Processors sit on very different links, so each leg gets a budget sized
+    /// to its work rather than one flat command timeout — but every budget is
+    /// still clamped by the absolute setup deadline, so no leg can outlive the
+    /// credential it was issued against.
+    #[test]
+    fn each_leg_gets_its_own_budget_bounded_by_the_setup_deadline() {
+        assert!(
+            DOWNLOAD_TIMEOUT >= Duration::from_secs(600),
+            "26.5 MB must still fit on a slow processor link"
+        );
+        assert!(
+            TUNNEL_UP_TIMEOUT >= Duration::from_secs(240),
+            "control handshake plus DERP negotiation needs room on a slow link"
+        );
+        assert!(DAEMON_SOCKET_TIMEOUT >= Duration::from_secs(60));
+        assert!(
+            TUNNEL_UP_CLIENT_MARGIN < TUNNEL_UP_TIMEOUT,
+            "the client must give up before the harness kills it, or a slow link \
+             loses the client's own diagnostic"
+        );
+
+        let now = std::time::Instant::now();
+
+        // A generous budget never extends past the absolute deadline.
+        let tight = now + Duration::from_secs(5);
+        assert!(subprocess_deadline(tight, DOWNLOAD_TIMEOUT).unwrap() <= tight);
+        assert!(remaining_timeout(tight, DOWNLOAD_TIMEOUT).unwrap() <= Duration::from_secs(5));
+
+        // With deadline room to spare, the leg's own budget is what applies.
+        let roomy = now + Duration::from_secs(3_600);
+        let capped = remaining_timeout(roomy, TUNNEL_UP_TIMEOUT).unwrap();
+        assert!(capped <= TUNNEL_UP_TIMEOUT && capped > COMMAND_TIMEOUT);
+
+        // An expired deadline still fails closed.
+        let past = now - Duration::from_secs(1);
+        assert!(subprocess_deadline(past, DOWNLOAD_TIMEOUT).is_err());
+        assert!(remaining_timeout(past, DOWNLOAD_TIMEOUT).is_err());
     }
 
     #[test]
