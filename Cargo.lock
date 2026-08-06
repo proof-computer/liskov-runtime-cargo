@@ -445,7 +445,7 @@ checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 
 [[package]]
 name = "liskov-runtime-cargo"
-version = "0.10.8"
+version = "0.10.9"
 dependencies = [
  "base64",
  "clap",
