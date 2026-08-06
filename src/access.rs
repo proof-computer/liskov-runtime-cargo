@@ -409,7 +409,11 @@ pub fn take_runtime_access_credential(bootstrap: &mut RuntimeBootstrapResponse) 
             .credential
             .take()
             .and_then(|credential| serde_json::to_string(&credential).ok()),
-        Some(RuntimeAccessBootstrap::Tailscale(_)) | None => None,
+        Some(RuntimeAccessBootstrap::Tailscale(access)) => access
+            .credential
+            .take()
+            .and_then(|credential| serde_json::to_string(&credential).ok()),
+        None => None,
     };
     let environment_value = std::env::var(RUNTIME_SSH_CREDENTIAL_ENV).ok();
     // SAFETY: the binary calls this during single-threaded startup, before the
@@ -1582,6 +1586,7 @@ mod tests {
                 sha256: "1".repeat(64),
                 byte_size: 10,
             },
+            credential: None,
         };
         let bootstrap = RuntimeBootstrapResponse {
             ok: true,
@@ -1764,5 +1769,87 @@ mod tests {
             panic!("managed access expected");
         };
         assert!(access.credential.is_none());
+    }
+
+    /// The Tailscale credential moves off the Acurast `setEnvironment` handoff
+    /// and into the authenticated bootstrap response. The environment variable
+    /// stays as a fallback so a server that has not migrated still works, and
+    /// it is scrubbed either way.
+    #[test]
+    fn tailscale_credential_prefers_the_signed_bootstrap_over_the_environment() {
+        let _lock = crate::supervisor::tests::PROCESS_TEST_LOCK.lock().unwrap();
+
+        let bootstrap_json = |credential: Option<serde_json::Value>| {
+            let mut access = serde_json::json!({
+                "provider": {"kind": "tailscale"},
+                "attachmentId": "att-1",
+                "expectedTailnet": "example.com",
+                "setupDeadlineMs": 1_800_000_000_000_u64,
+                "fence": 1,
+                "artifact": {
+                    "descriptorId": "descriptor-1",
+                    "version": "1.98.10-liskov.1",
+                    "url": "https://liskov.example/client.tgz",
+                    "sha256": "1".repeat(64),
+                    "byteSize": 10,
+                },
+            });
+            if let Some(credential) = credential {
+                access["credential"] = credential;
+            }
+            serde_json::from_value::<RuntimeBootstrapResponse>(serde_json::json!({
+                "ok": true,
+                "domain": "proof.liskov.runtime-bootstrap-response.v2",
+                "applicationUid": "app-uid",
+                "applicationId": "app",
+                "policyDigest": "sha256:policy",
+                "deploymentId": "deployment",
+                "jobId": "job",
+                "processorId": "processor",
+                "runtimeInstanceId": "instance",
+                "slipwayUrl": "https://liskov.example",
+                "access": access,
+            }))
+            .unwrap()
+        };
+
+        let signed = serde_json::json!({
+            "schema": CREDENTIAL_SCHEMA,
+            "provider": {"kind": "tailscale", "authKey": "tskey-auth-from-bootstrap"},
+            "organizationId": "org",
+            "integrationId": "integration",
+            "attachmentId": "att-1",
+            "applicationUid": "app-uid",
+            "deploymentId": "deployment",
+            "jobId": "job",
+            "policyDigest": "sha256:policy",
+            "expiresAtMs": 1_800_000_000_000_u64,
+        });
+
+        // SAFETY: the process lock serializes the env mutation against the
+        // other tests that spawn processes or read this variable.
+        unsafe {
+            std::env::set_var(RUNTIME_SSH_CREDENTIAL_ENV, "from-environment");
+        }
+        let mut bootstrap = bootstrap_json(Some(signed));
+        let raw = take_runtime_access_credential(&mut bootstrap).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(parsed["provider"]["authKey"], "tskey-auth-from-bootstrap");
+        assert!(std::env::var(RUNTIME_SSH_CREDENTIAL_ENV).is_err());
+        let RuntimeAccessBootstrap::Tailscale(access) = bootstrap.access.unwrap() else {
+            panic!("tailscale access expected");
+        };
+        assert!(access.credential.is_none(), "credential must be moved out");
+
+        // A server still delivering by environment variable keeps working.
+        unsafe {
+            std::env::set_var(RUNTIME_SSH_CREDENTIAL_ENV, "from-environment");
+        }
+        let mut bootstrap = bootstrap_json(None);
+        assert_eq!(
+            take_runtime_access_credential(&mut bootstrap).as_deref(),
+            Some("from-environment")
+        );
+        assert!(std::env::var(RUNTIME_SSH_CREDENTIAL_ENV).is_err());
     }
 }

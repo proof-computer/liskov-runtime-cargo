@@ -127,6 +127,73 @@ pub enum RuntimeAccessLaunchProfile {
     TailscaleAcurastProotV1,
 }
 
+/// The one-off Tailscale auth key, delivered inside the authenticated bootstrap
+/// response instead of through the Acurast `setEnvironment` handoff.
+///
+/// Serializes to exactly the JSON the environment variable carried, so the
+/// existing credential parsing and binding validation are unchanged.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TailscaleRuntimeAccessCredential {
+    pub(crate) schema: String,
+    pub(crate) provider: TailscaleRuntimeAccessCredentialProvider,
+    pub(crate) organization_id: String,
+    pub(crate) integration_id: String,
+    pub(crate) attachment_id: String,
+    pub(crate) application_uid: String,
+    pub(crate) deployment_id: String,
+    pub(crate) job_id: String,
+    pub(crate) policy_digest: String,
+    pub(crate) expires_at_ms: u64,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum TailscaleRuntimeAccessCredentialProvider {
+    Tailscale {
+        #[serde(rename = "authKey")]
+        auth_key: String,
+    },
+}
+
+// The bootstrap response is `Debug` and now carries an auth key, so both of
+// these redact rather than deriving.
+impl std::fmt::Debug for TailscaleRuntimeAccessCredentialProvider {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Tailscale")
+            .field("authKey", &"[redacted]")
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for TailscaleRuntimeAccessCredential {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TailscaleRuntimeAccessCredential")
+            .field("attachmentId", &self.attachment_id)
+            .field("expiresAtMs", &self.expires_at_ms)
+            .field("provider", &self.provider)
+            .finish_non_exhaustive()
+    }
+}
+
+impl TailscaleRuntimeAccessCredential {
+    fn valid_for(&self, access: &TailscaleRuntimeAccessBootstrap) -> bool {
+        self.schema == "proof.liskov.runtime-ssh-credential.v1"
+            && self.attachment_id == access.attachment_id
+            // The setup binding compares these for exact equality, so reject a
+            // mismatch here rather than letting it surface as an opaque
+            // binding failure after the archive has already been fetched.
+            && self.expires_at_ms == access.setup_deadline_ms
+            && match &self.provider {
+                TailscaleRuntimeAccessCredentialProvider::Tailscale { auth_key } => {
+                    !auth_key.is_empty() && auth_key.len() <= 512
+                }
+            }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TailscaleRuntimeAccessBootstrap {
@@ -138,6 +205,10 @@ pub struct TailscaleRuntimeAccessBootstrap {
     #[serde(default)]
     pub launch_profile: Option<RuntimeAccessLaunchProfile>,
     pub artifact: RuntimeAccessArtifact,
+    // Boxed to keep this variant's size near the boxed managed one; the
+    // credential is ten owned strings.
+    #[serde(default)]
+    pub credential: Option<Box<TailscaleRuntimeAccessCredential>>,
 }
 
 impl TailscaleRuntimeAccessBootstrap {
@@ -166,6 +237,10 @@ impl TailscaleRuntimeAccessBootstrap {
                 .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
             && (1..=134_217_728).contains(&self.artifact.byte_size)
             && url_valid
+            && self
+                .credential
+                .as_ref()
+                .is_none_or(|credential| credential.valid_for(self))
     }
 }
 
@@ -1032,6 +1107,60 @@ mod tests {
                 Err(ProtocolError::InvalidResponse)
             ));
         }
+        // The credential may now ride inside the signed response. A server that
+        // omits it (older, or still delivering by environment variable) must
+        // keep parsing — the field is optional in that direction only.
+        assert!(
+            validate_response(&request, &serde_json::to_vec(&response).unwrap())
+                .unwrap()
+                .access
+                .is_some()
+        );
+
+        let credential = json!({
+            "schema": "proof.liskov.runtime-ssh-credential.v1",
+            "provider": {"kind": "tailscale", "authKey": "tskey-auth-secret"},
+            "organizationId": "org-1",
+            "integrationId": "int-1",
+            "attachmentId": "att-1",
+            "applicationUid": "app-uid-1",
+            "deploymentId": "dep-1",
+            "jobId": request.job_id,
+            "policyDigest": "sha256:policy",
+            "expiresAtMs": 60_000,
+        });
+        response["access"]["credential"] = credential.clone();
+        let parsed = validate_response(&request, &serde_json::to_vec(&response).unwrap()).unwrap();
+        let taken = match parsed.access.as_ref().unwrap() {
+            RuntimeAccessBootstrap::Tailscale(access) => access.credential.clone().unwrap(),
+            RuntimeAccessBootstrap::Managed(_) => panic!("expected Tailscale bootstrap"),
+        };
+        // Round-trips to exactly the JSON the environment variable carried, so
+        // the existing credential parse and binding validation are unchanged.
+        assert_eq!(serde_json::to_value(&taken).unwrap(), credential);
+        // The auth key must not survive a debug print of the response.
+        assert!(!format!("{parsed:?}").contains("tskey-auth-secret"));
+
+        for (field, value) in [
+            ("attachmentId", json!("att-other")),
+            ("expiresAtMs", json!(60_001)),
+            ("schema", json!("proof.liskov.runtime-ssh-credential.v2")),
+        ] {
+            let mut rejected = response.clone();
+            rejected["access"]["credential"][field] = value;
+            assert!(
+                matches!(
+                    validate_response(&request, &serde_json::to_vec(&rejected).unwrap()),
+                    Err(ProtocolError::InvalidResponse)
+                ),
+                "credential {field} must bind to the access block"
+            );
+        }
+        response["access"]
+            .as_object_mut()
+            .unwrap()
+            .remove("credential");
+
         response["access"]["futureProviderConfig"] = json!(true);
         assert!(matches!(
             validate_response(&request, &serde_json::to_vec(&response).unwrap()),
