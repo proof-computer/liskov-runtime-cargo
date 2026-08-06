@@ -1,6 +1,6 @@
 [package]
 name = "liskov-runtime-cargo"
-version = "0.10.10"
+version = "0.10.11"
 edition = "2024"
 rust-version = "1.85"
 description = "Static bootstrap and process supervisor for Liskov-managed Acurast Cargo/PRoot workloads"

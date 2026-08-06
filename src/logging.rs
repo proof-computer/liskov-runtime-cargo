@@ -221,16 +221,25 @@ pub struct LoggingController {
 impl LoggingController {
     /// Creates the sole Blackbox owner before Runtime SSH setup. Customer and
     /// provider records use independent queues, budgets, and batches.
+    ///
+    /// The second value is the attach decision code for the
+    /// `slipway.logging.attach` diagnostic — every exit must name itself;
+    /// three production incidents hid behind silent `None`s here
+    /// (Q-20260806-h7wq).
     pub fn from_environment(
         bootstrap: &RuntimeBootstrapResponse,
         runtime_environment: &BTreeMap<String, String>,
-    ) -> Option<Self> {
+    ) -> (Option<Self>, &'static str) {
         if !bootstrap.logging_enabled() {
-            return None;
+            return (None, "disabled_by_policy");
         }
         let inherited = std::env::var(BLACKBOX_CONFIG_ENV).ok();
-        let raw = select_blackbox_config(runtime_environment, inherited.as_deref())?;
-        let config = BlackboxConfig::parse(raw, bootstrap).ok()?;
+        let Some(raw) = select_blackbox_config(runtime_environment, inherited.as_deref()) else {
+            return (None, "config_missing");
+        };
+        let Ok(config) = BlackboxConfig::parse(raw, bootstrap) else {
+            return (None, "config_invalid");
+        };
         let http: Arc<dyn LogHttpClient> = if bootstrap.logging_outage_canary_enabled() {
             Arc::new(OutageCanaryHttp)
         } else {
@@ -253,7 +262,7 @@ impl LoggingController {
         let worker_customer_dropped = customer_dropped.clone();
         let worker_runtime_dropped = runtime_dropped.clone();
         let worker_runtime_queued_bytes = runtime_queued_bytes.clone();
-        thread::Builder::new()
+        let Ok(_worker_thread) = thread::Builder::new()
             .name("liskov-blackbox-logs".into())
             .spawn(move || {
                 if let Some(worker) = LogWorker::new_shared(
@@ -270,7 +279,9 @@ impl LoggingController {
                     );
                 }
             })
-            .ok()?;
+        else {
+            return (None, "worker_spawn_failed");
+        };
         let customer = OutputLogger {
             sender: Some(customer_sender),
             dropped: customer_dropped,
@@ -286,10 +297,13 @@ impl LoggingController {
                 raw_expires_at_ms,
             },
         });
-        Some(Self {
-            customer,
-            runtime_ssh,
-        })
+        (
+            Some(Self {
+                customer,
+                runtime_ssh,
+            }),
+            "attached",
+        )
     }
 
     pub fn customer(&self) -> &OutputLogger {
@@ -721,7 +735,7 @@ impl BlackboxConfig {
         let factory_token = field(object, &["factoryToken", "ft"]);
         let mode = if let (Some(sink_id), None) = (sink_id, factory_token) {
             let job_id = field(object, &["jobId", "jid", "job"]).ok_or(())?;
-            if job_id != bootstrap.job_id {
+            if !job_ids_equivalent(job_id, &bootstrap.job_id) {
                 return Err(());
             }
             let write_url = normalized_https_url(field(object, &["writeUrl", "url"]).ok_or(())?)?;
@@ -742,7 +756,7 @@ impl BlackboxConfig {
                 .ok_or(())?;
             let base_url = normalized_https_url(field(object, &["baseUrl", "base"]).ok_or(())?)?;
             let job_id = field(object, &["jobId", "jid", "job"]).unwrap_or(&bootstrap.job_id);
-            if job_id != bootstrap.job_id {
+            if !job_ids_equivalent(job_id, &bootstrap.job_id) {
                 return Err(());
             }
             SinkMode::Factory {
@@ -771,6 +785,55 @@ impl BlackboxConfig {
             timeout,
         })
     }
+}
+
+/// Whether two job-id serializations name the same Acurast job.
+///
+/// The server-side envelope carries the canonical chain form
+/// (`[{"name":"Acurast","values":[[[u8;32]]]},seq]`) while the bootstrap
+/// echoes this runtime's structured form
+/// (`{"id":"seq","origin":{"kind":"Acurast","source":"<hex32>"}}`). Byte
+/// equality between the two encodings silently disabled every Cargo log
+/// capture (Q-20260806-h7wq); the job is the same iff the origin source
+/// bytes and the sequence match. Unrecognized encodings stay fail-closed.
+fn job_ids_equivalent(left: &str, right: &str) -> bool {
+    if left == right {
+        return true;
+    }
+    matches!((parse_job_ref(left), parse_job_ref(right)), (Some(a), Some(b)) if a == b)
+}
+
+/// `(origin source bytes, sequence)` from either job-id serialization.
+fn parse_job_ref(raw: &str) -> Option<([u8; 32], u64)> {
+    let value: Value = serde_json::from_str(raw.trim()).ok()?;
+    if let Some(items) = value.as_array() {
+        let origin = items.first()?;
+        if origin["name"].as_str() != Some("Acurast") {
+            return None;
+        }
+        let bytes = origin["values"][0][0].as_array()?;
+        if bytes.len() != 32 {
+            return None;
+        }
+        let mut source = [0_u8; 32];
+        for (index, byte) in bytes.iter().enumerate() {
+            source[index] = u8::try_from(byte.as_u64()?).ok()?;
+        }
+        let sequence = items.get(1)?.as_u64()?;
+        return Some((source, sequence));
+    }
+    let object = value.as_object()?;
+    let origin = object.get("origin")?;
+    if origin["kind"].as_str() != Some("Acurast") {
+        return None;
+    }
+    let source_text = origin["source"].as_str()?;
+    let source_hex = source_text.strip_prefix("0x").unwrap_or(source_text);
+    let decoded = hex::decode(source_hex).ok()?;
+    let source: [u8; 32] = decoded.try_into().ok()?;
+    let id = object.get("id")?;
+    let sequence = id.as_u64().or_else(|| id.as_str()?.parse::<u64>().ok())?;
+    Some((source, sequence))
 }
 
 fn parse_config_value(raw: &str) -> Result<Value, ()> {
@@ -1875,11 +1938,12 @@ mod tests {
             })
             .to_string(),
         )]);
-        let mut controller = LoggingController::from_environment(
+        let (controller, code) = LoggingController::from_environment(
             &bootstrap(Some(json!({"enabled": true}))),
             &runtime_environment,
-        )
-        .expect("signed runtime-environment config enables logging");
+        );
+        assert_eq!(code, "attached");
+        let mut controller = controller.expect("signed runtime-environment config enables logging");
         controller.finish();
     }
 
@@ -1920,6 +1984,66 @@ mod tests {
         assert!(
             BlackboxConfig::parse(&wrong_job, &bootstrap(Some(json!({"enabled": true})))).is_err()
         );
+    }
+
+    // The production r12/r13 job-id pair (Acurast job 138321): the envelope
+    // carries the canonical chain serialization while the bootstrap echoes the
+    // runtime's structured serialization. Byte equality between them silently
+    // disabled every Cargo log capture (Q-20260806-h7wq).
+    const CANONICAL_JOB_138321: &str = "[{\"name\":\"Acurast\",\"values\":[[[168,78,110,56,34,198,133,36,72,76,189,73,183,59,124,225,96,239,20,214,122,231,180,254,8,130,198,37,26,82,221,77]]]},138321]";
+    const STRUCTURED_JOB_138321: &str = "{\"id\":\"138321\",\"origin\":{\"kind\":\"Acurast\",\"source\":\"a84e6e3822c68524484cbd49b73b7ce160ef14d67ae7b4fe0882c6251a52dd4d\"}}";
+
+    #[test]
+    fn job_ids_are_equivalent_across_serializations() {
+        assert!(job_ids_equivalent(
+            CANONICAL_JOB_138321,
+            STRUCTURED_JOB_138321
+        ));
+        assert!(job_ids_equivalent(
+            STRUCTURED_JOB_138321,
+            CANONICAL_JOB_138321
+        ));
+        assert!(job_ids_equivalent(
+            STRUCTURED_JOB_138321,
+            &STRUCTURED_JOB_138321.replace("\"source\":\"", "\"source\":\"0x")
+        ));
+        assert!(job_ids_equivalent("same-opaque", "same-opaque"));
+        assert!(!job_ids_equivalent(
+            CANONICAL_JOB_138321,
+            &STRUCTURED_JOB_138321.replace("138321", "138322")
+        ));
+        assert!(!job_ids_equivalent(
+            CANONICAL_JOB_138321,
+            &STRUCTURED_JOB_138321.replace("a84e", "b84e")
+        ));
+        assert!(!job_ids_equivalent(CANONICAL_JOB_138321, "garbage"));
+        assert!(!job_ids_equivalent("job-a", "job-b"));
+    }
+
+    #[test]
+    fn parse_accepts_a_canonical_envelope_job_id_against_the_structured_bootstrap() {
+        let mut structured_bootstrap = bootstrap(Some(json!({"enabled": true})));
+        structured_bootstrap.job_id = STRUCTURED_JOB_138321.to_string();
+        let envelope = json!({
+            "domain": "proof.liskov.blackbox-log-config.v2",
+            "applicationUid": "app-uid",
+            "applicationId": "app",
+            "sinkId": "sink-prod",
+            "jobId": CANONICAL_JOB_138321,
+            "writeUrl": "https://blackbox.test/v1/sinks/sink-prod/events",
+            "resumeUrl": "https://blackbox.test/v1/sinks/sink-prod/resume",
+            "writerKeyDerivation": WRITER_KEY_DERIVATION,
+            "dek": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+        })
+        .to_string();
+        let config = BlackboxConfig::parse(&envelope, &structured_bootstrap)
+            .expect("equivalent job ids must parse");
+        match config.mode {
+            SinkMode::Prebound { ref job_id, .. } => {
+                assert_eq!(job_id, CANONICAL_JOB_138321);
+            }
+            _ => panic!("expected the prebound sink mode"),
+        }
     }
 
     #[test]

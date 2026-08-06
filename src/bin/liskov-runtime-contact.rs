@@ -212,7 +212,11 @@ fn main() -> ExitCode {
     // Provider logging is strictly best-effort. Resolve only the server-owned
     // Blackbox config before Runtime SSH starts, but never let Lockbox or
     // logging availability alter customer execution or access attachment state.
-    let _ = hydrate_blackbox_log_config(&bootstrap, &bridge, &mut runtime_environment);
+    // The failure code still travels into the slipway.logging.attach report.
+    let logging_hydrate_error =
+        hydrate_blackbox_log_config(&bootstrap, &bridge, &mut runtime_environment)
+            .err()
+            .map(|error| error.code());
     match supervise_with_environment_and_access(
         &cli.command,
         &bootstrap,
@@ -220,6 +224,7 @@ fn main() -> ExitCode {
         contact_started.elapsed(),
         &runtime_environment,
         runtime_access_credential,
+        logging_hydrate_error,
     ) {
         SupervisorExit::Code(code) => ExitCode::from(u8::try_from(code).unwrap_or(70)),
         SupervisorExit::Signal(signal) => propagate_signal(signal),
