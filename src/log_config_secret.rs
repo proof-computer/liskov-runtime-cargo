@@ -68,6 +68,30 @@ pub enum LogConfigSecretError {
     InvalidPlaintext,
 }
 
+impl LogConfigSecretError {
+    /// Bounded code for the `slipway.logging.attach` diagnostic's
+    /// `hydrateErrorCode` attr — secret-free, one token per variant.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::InvalidBootstrap => "invalid_bootstrap",
+            Self::Clock => "clock",
+            Self::TimestampOverflow => "timestamp_overflow",
+            Self::Randomness => "randomness",
+            Self::EncryptionKey(_) => "encryption_key",
+            Self::InvalidEncryptionKey => "invalid_encryption_key",
+            Self::Signing(_) => "signing",
+            Self::InvalidSignature => "invalid_signature",
+            Self::Serialization(_) => "serialization",
+            Self::Transport => "transport",
+            Self::Rejected => "rejected",
+            Self::InvalidResponse => "invalid_response",
+            Self::ResponseBinding => "response_binding",
+            Self::Decryption(_) => "decryption",
+            Self::InvalidPlaintext => "invalid_plaintext",
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct CompactBootstrap {
     v: u8,

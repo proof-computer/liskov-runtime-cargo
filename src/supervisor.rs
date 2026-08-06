@@ -99,9 +99,11 @@ pub fn supervise_with_environment(
         bootstrap_elapsed,
         runtime_environment,
         None,
+        None,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn supervise_with_environment_and_access(
     command: &[OsString],
     bootstrap: &RuntimeBootstrapResponse,
@@ -109,13 +111,31 @@ pub fn supervise_with_environment_and_access(
     bootstrap_elapsed: Duration,
     runtime_environment: &BTreeMap<String, String>,
     runtime_access_credential: Option<String>,
+    logging_hydrate_error: Option<&'static str>,
 ) -> SupervisorExit {
     let http: Arc<dyn HttpClient> = Arc::new(UreqHttpClient::with_limits(
         DIAGNOSTIC_HTTP_TIMEOUT,
         MAX_DIAGNOSTIC_RESPONSE_BYTES,
     ));
     let mut reporter = AsyncDiagnosticReporter::spawn(bootstrap, bridge, http);
-    let mut logging = LoggingController::from_environment(bootstrap, runtime_environment);
+    let (mut logging, logging_attach_code) =
+        LoggingController::from_environment(bootstrap, runtime_environment);
+    report(
+        &mut reporter
+            .as_mut()
+            .map(|reporter| reporter as &mut dyn RuntimeReporter),
+        "slipway.logging.attach",
+        match logging_attach_code {
+            "attached" => DiagnosticStatus::Succeeded,
+            "disabled_by_policy" => DiagnosticStatus::Info,
+            _ => DiagnosticStatus::Failed,
+        },
+        Some(logging_attach_code),
+        match logging_hydrate_error {
+            Some(code) => json!({ "hydrateErrorCode": code }),
+            None => json!(null),
+        },
+    );
     let runtime_ssh_logs = logging.as_ref().and_then(LoggingController::runtime_ssh);
     let access_binding = bootstrap
         .access
@@ -1297,6 +1317,7 @@ pub(crate) mod tests {
                 Duration::ZERO,
                 &BTreeMap::new(),
                 Some("malformed-managed-credential".into()),
+                None,
             ),
             SupervisorExit::Code(23)
         );
