@@ -19,6 +19,17 @@ path = "src/lib.rs"
 name = "liskov-runtime-contact"
 path = "src/bin/liskov-runtime-contact.rs"
 
+# Evidence probe for provider work. `required-features` keeps it out of every
+# default build and out of the release artifact, which builds
+# `--bin liskov-runtime-contact` explicitly.
+[[bin]]
+name = "liskov-tunnel-probe"
+path = "src/bin/liskov-tunnel-probe.rs"
+required-features = ["tunnel-probe"]
+
+[features]
+tunnel-probe = []
+
 [dependencies]
 base64 = "0.22.1"
 clap = { version = "4.5.40", features = ["derive"] }
