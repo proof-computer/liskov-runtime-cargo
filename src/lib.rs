@@ -13,6 +13,7 @@ pub mod probe;
 pub mod protocol;
 pub mod runtime_env;
 pub mod supervisor;
+pub mod tunnel_probe;
 
 pub use contact::{
     ContactError, ContactRuntime, DEFAULT_CORE_URL, ExitCategory, RetryPolicy,

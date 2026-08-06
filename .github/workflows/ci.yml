@@ -40,6 +40,8 @@ jobs:
           sudo apt-get install --yes binutils file musl-tools netcat-openbsd openssh-client
       - name: Build release helper
         run: cargo build --release --locked --target aarch64-unknown-linux-musl --bin liskov-runtime-contact
+      - name: Build evidence probe
+        run: cargo build --release --locked --target aarch64-unknown-linux-musl --features tunnel-probe --bin liskov-tunnel-probe
       - name: Build pinned static Dropbear toolchain
         run: |
           curl --fail --location --silent --show-error \
@@ -57,7 +59,7 @@ jobs:
             echo "artifact unexpectedly contains a dynamic interpreter" >&2
             exit 1
           fi
-          for artifact in target/dropbear-static/liskov-dropbear target/dropbear-static/liskov-dropbearkey; do
+          for artifact in target/aarch64-unknown-linux-musl/release/liskov-tunnel-probe target/dropbear-static/liskov-dropbear target/dropbear-static/liskov-dropbearkey; do
             file "$artifact" | grep -q 'ELF 64-bit LSB.*ARM aarch64'
             readelf -h "$artifact" | grep -q 'Machine:.*AArch64'
             if readelf -l "$artifact" | grep -q 'Requesting program interpreter'; then
@@ -69,6 +71,7 @@ jobs:
         run: |
           mkdir candidate-dist
           install -m 0755 target/aarch64-unknown-linux-musl/release/liskov-runtime-contact candidate-dist/liskov-runtime-contact
+          install -m 0755 target/aarch64-unknown-linux-musl/release/liskov-tunnel-probe candidate-dist/liskov-tunnel-probe
           install -m 0755 target/dropbear-static/liskov-dropbear candidate-dist/liskov-dropbear
           install -m 0755 target/dropbear-static/liskov-dropbearkey candidate-dist/liskov-dropbearkey
           install -m 0755 /usr/bin/ssh candidate-dist/test-openssh
@@ -110,6 +113,7 @@ jobs:
         run: |
           chmod 0755 \
             candidate/liskov-runtime-contact \
+            candidate/liskov-tunnel-probe \
             candidate/liskov-dropbear \
             candidate/liskov-dropbearkey \
             candidate/test-openssh \
@@ -122,6 +126,8 @@ jobs:
         run: |
           scripts/run-qemu-proot-runtime.sh --self-test
           scripts/run-qemu-proot-runtime.sh --profile netlink-denied --self-test
+      - name: Exercise tunnel evidence probe under both fault profiles
+        run: scripts/test-tunnel-probe-qemu-proot.sh candidate/liskov-tunnel-probe
       - name: Exercise managed Dropbear access through stock OpenSSH
         run: |
           scripts/run-qemu-proot-runtime.sh --no-shim -- \
