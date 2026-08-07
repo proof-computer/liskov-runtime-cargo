@@ -159,7 +159,11 @@ jobs:
 
             retry=false
             case "$status" in
-              000|503) retry=true ;;
+              # 000 is a transport failure; 429/502/503/504 all mean the
+              # registry is momentarily unreachable or shedding load, which is
+              # exactly what a concurrent control-plane deployment looks like
+              # from here. None of them is a decision about the release.
+              000|429|502|503|504) retry=true ;;
               422)
                 if jq -e '.reason == "release_rejected"' "$response_file" >/dev/null 2>&1; then
                   retry=true
