@@ -44,9 +44,22 @@ jobs:
         run: cargo build --release --locked --target aarch64-unknown-linux-musl --features tunnel-probe --bin liskov-tunnel-probe
       - name: Build pinned static Dropbear toolchain
         run: |
-          curl --fail --location --silent --show-error \
-            --output /tmp/dropbear-2026.94.tar.bz2 \
-            https://matt.ucc.asn.au/dropbear/releases/dropbear-2026.94.tar.bz2
+          # Upstream is a single host and it does go down — it served HTTP 525
+          # for hours on 2026-08-12 and blocked every helper release. Try the
+          # mirror if it does. This is safe without trusting either host:
+          # build-dropbear.sh pins expected_sha256 and hard-fails on mismatch,
+          # so the digest, not the origin, is what is trusted.
+          for url in \
+            https://matt.ucc.asn.au/dropbear/releases/dropbear-2026.94.tar.bz2 \
+            https://dropbear.nl/mirror/releases/dropbear-2026.94.tar.bz2
+          do
+            echo "fetching dropbear source from $url"
+            if curl --fail --location --silent --show-error \
+                 --output /tmp/dropbear-2026.94.tar.bz2 "$url"; then
+              break
+            fi
+            echo "source unavailable at $url" >&2
+          done
           scripts/build-dropbear.sh /tmp/dropbear-2026.94.tar.bz2 target/dropbear-static
       - name: Verify executable and static ELF
         run: |
