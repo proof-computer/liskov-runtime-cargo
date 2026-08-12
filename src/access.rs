@@ -59,6 +59,10 @@ const TUNNEL_UP_CLIENT_MARGIN: Duration = Duration::from_secs(30);
 /// but a loaded device starting a 26 MB static binary can take longer).
 const DAEMON_SOCKET_TIMEOUT: Duration = Duration::from_secs(90);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
+/// How long to let output readers drain after the child is gone. Bounded because
+/// a killed child's pipe can be held open by a surviving grandchild, in which
+/// case EOF never arrives and an unbounded wait never returns.
+const READER_DRAIN_GRACE: Duration = Duration::from_secs(5);
 const MAX_SAFE_JSON_INTEGER: u64 = 9_007_199_254_740_991;
 
 #[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
@@ -1192,34 +1196,38 @@ fn run_command(
         .stderr
         .take()
         .ok_or_else(|| AccessError::new("access_setup_failed"))?;
-    let reader = thread::spawn(move || -> std::io::Result<(Vec<u8>, bool)> {
-        let mut captured = Vec::new();
-        let mut too_large = false;
+    // Readers append into shared buffers instead of returning their result at
+    // EOF, because EOF may never arrive: killing a child does not close a pipe
+    // that a surviving grandchild still holds open.
+    let stdout_buf: Arc<Mutex<(Vec<u8>, bool)>> = Arc::new(Mutex::new((Vec::new(), false)));
+    let stderr_buf: Arc<Mutex<(Vec<u8>, bool)>> = Arc::new(Mutex::new((Vec::new(), false)));
+    let stdout_sink = Arc::clone(&stdout_buf);
+    let stderr_sink = Arc::clone(&stderr_buf);
+    let reader = thread::spawn(move || {
         let mut buffer = [0_u8; 8 * 1024];
-        loop {
-            let read = stdout.read(&mut buffer)?;
+        while let Ok(read) = stdout.read(&mut buffer) {
             if read == 0 {
                 break;
             }
-            let remaining = MAX_COMMAND_OUTPUT_BYTES.saturating_sub(captured.len());
-            captured.extend_from_slice(&buffer[..read.min(remaining)]);
-            too_large |= read > remaining;
+            if let Ok(mut sink) = stdout_sink.lock() {
+                let remaining = MAX_COMMAND_OUTPUT_BYTES.saturating_sub(sink.0.len());
+                sink.0.extend_from_slice(&buffer[..read.min(remaining)]);
+                sink.1 |= read > remaining;
+            }
         }
-        Ok((captured, too_large))
     });
-    let stderr_reader = thread::spawn(move || -> (Vec<u8>, bool) {
-        let mut captured = Vec::with_capacity(MAX_STARTUP_STDERR_BYTES);
-        let mut truncated = false;
+    let stderr_reader = thread::spawn(move || {
         let mut buffer = [0_u8; 4 * 1024];
         while let Ok(read) = stderr.read(&mut buffer) {
             if read == 0 {
                 break;
             }
-            let remaining = MAX_STARTUP_STDERR_BYTES.saturating_sub(captured.len());
-            captured.extend_from_slice(&buffer[..read.min(remaining)]);
-            truncated |= read > remaining;
+            if let Ok(mut sink) = stderr_sink.lock() {
+                let remaining = MAX_STARTUP_STDERR_BYTES.saturating_sub(sink.0.len());
+                sink.0.extend_from_slice(&buffer[..read.min(remaining)]);
+                sink.1 |= read > remaining;
+            }
         }
-        (captured, truncated)
     });
     let status = loop {
         if let Some(status) = child
@@ -1235,13 +1243,24 @@ fn run_command(
         }
         thread::sleep(POLL_INTERVAL);
     };
-    let (stdout, output_too_large) = reader
-        .join()
-        .map_err(|_| AccessError::new("access_setup_failed"))?
-        .map_err(|_| AccessError::new("access_setup_failed"))?;
-    let (stderr, stderr_truncated) = stderr_reader
-        .join()
-        .map_err(|_| AccessError::new("access_setup_failed"))?;
+    // Give the readers a bounded chance to drain, then take whatever they have.
+    // Waiting indefinitely is what wedged the caller: an over-budget `tailscale
+    // up` left the access setup hung with no failure ever reported. Partial
+    // output is still evidence, and far better than never returning.
+    let drain_deadline = std::time::Instant::now() + READER_DRAIN_GRACE;
+    while (!reader.is_finished() || !stderr_reader.is_finished())
+        && std::time::Instant::now() < drain_deadline
+    {
+        thread::sleep(POLL_INTERVAL);
+    }
+    let (stdout, output_too_large) = stdout_buf
+        .lock()
+        .map(|sink| (sink.0.clone(), sink.1))
+        .unwrap_or_else(|_| (Vec::new(), false));
+    let (stderr, stderr_truncated) = stderr_buf
+        .lock()
+        .map(|sink| (sink.0.clone(), sink.1))
+        .unwrap_or_else(|_| (Vec::new(), false));
     Ok(CommandOutput {
         status,
         stdout,
@@ -1459,6 +1478,37 @@ mod tests {
         let past = now - Duration::from_secs(1);
         assert!(subprocess_deadline(past, DOWNLOAD_TIMEOUT).is_err());
         assert!(remaining_timeout(past, DOWNLOAD_TIMEOUT).is_err());
+    }
+
+    #[test]
+    fn deadline_kill_never_blocks_on_a_held_pipe() {
+        // Killing a child does not close a pipe a surviving grandchild still
+        // holds, so the reader never sees EOF. Joining it blocked forever, which
+        // turned this deadline into a permanent hang: a Tailscale `up` that
+        // exceeded its budget left the access setup wedged with no failure ever
+        // reported and an attachment frozen at setup_started.
+        let _lock = crate::supervisor::tests::PROCESS_TEST_LOCK.lock().unwrap();
+        let started = std::time::Instant::now();
+        let killed = run_command(
+            Path::new("/bin/sh"),
+            &[
+                OsString::from("-c"),
+                // The backgrounded sleep inherits stderr and outlives its parent.
+                OsString::from("sleep 60 & echo pre-timeout >&2; sleep 30"),
+            ],
+            std::time::Instant::now() + Duration::from_secs(1),
+        )
+        .expect("run_command must return");
+        let elapsed = started.elapsed();
+        assert_eq!(killed.status, None, "the child must be recorded as killed");
+        assert!(
+            elapsed < Duration::from_secs(1) + READER_DRAIN_GRACE + Duration::from_secs(5),
+            "run_command must return promptly after the deadline, took {elapsed:?}"
+        );
+        assert!(
+            killed.stderr.starts_with(b"pre-timeout"),
+            "output written before the kill must still be reported as evidence"
+        );
     }
 
     #[test]
