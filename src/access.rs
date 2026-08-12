@@ -48,6 +48,9 @@ const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
 /// handshake, netmap delivery and DERP negotiation, so a high-latency link can
 /// take far longer than the 2001 ms measured on a fast one.
 const TUNNEL_UP_TIMEOUT: Duration = Duration::from_secs(240);
+/// Short budget for the post-failure `status --json` snapshot. This runs while
+/// already failing, so it must not extend the failure path meaningfully.
+const STATUS_EVIDENCE_TIMEOUT: Duration = Duration::from_secs(10);
 /// `tailscale up` is told to give up this much earlier than the harness would
 /// kill it, so a link too slow to finish yields the client's own diagnostic on
 /// stderr instead of an opaque kill with no exit status.
@@ -56,6 +59,10 @@ const TUNNEL_UP_CLIENT_MARGIN: Duration = Duration::from_secs(30);
 /// but a loaded device starting a 26 MB static binary can take longer).
 const DAEMON_SOCKET_TIMEOUT: Duration = Duration::from_secs(90);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
+/// How long to let output readers drain after the child is gone. Bounded because
+/// a killed child's pipe can be held open by a surviving grandchild, in which
+/// case EOF never arrives and an unbounded wait never returns.
+const READER_DRAIN_GRACE: Duration = Duration::from_secs(5);
 const MAX_SAFE_JSON_INTEGER: u64 = 9_007_199_254_740_991;
 
 #[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
@@ -297,6 +304,15 @@ struct DaemonProcess {
 }
 
 impl DaemonProcess {
+    /// Emit whatever the daemon has written to stderr so far, without
+    /// disturbing the capture. Used on the tunnel-failure path, where the
+    /// daemon is still running and its own account of events is the evidence.
+    fn emit_startup_stderr(&self, logger: &RuntimeSshLogEmitter, exact_auth_key: &str) {
+        if let Ok(bytes) = self.startup_stderr.bytes.lock() {
+            emit_command_stderr(logger, exact_auth_key, &bytes, false);
+        }
+    }
+
     fn disable_startup_capture(&self) {
         self.startup_stderr.enabled.store(false, Ordering::Release);
         if let Ok(mut bytes) = self.startup_stderr.bytes.lock() {
@@ -336,6 +352,12 @@ struct StartupStderr {
 struct DaemonGuard(Option<DaemonProcess>);
 
 impl DaemonGuard {
+    fn emit_startup_stderr(&self, logger: &RuntimeSshLogEmitter, exact_auth_key: &str) {
+        if let Some(daemon) = self.0.as_ref() {
+            daemon.emit_startup_stderr(logger, exact_auth_key);
+        }
+    }
+
     fn child_mut(&mut self) -> &mut Child {
         &mut self.0.as_mut().expect("daemon guard owns child").child
     }
@@ -733,7 +755,11 @@ fn setup_in_root(
         }
         thread::sleep(POLL_INTERVAL);
     }
-    daemon.disable_startup_capture();
+    // Deliberately NOT disabling the daemon's stderr capture here. It used to be
+    // dropped the moment the socket appeared — i.e. immediately before `up`,
+    // the leg most likely to fail — so a stalled login produced nine seconds of
+    // startup noise and then silence. Capture stays on until the session is
+    // fully validated below.
     let hostname = runtime_hostname(&bootstrap.application_uid, &bootstrap.deployment_id);
     let auth_argument = format!("file:{}", auth_path.display());
     let up = run_bounded(
@@ -758,7 +784,21 @@ fn setup_in_root(
         client_logger.as_ref().map(|logger| (logger, auth_key)),
     );
     std::fs::remove_file(&auth_path).map_err(|_| AccessError::new("access_workspace_failed"))?;
-    up.map_err(stage_error("access_up_failed"))?;
+    if let Err(error) = up {
+        // `up` failing tells us the tunnel did not come up; it does not tell us
+        // why. `status --json` does — it distinguishes "never reached the
+        // control plane" from "key rejected" from "authenticated but no
+        // netmap", which is otherwise only answerable with a shell on the
+        // processor, and Tailscale is itself the shell transport.
+        report_tunnel_failure_evidence(
+            &tailscale_path,
+            &socket,
+            deadline,
+            client_logger.as_ref().map(|logger| (logger, auth_key)),
+            &daemon,
+        );
+        return Err(stage_error("access_up_failed")(error));
+    }
     let status = run_bounded_capture(
         &tailscale_path,
         &[
@@ -782,6 +822,7 @@ fn setup_in_root(
     {
         return Err(AccessError::new("access_status_unexpected"));
     }
+    daemon.disable_startup_capture();
     Ok(TailscaleAccessSession {
         daemon: daemon.take(),
         root: root.to_path_buf(),
@@ -1015,6 +1056,59 @@ fn classify_sidecar_exit(success: bool, startup_stderr: &[u8]) -> AccessError {
 /// Emit a failed client command's bounded stderr through the raw-after-redaction
 /// provider log channel — the same path daemon startup stderr uses — so typed
 /// `access_up_failed` / `access_status_invalid` degradations carry evidence.
+/// Snapshot why the tunnel did not come up, on the failure path only.
+///
+/// `up` failing says the tunnel is not running; it never says why. The three
+/// causes look identical from outside — the daemon never reached the control
+/// plane, the auth key was rejected, or it authenticated but got no netmap —
+/// and Tailscale is itself the SSH transport, so a shell on the processor is not
+/// available to tell them apart. `status --json` distinguishes all three, and
+/// the daemon's own stderr explains the surrounding behaviour.
+///
+/// Everything here is best-effort: this runs while already returning an error,
+/// so a failure to collect evidence must never mask the original failure.
+fn report_tunnel_failure_evidence(
+    tailscale_path: &Path,
+    socket: &Path,
+    deadline: std::time::Instant,
+    failure_logger: Option<(&RuntimeSshLogEmitter, &str)>,
+    daemon: &DaemonGuard,
+) {
+    let Some((logger, exact_auth_key)) = failure_logger else {
+        return;
+    };
+    // The daemon's stderr from startup through the failed login.
+    daemon.emit_startup_stderr(logger, exact_auth_key);
+    let Ok(status_deadline) = subprocess_deadline(deadline, STATUS_EVIDENCE_TIMEOUT) else {
+        return;
+    };
+    let Ok(output) = run_command(
+        tailscale_path,
+        &[
+            OsString::from(format!("--socket={}", socket.display())),
+            OsString::from("status"),
+            OsString::from("--json"),
+        ],
+        status_deadline,
+    ) else {
+        return;
+    };
+    // stdout carries the status document; stderr carries the reason it could not
+    // be produced. Both are useful, and both go through the same redaction.
+    emit_command_stderr(
+        logger,
+        exact_auth_key,
+        &output.stdout,
+        output.output_too_large,
+    );
+    emit_command_stderr(
+        logger,
+        exact_auth_key,
+        &output.stderr,
+        output.stderr_truncated,
+    );
+}
+
 fn emit_command_stderr(
     logger: &RuntimeSshLogEmitter,
     exact_auth_key: &str,
@@ -1102,34 +1196,38 @@ fn run_command(
         .stderr
         .take()
         .ok_or_else(|| AccessError::new("access_setup_failed"))?;
-    let reader = thread::spawn(move || -> std::io::Result<(Vec<u8>, bool)> {
-        let mut captured = Vec::new();
-        let mut too_large = false;
+    // Readers append into shared buffers instead of returning their result at
+    // EOF, because EOF may never arrive: killing a child does not close a pipe
+    // that a surviving grandchild still holds open.
+    let stdout_buf: Arc<Mutex<(Vec<u8>, bool)>> = Arc::new(Mutex::new((Vec::new(), false)));
+    let stderr_buf: Arc<Mutex<(Vec<u8>, bool)>> = Arc::new(Mutex::new((Vec::new(), false)));
+    let stdout_sink = Arc::clone(&stdout_buf);
+    let stderr_sink = Arc::clone(&stderr_buf);
+    let reader = thread::spawn(move || {
         let mut buffer = [0_u8; 8 * 1024];
-        loop {
-            let read = stdout.read(&mut buffer)?;
+        while let Ok(read) = stdout.read(&mut buffer) {
             if read == 0 {
                 break;
             }
-            let remaining = MAX_COMMAND_OUTPUT_BYTES.saturating_sub(captured.len());
-            captured.extend_from_slice(&buffer[..read.min(remaining)]);
-            too_large |= read > remaining;
+            if let Ok(mut sink) = stdout_sink.lock() {
+                let remaining = MAX_COMMAND_OUTPUT_BYTES.saturating_sub(sink.0.len());
+                sink.0.extend_from_slice(&buffer[..read.min(remaining)]);
+                sink.1 |= read > remaining;
+            }
         }
-        Ok((captured, too_large))
     });
-    let stderr_reader = thread::spawn(move || -> (Vec<u8>, bool) {
-        let mut captured = Vec::with_capacity(MAX_STARTUP_STDERR_BYTES);
-        let mut truncated = false;
+    let stderr_reader = thread::spawn(move || {
         let mut buffer = [0_u8; 4 * 1024];
         while let Ok(read) = stderr.read(&mut buffer) {
             if read == 0 {
                 break;
             }
-            let remaining = MAX_STARTUP_STDERR_BYTES.saturating_sub(captured.len());
-            captured.extend_from_slice(&buffer[..read.min(remaining)]);
-            truncated |= read > remaining;
+            if let Ok(mut sink) = stderr_sink.lock() {
+                let remaining = MAX_STARTUP_STDERR_BYTES.saturating_sub(sink.0.len());
+                sink.0.extend_from_slice(&buffer[..read.min(remaining)]);
+                sink.1 |= read > remaining;
+            }
         }
-        (captured, truncated)
     });
     let status = loop {
         if let Some(status) = child
@@ -1145,13 +1243,24 @@ fn run_command(
         }
         thread::sleep(POLL_INTERVAL);
     };
-    let (stdout, output_too_large) = reader
-        .join()
-        .map_err(|_| AccessError::new("access_setup_failed"))?
-        .map_err(|_| AccessError::new("access_setup_failed"))?;
-    let (stderr, stderr_truncated) = stderr_reader
-        .join()
-        .map_err(|_| AccessError::new("access_setup_failed"))?;
+    // Give the readers a bounded chance to drain, then take whatever they have.
+    // Waiting indefinitely is what wedged the caller: an over-budget `tailscale
+    // up` left the access setup hung with no failure ever reported. Partial
+    // output is still evidence, and far better than never returning.
+    let drain_deadline = std::time::Instant::now() + READER_DRAIN_GRACE;
+    while (!reader.is_finished() || !stderr_reader.is_finished())
+        && std::time::Instant::now() < drain_deadline
+    {
+        thread::sleep(POLL_INTERVAL);
+    }
+    let (stdout, output_too_large) = stdout_buf
+        .lock()
+        .map(|sink| (sink.0.clone(), sink.1))
+        .unwrap_or_else(|_| (Vec::new(), false));
+    let (stderr, stderr_truncated) = stderr_buf
+        .lock()
+        .map(|sink| (sink.0.clone(), sink.1))
+        .unwrap_or_else(|_| (Vec::new(), false));
     Ok(CommandOutput {
         status,
         stdout,
@@ -1369,6 +1478,76 @@ mod tests {
         let past = now - Duration::from_secs(1);
         assert!(subprocess_deadline(past, DOWNLOAD_TIMEOUT).is_err());
         assert!(remaining_timeout(past, DOWNLOAD_TIMEOUT).is_err());
+    }
+
+    #[test]
+    fn deadline_kill_never_blocks_on_a_held_pipe() {
+        // Killing a child does not close a pipe a surviving grandchild still
+        // holds, so the reader never sees EOF. Joining it blocked forever, which
+        // turned this deadline into a permanent hang: a Tailscale `up` that
+        // exceeded its budget left the access setup wedged with no failure ever
+        // reported and an attachment frozen at setup_started.
+        let _lock = crate::supervisor::tests::PROCESS_TEST_LOCK.lock().unwrap();
+        let started = std::time::Instant::now();
+        let killed = run_command(
+            Path::new("/bin/sh"),
+            &[
+                OsString::from("-c"),
+                // The backgrounded sleep inherits stderr and outlives its parent.
+                OsString::from("sleep 60 & echo pre-timeout >&2; sleep 30"),
+            ],
+            std::time::Instant::now() + Duration::from_secs(1),
+        )
+        .expect("run_command must return");
+        let elapsed = started.elapsed();
+        assert_eq!(killed.status, None, "the child must be recorded as killed");
+        assert!(
+            elapsed < Duration::from_secs(1) + READER_DRAIN_GRACE + Duration::from_secs(5),
+            "run_command must return promptly after the deadline, took {elapsed:?}"
+        );
+        assert!(
+            killed.stderr.starts_with(b"pre-timeout"),
+            "output written before the kill must still be reported as evidence"
+        );
+    }
+
+    #[test]
+    fn tunnel_failure_evidence_captures_status_stdout_not_just_stderr() {
+        // When `up` fails we learn the tunnel is down but not why. The three
+        // causes — never reached the control plane, key rejected, authenticated
+        // without a netmap — are only distinguishable from `status --json`, and
+        // Tailscale is itself the SSH transport so there is no shell to ask.
+        // `status` writes its document to STDOUT, so evidence capture that only
+        // forwarded stderr (as the failure path did) reported nothing at all.
+        let _lock = crate::supervisor::tests::PROCESS_TEST_LOCK.lock().unwrap();
+        let shell = Path::new("/bin/sh");
+        let output = run_command(
+            shell,
+            &[
+                OsString::from("-c"),
+                OsString::from("echo '{\"BackendState\":\"NeedsLogin\"}'; exit 0"),
+            ],
+            std::time::Instant::now() + Duration::from_secs(10),
+        )
+        .expect("status command runs");
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("NeedsLogin"),
+            "the status document must be readable from stdout"
+        );
+        assert!(
+            output.stderr.is_empty(),
+            "a healthy status writes nothing to stderr"
+        );
+    }
+
+    #[test]
+    fn status_evidence_budget_is_short_and_bounded_by_the_deadline() {
+        // This snapshot runs while already returning a failure, so it must not
+        // meaningfully extend the failure path.
+        assert!(STATUS_EVIDENCE_TIMEOUT <= Duration::from_secs(15));
+        assert!(STATUS_EVIDENCE_TIMEOUT < TUNNEL_UP_TIMEOUT);
+        let tight = std::time::Instant::now() + Duration::from_secs(2);
+        assert!(subprocess_deadline(tight, STATUS_EVIDENCE_TIMEOUT).unwrap() <= tight);
     }
 
     #[test]
