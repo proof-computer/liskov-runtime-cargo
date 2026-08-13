@@ -746,31 +746,42 @@ fn setup_in_root(
     deadline: std::time::Instant,
     provider_logger: Option<RuntimeSshLogEmitter>,
 ) -> Result<TailscaleAccessSession, AccessError> {
-    let (tailscale, tailscaled) =
-        extract_binaries(archive).map_err(stage_error("access_extract_failed"))?;
+    // Clone the logger up front: `provider_logger` is moved into `spawn_daemon`
+    // below, and every stage here needs to report before that happens.
+    let client_logger = provider_logger.clone();
+    let stage_logger = client_logger.as_ref();
+    let (tailscale, tailscaled) = timed_stage(stage_logger, "extract", || {
+        extract_binaries(archive).map_err(stage_error("access_extract_failed"))
+    })?;
     let tailscale_path = root.join("tailscale");
     let tailscaled_path = root.join("tailscaled");
-    write_private_file(&tailscale_path, &tailscale, 0o700)
-        .map_err(stage_error("access_workspace_failed"))?;
-    write_private_file(&tailscaled_path, &tailscaled, 0o700)
-        .map_err(stage_error("access_workspace_failed"))?;
-    let auth_path = root.join("auth-key");
-    write_private_file(&auth_path, auth_key.as_bytes(), 0o600)
-        .map_err(stage_error("access_workspace_failed"))?;
     let socket = root.join("tailscaled.sock");
     let state_dir = root.join("state");
-    std::fs::create_dir(&state_dir).map_err(|_| AccessError::new("access_workspace_failed"))?;
+    let auth_path = root.join("auth-key");
+    // The two client binaries are multi-MiB writes onto PRoot-backed flash on a
+    // phone. The auth key and state dir are trivial by comparison and share the
+    // stage rather than earning their own.
+    timed_stage(stage_logger, "write_binaries", || {
+        write_private_file(&tailscale_path, &tailscale, 0o700)
+            .map_err(stage_error("access_workspace_failed"))?;
+        write_private_file(&tailscaled_path, &tailscaled, 0o700)
+            .map_err(stage_error("access_workspace_failed"))?;
+        write_private_file(&auth_path, auth_key.as_bytes(), 0o600)
+            .map_err(stage_error("access_workspace_failed"))?;
+        std::fs::create_dir(&state_dir).map_err(|_| AccessError::new("access_workspace_failed"))
+    })?;
     let daemon_deadline = subprocess_deadline(deadline, DAEMON_SOCKET_TIMEOUT)
         .map_err(stage_error("access_deadline_exceeded"))?;
-    let client_logger = provider_logger.clone();
-    let mut daemon = DaemonGuard(Some(spawn_daemon(
-        &tailscaled_path,
-        &socket,
-        &state_dir,
-        access.launch_profile,
-        provider_logger,
-        auth_key,
-    )?));
+    let mut daemon = DaemonGuard(Some(timed_stage(stage_logger, "daemon_spawn", || {
+        spawn_daemon(
+            &tailscaled_path,
+            &socket,
+            &state_dir,
+            access.launch_profile,
+            provider_logger,
+            auth_key,
+        )
+    })?));
     // The failing exits from this loop already carry typed codes that reach the
     // attachment; it is the *successful* exit that was previously invisible, so
     // that is the one worth stamping.
@@ -1589,6 +1600,24 @@ mod tests {
         assert!(STATUS_EVIDENCE_TIMEOUT < TUNNEL_UP_TIMEOUT);
         let tight = std::time::Instant::now() + Duration::from_secs(2);
         assert!(subprocess_deadline(tight, STATUS_EVIDENCE_TIMEOUT).unwrap() <= tight);
+    }
+
+    #[test]
+    fn a_grouped_stage_reports_the_first_failure_not_the_last() {
+        // `write_binaries` folds four filesystem operations into one stage, so
+        // the code it reports must be the one that actually failed first —
+        // otherwise the stage line would misattribute the failure to whichever
+        // step happened to be last.
+        let mut ran = 0;
+        let err = timed_stage(None, "write_binaries", || {
+            ran += 1;
+            Err::<(), _>(AccessError::new("access_workspace_failed"))?;
+            ran += 1;
+            Err::<(), _>(AccessError::new("access_extract_failed"))
+        })
+        .unwrap_err();
+        assert_eq!(err.code, "access_workspace_failed");
+        assert_eq!(ran, 1, "later steps must not run after the first failure");
     }
 
     #[test]
