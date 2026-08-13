@@ -58,6 +58,11 @@ const TUNNEL_UP_CLIENT_MARGIN: Duration = Duration::from_secs(30);
 /// Budget for the daemon to create its LocalAPI socket (294 ms when measured,
 /// but a loaded device starting a 26 MB static binary can take longer).
 const DAEMON_SOCKET_TIMEOUT: Duration = Duration::from_secs(90);
+/// Cadence for "still waiting for the daemon socket" reports. Chosen so a
+/// healthy wait produces at most a handful of beats inside
+/// [`DAEMON_SOCKET_TIMEOUT`], while a loop that outlives its bound is
+/// unmistakable rather than silent.
+const SOCKET_WAIT_HEARTBEAT: Duration = Duration::from_secs(15);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// How long to let output readers drain after the child is gone. Bounded because
 /// a killed child's pipe can be held open by a surviving grandchild, in which
@@ -782,10 +787,24 @@ fn setup_in_root(
             auth_key,
         )
     })?));
-    // The failing exits from this loop already carry typed codes that reach the
-    // attachment; it is the *successful* exit that was previously invisible, so
-    // that is the one worth stamping.
+    // Every exit from this loop is reported, including the ones that never
+    // happen. On r5/144545 the loop ran 678 s against a 90 s bound and emitted
+    // nothing at all, because only the successful exit was stamped — so an
+    // absence could not distinguish "never entered" from "entered and never
+    // left".
+    //
+    // The heartbeat is the discriminator. `socket.exists()` is the loop
+    // condition and the one call here that could plausibly block forever on a
+    // PRoot-backed path; if it does, we see `entered` and then nothing. If the
+    // loop is genuinely iterating, beats keep arriving and the bound itself is
+    // what failed. Those are different bugs.
     let socket_wait_started = std::time::Instant::now();
+    let elapsed_ms =
+        |start: std::time::Instant| u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+    if let Some(logger) = client_logger.as_ref() {
+        logger.stage("daemon_socket", 0, "entered", None);
+    }
+    let mut next_beat_at = socket_wait_started + SOCKET_WAIT_HEARTBEAT;
     while !socket.exists() {
         if let Some(status) = daemon
             .child_mut()
@@ -793,17 +812,45 @@ fn setup_in_root(
             .map_err(|_| AccessError::new("access_sidecar_failed"))?
         {
             let _ = std::fs::remove_file(&auth_path);
-            return Err(daemon.startup_exit_error(status));
+            let error = daemon.startup_exit_error(status);
+            if let Some(logger) = client_logger.as_ref() {
+                logger.stage(
+                    "daemon_socket",
+                    elapsed_ms(socket_wait_started),
+                    "failed",
+                    Some(error.code),
+                );
+            }
+            return Err(error);
         }
-        if std::time::Instant::now() >= daemon_deadline {
+        let now = std::time::Instant::now();
+        if now >= daemon_deadline {
             let _ = std::fs::remove_file(&auth_path);
+            if let Some(logger) = client_logger.as_ref() {
+                logger.stage(
+                    "daemon_socket",
+                    elapsed_ms(socket_wait_started),
+                    "failed",
+                    Some("access_sidecar_start_timeout"),
+                );
+            }
             return Err(AccessError::new("access_sidecar_start_timeout"));
+        }
+        if now >= next_beat_at {
+            if let Some(logger) = client_logger.as_ref() {
+                logger.stage(
+                    "daemon_socket",
+                    elapsed_ms(socket_wait_started),
+                    "waiting",
+                    None,
+                );
+            }
+            next_beat_at = now + SOCKET_WAIT_HEARTBEAT;
         }
         thread::sleep(POLL_INTERVAL);
     }
     if let Some(logger) = client_logger.as_ref() {
-        let elapsed = u64::try_from(socket_wait_started.elapsed().as_millis()).unwrap_or(u64::MAX);
-        logger.stage("daemon_socket", elapsed, "ok", None);
+        logger.stage("daemon_socket", elapsed_ms(socket_wait_started), "ok", None);
     }
     // Deliberately NOT disabling the daemon's stderr capture here. It used to be
     // dropped the moment the socket appeared — i.e. immediately before `up`,
@@ -1618,6 +1665,26 @@ mod tests {
         .unwrap_err();
         assert_eq!(err.code, "access_workspace_failed");
         assert_eq!(ran, 1, "later steps must not run after the first failure");
+    }
+
+    #[test]
+    fn the_socket_wait_heartbeat_makes_a_stuck_loop_visible() {
+        // r5/144545 sat in this loop for 678s against a 90s bound and emitted
+        // nothing, because only the successful exit was stamped. A beat has to
+        // land well inside the bound, or "still waiting" stays
+        // indistinguishable from "never got here".
+        assert!(SOCKET_WAIT_HEARTBEAT < DAEMON_SOCKET_TIMEOUT);
+        let beats_inside_bound = DAEMON_SOCKET_TIMEOUT.as_secs() / SOCKET_WAIT_HEARTBEAT.as_secs();
+        assert!(
+            beats_inside_bound >= 3,
+            "a stuck loop must beat several times before its own deadline"
+        );
+        assert!(
+            beats_inside_bound <= 12,
+            "but not so often it floods the bounded runtime-ssh queue"
+        );
+        // The poll has to be finer than the beat or the cadence is meaningless.
+        assert!(POLL_INTERVAL < SOCKET_WAIT_HEARTBEAT);
     }
 
     #[test]
