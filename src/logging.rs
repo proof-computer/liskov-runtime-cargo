@@ -505,6 +505,38 @@ impl RuntimeSshLogEmitter {
         });
     }
 
+    /// Report that a setup leg finished, and how long it took.
+    ///
+    /// Exists because the failure modes seen in production are *absences*: an
+    /// attachment stuck at `setup_started` with no `ready` and no `degraded`
+    /// tells us nothing about which leg is responsible, and every diagnosis so
+    /// far has cost a 45-minute canary window to guess at. A stage line turns
+    /// "it went quiet" into "the `up` leg returned in 2s" — which is a
+    /// different bug from "the `up` leg never returned".
+    pub fn stage(
+        &self,
+        stage: &'static str,
+        elapsed_ms: u64,
+        outcome: &'static str,
+        code: Option<&'static str>,
+    ) {
+        let details = without_nulls(json!({
+            "providerKind": "tailscale",
+            "component": "tailscaled",
+            "format": "stage",
+            "stage": stage,
+            "elapsedMs": elapsed_ms,
+            "outcome": outcome,
+            "code": code,
+        }));
+        self.enqueue(RuntimeSshRecord {
+            event: "runtime.access.stage",
+            timestamp: utc_timestamp(),
+            admitted_bytes: canonical_json_bytes(&details).len(),
+            details,
+        });
+    }
+
     pub fn raw_tailscaled_line(&self, line: &[u8], exact_auth_key: &str, input_truncated: bool) {
         let Some(expires_at_ms) = self.raw_expires_at_ms else {
             return;

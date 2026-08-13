@@ -476,21 +476,26 @@ pub fn setup_runtime_access_with_logger(
         ) => {
             let auth_key = validate_tailscale_binding(bootstrap, access, credential)
                 .map_err(stage_error("access_binding_invalid"))?;
+            let stage_logger = provider_logger.as_ref();
             let deadline = setup_deadline(access.setup_deadline_ms)
                 .map_err(stage_error("access_deadline_exceeded"))?;
-            let archive = download_artifact(access, deadline)
-                .map_err(stage_error("access_download_failed"))?;
-            let root = private_root(&access.attachment_id)
-                .map_err(stage_error("access_workspace_failed"))?;
-            let setup = setup_in_root(
-                bootstrap,
-                access,
-                &root,
-                &archive,
-                &auth_key,
-                deadline,
-                provider_logger,
-            );
+            let archive = timed_stage(stage_logger, "download", || {
+                download_artifact(access, deadline).map_err(stage_error("access_download_failed"))
+            })?;
+            let root = timed_stage(stage_logger, "workspace", || {
+                private_root(&access.attachment_id).map_err(stage_error("access_workspace_failed"))
+            })?;
+            let setup = timed_stage(stage_logger, "bring_up", || {
+                setup_in_root(
+                    bootstrap,
+                    access,
+                    &root,
+                    &archive,
+                    &auth_key,
+                    deadline,
+                    provider_logger.clone(),
+                )
+            });
             match setup {
                 Ok(session) => Ok(Some(AccessSession::Tailscale(session))),
                 Err(error) => {
@@ -519,6 +524,32 @@ pub fn setup_runtime_access_with_logger(
         .map(|session| Some(AccessSession::Managed(session))),
         _ => Err(AccessError::new("access_setup_failed")),
     }
+}
+
+/// Run a setup leg, reporting how long it took and how it ended.
+///
+/// The production failure modes here are absences — an attachment left at
+/// `setup_started` with no terminal event — and an absence names no leg. Timing
+/// every leg distinguishes "never returned" from "returned immediately", which
+/// are different bugs with different fixes, without needing a shell on the
+/// processor (Tailscale being the shell transport, there isn't one).
+///
+/// Best-effort and never fatal: reporting must not change what the leg returns.
+fn timed_stage<T>(
+    logger: Option<&RuntimeSshLogEmitter>,
+    stage: &'static str,
+    run: impl FnOnce() -> Result<T, AccessError>,
+) -> Result<T, AccessError> {
+    let started = std::time::Instant::now();
+    let result = run();
+    if let Some(logger) = logger {
+        let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        match &result {
+            Ok(_) => logger.stage(stage, elapsed, "ok", None),
+            Err(error) => logger.stage(stage, elapsed, "failed", Some(error.code)),
+        }
+    }
+    result
 }
 
 /// Narrow a stage's generic `access_setup_failed` into a stage-specific code
@@ -740,6 +771,10 @@ fn setup_in_root(
         provider_logger,
         auth_key,
     )?));
+    // The failing exits from this loop already carry typed codes that reach the
+    // attachment; it is the *successful* exit that was previously invisible, so
+    // that is the one worth stamping.
+    let socket_wait_started = std::time::Instant::now();
     while !socket.exists() {
         if let Some(status) = daemon
             .child_mut()
@@ -755,6 +790,10 @@ fn setup_in_root(
         }
         thread::sleep(POLL_INTERVAL);
     }
+    if let Some(logger) = client_logger.as_ref() {
+        let elapsed = u64::try_from(socket_wait_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        logger.stage("daemon_socket", elapsed, "ok", None);
+    }
     // Deliberately NOT disabling the daemon's stderr capture here. It used to be
     // dropped the moment the socket appeared — i.e. immediately before `up`,
     // the leg most likely to fail — so a stalled login produced nine seconds of
@@ -762,27 +801,29 @@ fn setup_in_root(
     // fully validated below.
     let hostname = runtime_hostname(&bootstrap.application_uid, &bootstrap.deployment_id);
     let auth_argument = format!("file:{}", auth_path.display());
-    let up = run_bounded(
-        &tailscale_path,
-        &[
-            OsString::from(format!("--socket={}", socket.display())),
-            OsString::from("up"),
-            OsString::from(format!("--auth-key={auth_argument}")),
-            OsString::from(format!("--hostname={hostname}")),
-            OsString::from("--ssh"),
-            OsString::from("--accept-dns=false"),
-            OsString::from("--accept-routes=false"),
-            OsString::from(format!(
-                "--timeout={}s",
-                TUNNEL_UP_TIMEOUT
-                    .saturating_sub(TUNNEL_UP_CLIENT_MARGIN)
-                    .as_secs()
-            )),
-        ],
-        subprocess_deadline(deadline, TUNNEL_UP_TIMEOUT)
-            .map_err(stage_error("access_deadline_exceeded"))?,
-        client_logger.as_ref().map(|logger| (logger, auth_key)),
-    );
+    let up = timed_stage(client_logger.as_ref(), "up", || {
+        run_bounded(
+            &tailscale_path,
+            &[
+                OsString::from(format!("--socket={}", socket.display())),
+                OsString::from("up"),
+                OsString::from(format!("--auth-key={auth_argument}")),
+                OsString::from(format!("--hostname={hostname}")),
+                OsString::from("--ssh"),
+                OsString::from("--accept-dns=false"),
+                OsString::from("--accept-routes=false"),
+                OsString::from(format!(
+                    "--timeout={}s",
+                    TUNNEL_UP_TIMEOUT
+                        .saturating_sub(TUNNEL_UP_CLIENT_MARGIN)
+                        .as_secs()
+                )),
+            ],
+            subprocess_deadline(deadline, TUNNEL_UP_TIMEOUT)
+                .map_err(stage_error("access_deadline_exceeded"))?,
+            client_logger.as_ref().map(|logger| (logger, auth_key)),
+        )
+    });
     std::fs::remove_file(&auth_path).map_err(|_| AccessError::new("access_workspace_failed"))?;
     if let Err(error) = up {
         // `up` failing tells us the tunnel did not come up; it does not tell us
@@ -1548,6 +1589,22 @@ mod tests {
         assert!(STATUS_EVIDENCE_TIMEOUT < TUNNEL_UP_TIMEOUT);
         let tight = std::time::Instant::now() + Duration::from_secs(2);
         assert!(subprocess_deadline(tight, STATUS_EVIDENCE_TIMEOUT).unwrap() <= tight);
+    }
+
+    #[test]
+    fn timing_a_stage_never_changes_what_it_returns() {
+        // The whole point of this instrumentation is to observe legs that are
+        // already misbehaving, so it must be incapable of altering them. A
+        // reporting path that can swallow or rewrite a result would be worse
+        // than the blindness it replaces.
+        let ok = timed_stage(None, "download", || Ok::<_, AccessError>(7)).unwrap();
+        assert_eq!(ok, 7);
+
+        let err = timed_stage(None, "up", || {
+            Err::<(), _>(AccessError::new("access_up_failed"))
+        })
+        .unwrap_err();
+        assert_eq!(err.code, "access_up_failed");
     }
 
     #[test]
