@@ -58,6 +58,17 @@ const TUNNEL_UP_CLIENT_MARGIN: Duration = Duration::from_secs(30);
 /// Budget for the daemon to create its LocalAPI socket (294 ms when measured,
 /// but a loaded device starting a 26 MB static binary can take longer).
 const DAEMON_SOCKET_TIMEOUT: Duration = Duration::from_secs(90);
+/// Wall-clock ceiling on the whole of access setup, enforced from outside the
+/// setup thread by [`setup_runtime_access_within`].
+///
+/// Deliberately the sum of every internal leg budget plus a margin, so it can
+/// never pre-empt a setup that is slow but progressing. It exists to bound the
+/// case where an internal budget cannot be evaluated at all, not to be tight.
+/// Tightening it is a follow-up once real leg distributions are known — the
+/// measured healthy path is ~2 s.
+const ACCESS_SETUP_WATCHDOG: Duration = Duration::from_secs(
+    DOWNLOAD_TIMEOUT.as_secs() + DAEMON_SOCKET_TIMEOUT.as_secs() + TUNNEL_UP_TIMEOUT.as_secs() + 60,
+);
 /// Cadence for "still waiting for the daemon socket" reports. Chosen so a
 /// healthy wait produces at most a handful of beats inside
 /// [`DAEMON_SOCKET_TIMEOUT`], while a loop that outlives its bound is
@@ -456,6 +467,88 @@ pub fn setup_runtime_access(
     raw_credential: Option<String>,
 ) -> Result<Option<AccessSession>, AccessError> {
     setup_runtime_access_with_logger(bootstrap, raw_credential, None)
+}
+/// Run access setup under a deadline enforced from *outside* the setup thread.
+///
+/// Every timeout inside setup is cooperative — evaluated by the same thread
+/// doing the work — so a thread blocked in a syscall enforces none of them.
+/// Deployment `144623` blocked in `setup_in_root`'s `while !socket.exists()`
+/// condition and never executed the loop body, so its own 90 s
+/// [`DAEMON_SOCKET_TIMEOUT`] was unreachable, `setup_runtime_access` never
+/// returned, and the supervisor reached neither its `Ok` nor its `Err` arm. The
+/// attachment sat at `setup_started` for the whole schedule with no failure
+/// code. Three earlier releases added narrower cooperative timeouts and none of
+/// them could fire.
+///
+/// This bound cannot be defeated the same way: the caller waits on a channel
+/// and gives up on its own schedule, whatever the setup thread is doing.
+///
+/// **A wedged setup thread is leaked on purpose.** Rust cannot cancel a thread
+/// blocked in a syscall, and there is no safe way to reclaim it. Leaking one
+/// thread — and the tailscaled child it owns, which the runtime's own teardown
+/// will outlive — is strictly better than never reporting access failure at
+/// all. The workload is unaffected either way: ADR-0040 keeps access
+/// degradation isolated from workload health.
+pub fn setup_runtime_access_within(
+    bootstrap: &RuntimeBootstrapResponse,
+    raw_credential: Option<String>,
+    provider_logger: Option<RuntimeSshLogEmitter>,
+    budget: Duration,
+) -> Result<Option<AccessSession>, AccessError> {
+    let owned_bootstrap = bootstrap.clone();
+    run_with_external_deadline(budget, move || {
+        setup_runtime_access_with_logger(&owned_bootstrap, raw_credential, provider_logger)
+    })
+}
+
+/// Run `work` on its own thread and stop waiting after `budget`, whatever the
+/// thread is doing.
+///
+/// Split out from [`setup_runtime_access_within`] so the wedge can actually be
+/// tested: the interesting input is work that never returns, which cannot be
+/// produced through the real setup path.
+fn run_with_external_deadline<T: Send + 'static>(
+    budget: Duration,
+    work: impl FnOnce() -> Result<T, AccessError> + Send + 'static,
+) -> Result<T, AccessError> {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let spawned = thread::Builder::new()
+        .name("liskov-access-setup".into())
+        .spawn(move || {
+            // A closed receiver means the deadline already passed; drop the
+            // result rather than panicking on a send to nobody.
+            let _ = sender.send(work());
+        });
+    if spawned.is_err() {
+        // Cannot supervise what we cannot spawn. Fail typed rather than run
+        // unbounded on this thread, which is the behaviour being removed.
+        return Err(AccessError::new("access_setup_failed"));
+    }
+    match receiver.recv_timeout(budget) {
+        Ok(result) => result,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            Err(AccessError::new("access_setup_timeout"))
+        }
+        // Sender dropped without sending — the work panicked. Report it rather
+        // than block on a channel that can never produce.
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            Err(AccessError::new("access_setup_failed"))
+        }
+    }
+}
+
+/// [`setup_runtime_access_within`] with the default [`ACCESS_SETUP_WATCHDOG`].
+pub fn setup_runtime_access_supervised(
+    bootstrap: &RuntimeBootstrapResponse,
+    raw_credential: Option<String>,
+    provider_logger: Option<RuntimeSshLogEmitter>,
+) -> Result<Option<AccessSession>, AccessError> {
+    setup_runtime_access_within(
+        bootstrap,
+        raw_credential,
+        provider_logger,
+        ACCESS_SETUP_WATCHDOG,
+    )
 }
 
 pub fn setup_runtime_access_with_logger(
@@ -1685,6 +1778,65 @@ mod tests {
         );
         // The poll has to be finer than the beat or the cadence is meaningless.
         assert!(POLL_INTERVAL < SOCKET_WAIT_HEARTBEAT);
+    }
+
+    #[test]
+    fn a_wedged_setup_is_reported_instead_of_waited_on() {
+        // The whole point: 144623 blocked inside its own loop condition, so its
+        // cooperative 90s deadline never ran. This deadline is enforced by a
+        // different thread, so work that never returns must still produce a
+        // typed failure — promptly, without joining the wedged thread.
+        let started = std::time::Instant::now();
+        let error = run_with_external_deadline(Duration::from_millis(150), || {
+            thread::sleep(Duration::from_secs(60)); // stands in for a blocked syscall
+            Ok::<(), AccessError>(())
+        })
+        .unwrap_err();
+        assert_eq!(error.code, "access_setup_timeout");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "must give up on its own schedule, not wait for the wedged thread"
+        );
+    }
+
+    #[test]
+    fn supervision_passes_through_both_outcomes_unchanged() {
+        // Supervision must be invisible when the work behaves; a wrapper that
+        // rewrote results would trade one silent failure for another.
+        let ok =
+            run_with_external_deadline(Duration::from_secs(5), || Ok::<_, AccessError>(9)).unwrap();
+        assert_eq!(ok, 9);
+        let err = run_with_external_deadline(Duration::from_secs(5), || {
+            Err::<(), _>(AccessError::new("access_up_failed"))
+        })
+        .unwrap_err();
+        assert_eq!(err.code, "access_up_failed");
+    }
+
+    #[test]
+    fn a_panicking_setup_reports_rather_than_hanging() {
+        // The sender is dropped without a value, which would block a plain recv
+        // forever — the failure mode this function exists to remove.
+        let error = run_with_external_deadline(Duration::from_secs(5), || {
+            panic!("setup panicked");
+            #[allow(unreachable_code)]
+            Ok::<(), AccessError>(())
+        })
+        .unwrap_err();
+        assert_eq!(error.code, "access_setup_failed");
+    }
+
+    #[test]
+    fn the_watchdog_can_never_pre_empt_a_progressing_setup() {
+        // It bounds the un-evaluable case, not slow-but-working legs, so it must
+        // exceed every internal budget it supervises.
+        assert!(ACCESS_SETUP_WATCHDOG > DOWNLOAD_TIMEOUT);
+        assert!(ACCESS_SETUP_WATCHDOG > DAEMON_SOCKET_TIMEOUT);
+        assert!(ACCESS_SETUP_WATCHDOG > TUNNEL_UP_TIMEOUT);
+        assert!(
+            ACCESS_SETUP_WATCHDOG >= DOWNLOAD_TIMEOUT + DAEMON_SOCKET_TIMEOUT + TUNNEL_UP_TIMEOUT,
+            "legs run in sequence, so the ceiling must cover their sum"
+        );
     }
 
     #[test]

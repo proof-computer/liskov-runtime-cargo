@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
-use crate::access::{AccessSession, setup_runtime_access_with_logger};
+use crate::access::{AccessSession, setup_runtime_access_supervised};
 use crate::bridge::Bridge;
 use crate::diagnostics::{
     AsyncDiagnosticReporter, DIAGNOSTIC_HTTP_TIMEOUT, DiagnosticStatus,
@@ -157,7 +157,10 @@ pub fn supervise_with_environment_and_access(
             attrs,
         );
     }
-    let mut access_session = match setup_runtime_access_with_logger(
+    // Supervised, not called directly: setup's own timeouts are cooperative and
+    // a thread blocked in a syscall evaluates none of them, which left 144623's
+    // attachment at `setup_started` for a whole schedule with no failure code.
+    let mut access_session = match setup_runtime_access_supervised(
         bootstrap,
         runtime_access_credential,
         runtime_ssh_logs.clone(),
