@@ -463,6 +463,18 @@ impl RuntimeAccessBootstrap {
                 RuntimeAccessProviderKind::Tailscale => "tailscale",
                 RuntimeAccessProviderKind::Liskov => "liskov",
             },
+            // Which helper actually ran. The control plane derives an *expected*
+            // version from the artifact pin and has had no way to check it was
+            // honoured: on 2026-08-14 a deployment pinned to 0.10.16 behaved
+            // exactly like 0.10.15 and nothing on any surface — receipt, logs,
+            // deployment status — could say which one executed.
+            //
+            // Reported here rather than logged because diagnostics do not depend
+            // on the Lockbox logging grant, and that race is unfixed: three
+            // consecutive deployments that day ran full windows and produced zero
+            // log records. A version that lives only in logs is absent exactly
+            // when a run is hardest to explain.
+            "runtimeContactVersion": env!("CARGO_PKG_VERSION"),
         })
     }
 }
@@ -809,6 +821,43 @@ fn sort_json(value: Value) -> Value {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn the_access_binding_states_which_helper_ran() {
+        // The control plane derives an *expected* helper version from the
+        // artifact pin and has had no way to check it was honoured: on
+        // 2026-08-14 a deployment pinned to 0.10.16 behaved exactly like
+        // 0.10.15, and no surface — receipt, logs, deployment status — could say
+        // which executed, which is why BKLG-20260814-b4wq could not be closed.
+        // The reported value must therefore be the running binary's own version,
+        // never anything restated from configuration.
+        let access: TailscaleRuntimeAccessBootstrap = serde_json::from_value(serde_json::json!({
+            "provider": {"kind": "tailscale"},
+            "attachmentId": "att-1",
+            "expectedTailnet": "example.com",
+            "setupDeadlineMs": 1_800_000_000_000_u64,
+            "fence": 3,
+            "artifact": {
+                "descriptorId": "descriptor-1",
+                "version": "1.98.10-liskov.1",
+                "url": "https://liskov.example/client.tgz",
+                "sha256": "1".repeat(64),
+                "byteSize": 10,
+            },
+        }))
+        .expect("fixture must match the wire shape");
+        let attrs = RuntimeAccessBootstrap::Tailscale(access).binding_attrs();
+
+        assert_eq!(
+            attrs["runtimeContactVersion"].as_str(),
+            Some(env!("CARGO_PKG_VERSION")),
+            "must report the running binary's version"
+        );
+        // The fields the control plane already consumes must survive the addition.
+        assert_eq!(attrs["attachmentId"].as_str(), Some("att-1"));
+        assert_eq!(attrs["fence"].as_u64(), Some(3));
+        assert_eq!(attrs["providerKind"].as_str(), Some("tailscale"));
+    }
     use std::collections::VecDeque;
     use std::sync::Mutex;
 

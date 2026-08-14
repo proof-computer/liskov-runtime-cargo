@@ -366,6 +366,10 @@ fn supervise_with_reporter_and_environment(
                     json!({
                         "processAttempt": process_attempt,
                         "restartCount": restart_count,
+                        // Reported here as well as on the access binding so that
+                        // *every* deployment states which helper ran, not only
+                        // access-enabled ones.
+                        "runtimeContactVersion": env!("CARGO_PKG_VERSION"),
                     }),
                 );
                 return SupervisorExit::Code(126);
