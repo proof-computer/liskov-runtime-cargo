@@ -36,6 +36,14 @@ const MAX_ARTIFACT_BYTES: usize = 128 * 1024 * 1024;
 const MAX_BINARY_BYTES: u64 = 96 * 1024 * 1024;
 const MAX_COMMAND_OUTPUT_BYTES: usize = 1024 * 1024;
 const MAX_STARTUP_STDERR_BYTES: usize = 16 * 1024;
+/// Attempts for the provider fetch and unpack legs. Both have been seen to fail
+/// on a real processor while succeeding on identical bytes off-device, so a
+/// single failure is treated as possibly transient. Kept small: a genuinely
+/// deterministic failure still surfaces quickly, and each attempt is logged.
+const PROVIDER_FETCH_ATTEMPTS: u32 = 3;
+/// Pause between provider fetch/unpack attempts — long enough to let a momentary
+/// resource spike clear, short enough to stay well inside the setup budget.
+const PROVIDER_FETCH_BACKOFF: Duration = Duration::from_millis(300);
 /// Budget for short, chatty client commands such as `tailscale status --json`
 /// (52 ms when measured in-processor).
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
@@ -605,9 +613,16 @@ pub fn setup_runtime_access_with_logger(
             let stage_logger = provider_logger.as_ref();
             let deadline = setup_deadline(access.setup_deadline_ms)
                 .map_err(stage_error("access_deadline_exceeded"))?;
-            let archive = timed_stage(stage_logger, "download", || {
-                download_artifact(access, deadline).map_err(stage_error("access_download_failed"))
-            })?;
+            let archive = retried_stage(
+                stage_logger,
+                "download",
+                PROVIDER_FETCH_ATTEMPTS,
+                PROVIDER_FETCH_BACKOFF,
+                || {
+                    download_artifact(access, deadline)
+                        .map_err(stage_error("access_download_failed"))
+                },
+            )?;
             let root = timed_stage(stage_logger, "workspace", || {
                 private_root(&access.attachment_id).map_err(stage_error("access_workspace_failed"))
             })?;
@@ -676,6 +691,56 @@ fn timed_stage<T>(
         }
     }
     result
+}
+
+/// Run a setup leg with bounded retries, reporting every attempt.
+///
+/// The provider fetch and unpack are the two legs that can fail *transiently* on
+/// a real processor — a momentary network or decompression hiccup under PRoot —
+/// yet succeed on a retry, while the same operation succeeds unconditionally
+/// off-device. Each attempt is its own stage record (`ok` / `retry` / `failed`)
+/// carrying that attempt's specific failure code, so a deterministic failure
+/// shows the identical code on every attempt and a transient one shows a
+/// recovery. Best-effort logging, exactly like `timed_stage`: reporting never
+/// changes what the leg returns.
+fn retried_stage<T>(
+    logger: Option<&RuntimeSshLogEmitter>,
+    stage: &'static str,
+    attempts: u32,
+    backoff: Duration,
+    mut run: impl FnMut() -> Result<T, AccessError>,
+) -> Result<T, AccessError> {
+    let attempts = attempts.max(1);
+    let mut last: Option<AccessError> = None;
+    for attempt in 0..attempts {
+        let started = std::time::Instant::now();
+        match run() {
+            Ok(value) => {
+                if let Some(logger) = logger {
+                    let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                    logger.stage(stage, elapsed, "ok", None);
+                }
+                return Ok(value);
+            }
+            Err(error) => {
+                let final_attempt = attempt + 1 >= attempts;
+                if let Some(logger) = logger {
+                    let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                    logger.stage(
+                        stage,
+                        elapsed,
+                        if final_attempt { "failed" } else { "retry" },
+                        Some(error.code),
+                    );
+                }
+                last = Some(error);
+                if !final_attempt {
+                    thread::sleep(backoff);
+                }
+            }
+        }
+    }
+    Err(last.unwrap_or_else(|| AccessError::new("access_setup_failed")))
 }
 
 /// Narrow a stage's generic `access_setup_failed` into a stage-specific code
@@ -888,9 +953,19 @@ fn setup_in_root(
     // below, and every stage here needs to report before that happens.
     let client_logger = provider_logger.clone();
     let stage_logger = client_logger.as_ref();
-    let (tailscale, tailscaled) = timed_stage(stage_logger, "extract", || {
-        extract_binaries(archive).map_err(stage_error("access_extract_failed"))
-    })?;
+    // Retry extract: it fails on real processors while succeeding on identical
+    // bytes off-device, so treat a failure as possibly transient. The per-attempt
+    // records carry the specific `access_extract_*` code; the propagated error is
+    // narrowed back to the closed-set `access_extract_failed` so downstream
+    // failure-code surfaces still recognize it.
+    let (tailscale, tailscaled) = retried_stage(
+        stage_logger,
+        "extract",
+        PROVIDER_FETCH_ATTEMPTS,
+        PROVIDER_FETCH_BACKOFF,
+        || extract_binaries(archive),
+    )
+    .map_err(|_| AccessError::new("access_extract_failed"))?;
     let tailscale_path = root.join("tailscale");
     let tailscaled_path = root.join("tailscaled");
     // `s`/`d`, not `tailscaled.sock`/`state`: the socket path is bound inside
@@ -1072,53 +1147,60 @@ fn setup_in_root(
 }
 
 fn extract_binaries(archive: &[u8]) -> Result<(Vec<u8>, Vec<u8>), AccessError> {
+    // Distinct failure codes per operation so a production failure names the
+    // operation that failed, not a generic "extract failed". The decode/read
+    // codes (`access_extract_read`) cover gzip/tar work that only fails on the
+    // real device; the layout/oversize codes are archive-shape rejections that
+    // fail identically everywhere. This is the difference between "the archive
+    // is malformed" and "decompression could not complete on this processor",
+    // which no amount of off-device reasoning can otherwise distinguish.
     let decoder = GzDecoder::new(archive);
     let mut archive = Archive::new(decoder);
     let entries = archive
         .entries()
-        .map_err(|_| AccessError::new("access_setup_failed"))?;
+        .map_err(|_| AccessError::new("access_extract_open"))?;
     let mut tailscale = None;
     let mut tailscaled = None;
     for entry in entries {
-        let mut entry = entry.map_err(|_| AccessError::new("access_setup_failed"))?;
+        let mut entry = entry.map_err(|_| AccessError::new("access_extract_read"))?;
         let path = entry
             .path()
-            .map_err(|_| AccessError::new("access_setup_failed"))?
+            .map_err(|_| AccessError::new("access_extract_read"))?
             .into_owned();
         if path.is_absolute()
             || path
                 .components()
                 .any(|component| !matches!(component, Component::Normal(_)))
         {
-            return Err(AccessError::new("access_setup_failed"));
+            return Err(AccessError::new("access_extract_layout"));
         }
         let entry_type = entry.header().entry_type();
         if entry_type.is_dir() {
             continue;
         }
         if !entry_type.is_file() {
-            return Err(AccessError::new("access_setup_failed"));
+            return Err(AccessError::new("access_extract_layout"));
         }
         let Some(name) = path
             .file_name()
             .and_then(|name| name.to_str())
             .map(str::to_string)
         else {
-            return Err(AccessError::new("access_setup_failed"));
+            return Err(AccessError::new("access_extract_layout"));
         };
         if !matches!(name.as_str(), "tailscale" | "tailscaled") {
-            return Err(AccessError::new("access_setup_failed"));
+            return Err(AccessError::new("access_extract_layout"));
         }
         if entry.header().size().unwrap_or(u64::MAX) > MAX_BINARY_BYTES {
-            return Err(AccessError::new("access_setup_failed"));
+            return Err(AccessError::new("access_extract_oversize"));
         }
         let mut bytes = Vec::new();
         (&mut entry)
             .take(MAX_BINARY_BYTES + 1)
             .read_to_end(&mut bytes)
-            .map_err(|_| AccessError::new("access_setup_failed"))?;
+            .map_err(|_| AccessError::new("access_extract_read"))?;
         if bytes.is_empty() || u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_BINARY_BYTES {
-            return Err(AccessError::new("access_setup_failed"));
+            return Err(AccessError::new("access_extract_oversize"));
         }
         let slot = if name == "tailscale" {
             &mut tailscale
@@ -1126,12 +1208,12 @@ fn extract_binaries(archive: &[u8]) -> Result<(Vec<u8>, Vec<u8>), AccessError> {
             &mut tailscaled
         };
         if slot.replace(bytes).is_some() {
-            return Err(AccessError::new("access_setup_failed"));
+            return Err(AccessError::new("access_extract_layout"));
         }
     }
     match (tailscale, tailscaled) {
         (Some(tailscale), Some(tailscaled)) => Ok((tailscale, tailscaled)),
-        _ => Err(AccessError::new("access_setup_failed")),
+        _ => Err(AccessError::new("access_extract_missing")),
     }
 }
 
@@ -1673,7 +1755,7 @@ mod tests {
         ]);
         assert_eq!(
             extract_binaries(&duplicate).unwrap_err().code,
-            "access_setup_failed"
+            "access_extract_layout"
         );
 
         let unexpected = archive(&[
@@ -1683,8 +1765,40 @@ mod tests {
         ]);
         assert_eq!(
             extract_binaries(&unexpected).unwrap_err().code,
-            "access_setup_failed"
+            "access_extract_layout"
         );
+    }
+
+    #[test]
+    fn retried_stage_recovers_transient_failure_and_exhausts_deterministic_one() {
+        use std::cell::Cell;
+
+        // Two transient failures, then success: the leg recovers without the
+        // caller ever seeing an error.
+        let calls = Cell::new(0u32);
+        let recovered: Result<u32, AccessError> =
+            retried_stage(None, "extract", 3, Duration::from_millis(0), || {
+                let n = calls.get();
+                calls.set(n + 1);
+                if n < 2 {
+                    Err(AccessError::new("access_extract_read"))
+                } else {
+                    Ok(n)
+                }
+            });
+        assert_eq!(recovered.unwrap(), 2);
+        assert_eq!(calls.get(), 3);
+
+        // A deterministic failure exhausts every attempt and surfaces the last
+        // specific code (which the extract caller then narrows for propagation).
+        let calls = Cell::new(0u32);
+        let exhausted: Result<u32, AccessError> =
+            retried_stage(None, "extract", 3, Duration::from_millis(0), || {
+                calls.set(calls.get() + 1);
+                Err(AccessError::new("access_extract_layout"))
+            });
+        assert_eq!(exhausted.unwrap_err().code, "access_extract_layout");
+        assert_eq!(calls.get(), 3);
     }
 
     #[test]
