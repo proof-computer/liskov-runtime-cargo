@@ -849,11 +849,23 @@ fn download_artifact(
 }
 
 pub(super) fn private_root(attachment_id: &str) -> Result<PathBuf, AccessError> {
-    let mut random = [0_u8; 8];
+    // The Tailscale daemon binds its control socket under this directory, and
+    // that path reaches `bind(2)` inside the PRoot sandbox. PRoot rewrites the
+    // guest path to a host path by prepending the (long) rootfs prefix, while
+    // the kernel's `sockaddr_un.sun_path` is a hard 108-byte field — so a long
+    // guest path silently overflows once translated: the socket never appears,
+    // and setup wedges at the socket-wait with no signal. (The Managed/Dropbear
+    // provider shares this helper but never binds a unix socket, which is why it
+    // works in PRoot with any path length.) Keep the directory name short —
+    // `/tmp/lk<8 hex digest><4 hex random>`, 19 bytes — so the socket path
+    // (`…/s`, 21 bytes) leaves ample headroom under 108 after translation. The
+    // digest keeps the directory attributable to an attachment; the random
+    // suffix keeps a retry from colliding with a leftover directory.
+    let mut random = [0_u8; 2];
     getrandom::fill(&mut random).map_err(|_| AccessError::new("access_setup_failed"))?;
     let name = format!(
-        "liskov-runtime-ssh-{}-{}",
-        &hex::encode(Sha256::digest(attachment_id.as_bytes()))[..16],
+        "lk{}{}",
+        &hex::encode(Sha256::digest(attachment_id.as_bytes()))[..8],
         hex::encode(random)
     );
     let root = Path::new("/tmp").join(name);
@@ -881,8 +893,11 @@ fn setup_in_root(
     })?;
     let tailscale_path = root.join("tailscale");
     let tailscaled_path = root.join("tailscaled");
-    let socket = root.join("tailscaled.sock");
-    let state_dir = root.join("state");
+    // `s`/`d`, not `tailscaled.sock`/`state`: the socket path is bound inside
+    // PRoot and must stay well under 108 bytes after translation — see
+    // `private_root` for the full reasoning.
+    let socket = root.join("s");
+    let state_dir = root.join("d");
     let auth_path = root.join("auth-key");
     // The two client binaries are multi-MiB writes onto PRoot-backed flash on a
     // phone. The auth key and state dir are trivial by comparison and share the
@@ -1602,6 +1617,26 @@ mod tests {
     use crate::protocol::{
         RuntimeAccessArtifact, RuntimeAccessProvider, RuntimeAccessProviderKind,
     };
+
+    #[test]
+    fn private_root_socket_path_stays_short_for_sun_path() {
+        // The daemon control socket is bound inside PRoot, which prepends a long
+        // rootfs prefix to the guest path before it reaches the kernel's
+        // 108-byte `sockaddr_un.sun_path`. If this path regrows, tailscaled's
+        // socket silently never appears on real processors and setup wedges at
+        // the socket-wait. Pin a short budget: the shipped guest socket path is
+        // 21 bytes, leaving ~87 bytes for the PRoot prefix (observed ~60-80).
+        let root = private_root("attachment-sun-path-regression").unwrap();
+        let socket = root.join("s");
+        let len = socket.as_os_str().len();
+        std::fs::remove_dir_all(&root).unwrap();
+        assert!(
+            len <= 28,
+            "guest socket path is {len} bytes ({}); keep it short so the \
+             PRoot-translated host path stays under sun_path's 108-byte limit",
+            socket.display()
+        );
+    }
 
     fn archive(entries: &[(&str, &[u8])]) -> Vec<u8> {
         let mut encoded = Vec::new();
