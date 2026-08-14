@@ -11,9 +11,10 @@ use liskov_runtime_cargo::precontact::{
     PrecontactReporter,
 };
 use liskov_runtime_cargo::probe::{SystemProbeRuntime, run_bridge_probe};
+use liskov_runtime_cargo::processor_facts::take_processor_fact_authorization;
 use liskov_runtime_cargo::{
     DEFAULT_CORE_URL, SupervisorExit, establish_runtime_contact, hydrate_blackbox_log_config,
-    load_runtime_environment, supervise_with_environment_and_access,
+    load_runtime_environment, supervise_with_environment_access_and_processor_facts,
 };
 
 #[derive(Debug, Parser)]
@@ -175,6 +176,10 @@ fn main() -> ExitCode {
                 return ExitCode::from(status);
             }
         };
+    // This raw optional capability is parsed independently and immediately
+    // removed. Malformed or unknown content is dormant; valid content travels
+    // only to the detached fact worker and never to later bootstrap consumers.
+    let processor_fact_authorization = take_processor_fact_authorization(&mut bootstrap);
     let bridge = match UnixBridge::new(&bridge_socket) {
         Ok(bridge) => bridge,
         Err(_) => {
@@ -217,7 +222,7 @@ fn main() -> ExitCode {
         hydrate_blackbox_log_config(&bootstrap, &bridge, &mut runtime_environment)
             .err()
             .map(|error| error.code());
-    match supervise_with_environment_and_access(
+    match supervise_with_environment_access_and_processor_facts(
         &cli.command,
         &bootstrap,
         Arc::new(bridge),
@@ -225,6 +230,7 @@ fn main() -> ExitCode {
         &runtime_environment,
         runtime_access_credential,
         logging_hydrate_error,
+        processor_fact_authorization,
     ) {
         SupervisorExit::Code(code) => ExitCode::from(u8::try_from(code).unwrap_or(70)),
         SupervisorExit::Signal(signal) => propagate_signal(signal),

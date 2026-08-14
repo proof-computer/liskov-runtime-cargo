@@ -1,6 +1,6 @@
 [package]
 name = "liskov-runtime-cargo"
-version = "0.10.19"
+version = "0.10.20"
 edition = "2024"
 rust-version = "1.85"
 description = "Static bootstrap and process supervisor for Liskov-managed Acurast Cargo/PRoot workloads"
@@ -27,8 +27,16 @@ name = "liskov-tunnel-probe"
 path = "src/bin/liskov-tunnel-probe.rs"
 required-features = ["tunnel-probe"]
 
+# Offline-only collector fixture probe. This binary is exercised by CI under
+# AArch64 QEMU/PRoot but is never included in a release package.
+[[bin]]
+name = "liskov-fact-probe"
+path = "src/bin/liskov-fact-probe.rs"
+required-features = ["fact-probe"]
+
 [features]
 tunnel-probe = []
+fact-probe = []
 
 [dependencies]
 base64 = "0.22.1"

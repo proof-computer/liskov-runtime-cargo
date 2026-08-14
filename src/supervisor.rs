@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::process::{Command, Stdio};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::{Arc, Once};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -20,6 +20,9 @@ use crate::diagnostics::{
 };
 use crate::http::{HttpClient, UreqHttpClient};
 use crate::logging::{LoggingController, OutputLogger, RuntimeSshLogEmitter};
+use crate::processor_facts::{
+    ProcessorFactAuthorization, ProcessorFactBinding, detached_processor_fact_task,
+};
 use crate::protocol::{
     RestartLimit, RuntimeAccessBootstrap, RuntimeBootstrapResponse, SupervisionMode,
     SupervisionPolicy,
@@ -35,6 +38,7 @@ const CLEANUP_GRACE: Duration = Duration::from_millis(500);
 const BACKOFF_PROFILE: &[u8] = b"runtime-cargo-backoff.v1\0";
 
 static PENDING_SIGNAL: AtomicI32 = AtomicI32::new(0);
+static INSTALL_FACT_PANIC_FILTER: Once = Once::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SupervisorExit {
@@ -113,6 +117,36 @@ pub fn supervise_with_environment_and_access(
     runtime_access_credential: Option<String>,
     logging_hydrate_error: Option<&'static str>,
 ) -> SupervisorExit {
+    supervise_with_environment_access_and_processor_facts(
+        command,
+        bootstrap,
+        bridge,
+        bootstrap_elapsed,
+        runtime_environment,
+        runtime_access_credential,
+        logging_hydrate_error,
+        None,
+    )
+}
+
+/// Full supervisor entrypoint. Existing wrappers retain their behavior and
+/// pass no processor-fact capability. The authorization is already removed
+/// from the retained bootstrap before this function is called.
+#[allow(clippy::too_many_arguments)]
+pub fn supervise_with_environment_access_and_processor_facts(
+    command: &[OsString],
+    bootstrap: &RuntimeBootstrapResponse,
+    bridge: Arc<dyn Bridge>,
+    bootstrap_elapsed: Duration,
+    runtime_environment: &BTreeMap<String, String>,
+    runtime_access_credential: Option<String>,
+    logging_hydrate_error: Option<&'static str>,
+    processor_fact_authorization: Option<ProcessorFactAuthorization>,
+) -> SupervisorExit {
+    let processor_fact_task = processor_fact_authorization.and_then(|authorization| {
+        ProcessorFactBinding::from_bootstrap(bootstrap)
+            .map(|binding| detached_processor_fact_task(authorization, binding, bridge.clone()))
+    });
     let http: Arc<dyn HttpClient> = Arc::new(UreqHttpClient::with_limits(
         DIAGNOSTIC_HTTP_TIMEOUT,
         MAX_DIAGNOSTIC_RESPONSE_BYTES,
@@ -209,6 +243,7 @@ pub fn supervise_with_environment_and_access(
         access_session.as_mut(),
         logging.as_ref().map(LoggingController::customer),
         runtime_ssh_logs.as_ref(),
+        processor_fact_task,
     );
     if let Some(session) = access_session.as_mut() {
         let attrs = session.binding_attrs();
@@ -285,6 +320,7 @@ fn supervise_with_reporter(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -298,6 +334,7 @@ fn supervise_with_reporter_and_environment(
     mut access_session: Option<&mut AccessSession>,
     output_logger: Option<&OutputLogger>,
     runtime_ssh_logs: Option<&RuntimeSshLogEmitter>,
+    mut processor_fact_task: Option<Box<dyn FnOnce() + Send>>,
 ) -> SupervisorExit {
     if command.is_empty() {
         report(
@@ -352,6 +389,9 @@ fn supervise_with_reporter_and_environment(
         }
         if let Some(signal) = take_signal() {
             return SupervisorExit::Signal(signal);
+        }
+        if let Some(task) = processor_fact_task.take() {
+            start_detached_processor_fact_task(task);
         }
         let started_at = Instant::now();
         let child = spawn_customer(command, &environment, output_logger.is_some());
@@ -636,6 +676,23 @@ fn supervise_with_reporter_and_environment(
         process_attempt = process_attempt.saturating_add(1);
         restart_count = restart_count.saturating_add(1);
     }
+}
+
+fn start_detached_processor_fact_task(task: Box<dyn FnOnce() + Send>) {
+    INSTALL_FACT_PANIC_FILTER.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |information| {
+            let is_fact_worker = thread::current().name() == Some("liskov-processor-facts");
+            if !is_fact_worker {
+                previous(information);
+            }
+        }));
+    });
+    let _ = thread::Builder::new()
+        .name("liskov-processor-facts".to_owned())
+        .spawn(move || {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(task));
+        });
 }
 
 fn report(
@@ -1081,6 +1138,7 @@ pub(crate) mod tests {
             logging_outage_canary: false,
             diagnostics: None,
             access: None,
+            processor_facts: None,
         }
     }
 
@@ -1284,9 +1342,106 @@ pub(crate) mod tests {
                 None,
                 None,
                 None,
+                None,
             ),
             SupervisorExit::Code(0)
         );
+    }
+
+    #[test]
+    fn slow_or_panicking_fact_worker_never_delays_or_changes_customer_exit() {
+        let _lock = PROCESS_TEST_LOCK.lock().unwrap();
+        let never = bootstrap(json!({
+            "mode": "never",
+            "serverTimeMs": 1,
+            "scheduleEndMs": 60_001,
+        }));
+        let (started_tx, started_rx) = std::sync::mpsc::sync_channel(1);
+        let slow_task: Box<dyn FnOnce() + Send> = Box::new(move || {
+            started_tx.send(()).unwrap();
+            thread::sleep(Duration::from_millis(500));
+        });
+        let started = Instant::now();
+        assert_eq!(
+            supervise_with_reporter_and_environment(
+                &["/bin/true".into()],
+                &never,
+                Duration::ZERO,
+                &BTreeMap::new(),
+                None,
+                None,
+                None,
+                None,
+                Some(slow_task),
+            ),
+            SupervisorExit::Code(0)
+        );
+        assert!(started.elapsed() < Duration::from_millis(400));
+        started_rx.recv_timeout(Duration::from_millis(100)).unwrap();
+
+        let panic_task: Box<dyn FnOnce() + Send> = Box::new(|| panic!("fact worker panic"));
+        assert_eq!(
+            supervise_with_reporter_and_environment(
+                &["/bin/sh".into(), "-c".into(), "exit 17".into()],
+                &never,
+                Duration::ZERO,
+                &BTreeMap::new(),
+                None,
+                None,
+                None,
+                None,
+                Some(panic_task),
+            ),
+            SupervisorExit::Code(17)
+        );
+    }
+
+    #[test]
+    fn fact_worker_starts_once_across_customer_restart() {
+        let _lock = PROCESS_TEST_LOCK.lock().unwrap();
+        let marker = std::env::temp_dir().join(format!(
+            "liskov-runtime-cargo-fact-once-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&marker);
+        let policy = bootstrap(json!({
+            "mode": "on_failure",
+            "restartLimit": {"kind": "attempts", "maxRestarts": 1},
+            "serverTimeMs": 1,
+            "scheduleEndMs": 60_001,
+        }));
+        let starts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let starts_for_task = starts.clone();
+        let task: Box<dyn FnOnce() + Send> = Box::new(move || {
+            starts_for_task.fetch_add(1, Ordering::SeqCst);
+        });
+        let command = vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            "if [ -f \"$1\" ]; then exit 0; else : > \"$1\"; exit 9; fi".into(),
+            "liskov-fact-once".into(),
+            marker.as_os_str().to_owned(),
+        ];
+        assert_eq!(
+            supervise_with_reporter_and_environment(
+                &command,
+                &policy,
+                Duration::ZERO,
+                &BTreeMap::new(),
+                None,
+                None,
+                None,
+                None,
+                Some(task),
+            ),
+            SupervisorExit::Code(0)
+        );
+        let deadline = Instant::now() + Duration::from_millis(100);
+        while starts.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
+            thread::yield_now();
+        }
+        assert_eq!(starts.load(Ordering::SeqCst), 1);
+        std::fs::remove_file(marker).unwrap();
     }
 
     #[test]

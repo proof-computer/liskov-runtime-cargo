@@ -2204,6 +2204,7 @@ mod tests {
             logging_outage_canary: false,
             diagnostics: None,
             access: Some(RuntimeAccessBootstrap::Tailscale(access.clone())),
+            processor_facts: None,
         };
         let raw = serde_json::json!({
             "schema": CREDENTIAL_SCHEMA,

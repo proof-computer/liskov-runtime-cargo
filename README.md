@@ -61,6 +61,18 @@ the runtime instance and include nested process-attempt counters. Delivery is
 bounded to five seconds per request with a bounded response and never changes
 workload execution.
 
+Release `0.10.20` also ships a dormant, bounded `cargo-baseline-v1` processor-
+fact collector. It performs no reads, signing, DNS, or additional HTTP when the
+authenticated bootstrap omits `processorFacts`, as current servers do. A valid
+short-lived authorization is removed from the retained bootstrap before every
+other consumer, must pin the running helper version and `/proc/self/exe`
+digest, and can request only the due Android-corroboration, execution-surface,
+or controlled-egress dimensions. Collection runs once in a silent detached
+worker immediately before the first customer-process spawn and cannot affect
+startup, supervision, signals, restarts, or exit status. The exact closed wire,
+privacy, file, network, signature, and delivery contract is documented in
+[`docs/processor-fact-contract.md`](docs/processor-fact-contract.md).
+
 ## Optional stdout/stderr forwarding
 
 Output forwarding starts only when the signed bootstrap response contains the

@@ -367,6 +367,7 @@ mod tests {
             logging_outage_canary: false,
             diagnostics: None,
             access: None,
+            processor_facts: None,
         }
     }
 

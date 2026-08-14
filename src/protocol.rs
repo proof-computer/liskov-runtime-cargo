@@ -65,6 +65,11 @@ pub struct RuntimeBootstrapResponse {
     pub diagnostics: Option<RuntimeDiagnosticsBootstrap>,
     #[serde(default)]
     pub access: Option<RuntimeAccessBootstrap>,
+    /// Raw, optional capability data. It is deliberately parsed outside the
+    /// bootstrap contract so malformed or newer fact authorization cannot
+    /// fail authenticated first contact or customer execution.
+    #[serde(default)]
+    pub processor_facts: Option<Value>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]

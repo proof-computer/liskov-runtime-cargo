@@ -1,0 +1,47 @@
+{
+  "domain": "proof.liskov.processor-fact-catalog.v1",
+  "helperContractEpoch": 1,
+  "profile": "cargo-baseline-v1",
+  "facts": [
+    {
+      "kind": "cargo_android_corroboration.v1",
+      "capture": "authorized_due_only",
+      "fields": [
+        "androidRelease",
+        "sdkLevel",
+        "securityPatch",
+        "manufacturer",
+        "brand",
+        "model",
+        "productName",
+        "device",
+        "boardPlatform"
+      ]
+    },
+    {
+      "kind": "cargo_execution_surface.v1",
+      "capture": "authorized_due_only",
+      "fields": [
+        "architecture",
+        "wordSizeBits",
+        "pageSizeBytes",
+        "kernelAbi",
+        "noNewPrivs",
+        "seccomp",
+        "effectiveCapabilities"
+      ]
+    },
+    {
+      "kind": "cargo_control_egress.v1",
+      "capture": "authorized_due_only",
+      "fields": ["ipv4", "ipv6"]
+    }
+  ],
+  "forbidden": [
+    "customer values",
+    "environment values",
+    "hardware name inference",
+    "network addresses",
+    "permanent device identifiers"
+  ]
+}

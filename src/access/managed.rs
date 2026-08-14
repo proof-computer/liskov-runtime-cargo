@@ -1063,6 +1063,7 @@ mod tests {
             logging_outage_canary: false,
             diagnostics: None,
             access: None,
+            processor_facts: None,
         };
         let access = ManagedRuntimeAccessBootstrap {
             provider: RuntimeAccessProvider {
@@ -1147,6 +1148,7 @@ mod tests {
             logging_outage_canary: false,
             diagnostics: None,
             access: None,
+            processor_facts: None,
         };
         let access = ManagedRuntimeAccessBootstrap {
             provider: RuntimeAccessProvider {
