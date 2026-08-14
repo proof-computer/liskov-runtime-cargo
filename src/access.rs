@@ -496,9 +496,37 @@ pub fn setup_runtime_access_within(
     budget: Duration,
 ) -> Result<Option<AccessSession>, AccessError> {
     let owned_bootstrap = bootstrap.clone();
+    let panic_logger = provider_logger.clone();
     run_with_external_deadline(budget, move || {
-        setup_runtime_access_with_logger(&owned_bootstrap, raw_credential, provider_logger)
+        // A panic in setup previously surfaced only as the watchdog's generic
+        // Disconnected arm, with the message lost entirely: r7/145133 and
+        // r8/145206 both returned silently ~4s into the socket wait with one
+        // runtime-ssh record missing, and nothing named the failing line.
+        let attempt = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            setup_runtime_access_with_logger(&owned_bootstrap, raw_credential, provider_logger)
+        }));
+        match attempt {
+            Ok(result) => result,
+            Err(payload) => {
+                if let Some(logger) = panic_logger.as_ref() {
+                    logger.panic_report("access_setup", &panic_message(payload.as_ref()));
+                }
+                Err(AccessError::new("access_setup_panicked"))
+            }
+        }
     })
+}
+
+/// Best-effort text of a panic payload; the two shapes `panic!` produces plus a
+/// fallback, so a report is never empty.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(text) = payload.downcast_ref::<&str>() {
+        (*text).to_string()
+    } else if let Some(text) = payload.downcast_ref::<String>() {
+        text.clone()
+    } else {
+        "non-string panic payload".to_string()
+    }
 }
 
 /// Run `work` on its own thread and stop waiting after `budget`, whatever the
@@ -1143,43 +1171,51 @@ fn spawn_daemon(
     });
     let reader_state = Arc::clone(&startup_stderr);
     let exact_auth_key = Zeroizing::new(auth_key.to_string());
-    let stderr_thread = thread::spawn(move || {
-        let mut buffer = [0_u8; 4 * 1024];
-        let mut line = Vec::with_capacity(1024);
-        let mut line_truncated = false;
-        while let Ok(read) = stderr.read(&mut buffer) {
-            if read == 0 {
-                break;
-            }
-            if reader_state.enabled.load(Ordering::Acquire) {
-                if let Ok(mut captured) = reader_state.bytes.lock() {
-                    if reader_state.enabled.load(Ordering::Acquire) {
-                        let remaining = MAX_STARTUP_STDERR_BYTES.saturating_sub(captured.len());
-                        captured.extend_from_slice(&buffer[..read.min(remaining)]);
+    let stderr_thread = match thread::Builder::new()
+        .name("liskov-daemon-stderr".into())
+        .spawn(move || {
+            let mut buffer = [0_u8; 4 * 1024];
+            let mut line = Vec::with_capacity(1024);
+            let mut line_truncated = false;
+            while let Ok(read) = stderr.read(&mut buffer) {
+                if read == 0 {
+                    break;
+                }
+                if reader_state.enabled.load(Ordering::Acquire) {
+                    if let Ok(mut captured) = reader_state.bytes.lock() {
+                        if reader_state.enabled.load(Ordering::Acquire) {
+                            let remaining = MAX_STARTUP_STDERR_BYTES.saturating_sub(captured.len());
+                            captured.extend_from_slice(&buffer[..read.min(remaining)]);
+                        }
+                    }
+                }
+                let Some(logger) = provider_logger.as_ref() else {
+                    continue;
+                };
+                for byte in &buffer[..read] {
+                    if *byte == b'\n' {
+                        logger.raw_tailscaled_line(&line, &exact_auth_key, line_truncated);
+                        line.clear();
+                        line_truncated = false;
+                    } else if line.len() < crate::logging::RUNTIME_SSH_LINE_BYTES {
+                        line.push(*byte);
+                    } else {
+                        line_truncated = true;
                     }
                 }
             }
-            let Some(logger) = provider_logger.as_ref() else {
-                continue;
-            };
-            for byte in &buffer[..read] {
-                if *byte == b'\n' {
+            if !line.is_empty() || line_truncated {
+                if let Some(logger) = provider_logger.as_ref() {
                     logger.raw_tailscaled_line(&line, &exact_auth_key, line_truncated);
-                    line.clear();
-                    line_truncated = false;
-                } else if line.len() < crate::logging::RUNTIME_SSH_LINE_BYTES {
-                    line.push(*byte);
-                } else {
-                    line_truncated = true;
                 }
             }
+        }) {
+        Ok(handle) => handle,
+        Err(_) => {
+            let _ = child.kill();
+            return Err(AccessError::new("access_thread_spawn_failed"));
         }
-        if !line.is_empty() || line_truncated {
-            if let Some(logger) = provider_logger.as_ref() {
-                logger.raw_tailscaled_line(&line, &exact_auth_key, line_truncated);
-            }
-        }
-    });
+    };
     Ok(DaemonProcess {
         child,
         startup_stderr,
@@ -1395,32 +1431,52 @@ fn run_command(
     let stderr_buf: Arc<Mutex<(Vec<u8>, bool)>> = Arc::new(Mutex::new((Vec::new(), false)));
     let stdout_sink = Arc::clone(&stdout_buf);
     let stderr_sink = Arc::clone(&stderr_buf);
-    let reader = thread::spawn(move || {
-        let mut buffer = [0_u8; 8 * 1024];
-        while let Ok(read) = stdout.read(&mut buffer) {
-            if read == 0 {
-                break;
+    // Plain `thread::spawn` panics if the OS refuses a thread — under resource
+    // pressure that panic used to surface only as an untyped silent unwind.
+    let reader = match thread::Builder::new()
+        .name("liskov-cmd-stdout".into())
+        .spawn(move || {
+            let mut buffer = [0_u8; 8 * 1024];
+            while let Ok(read) = stdout.read(&mut buffer) {
+                if read == 0 {
+                    break;
+                }
+                if let Ok(mut sink) = stdout_sink.lock() {
+                    let remaining = MAX_COMMAND_OUTPUT_BYTES.saturating_sub(sink.0.len());
+                    sink.0.extend_from_slice(&buffer[..read.min(remaining)]);
+                    sink.1 |= read > remaining;
+                }
             }
-            if let Ok(mut sink) = stdout_sink.lock() {
-                let remaining = MAX_COMMAND_OUTPUT_BYTES.saturating_sub(sink.0.len());
-                sink.0.extend_from_slice(&buffer[..read.min(remaining)]);
-                sink.1 |= read > remaining;
-            }
+        }) {
+        Ok(handle) => handle,
+        Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(AccessError::new("access_thread_spawn_failed"));
         }
-    });
-    let stderr_reader = thread::spawn(move || {
-        let mut buffer = [0_u8; 4 * 1024];
-        while let Ok(read) = stderr.read(&mut buffer) {
-            if read == 0 {
-                break;
+    };
+    let stderr_reader = match thread::Builder::new()
+        .name("liskov-cmd-stderr".into())
+        .spawn(move || {
+            let mut buffer = [0_u8; 4 * 1024];
+            while let Ok(read) = stderr.read(&mut buffer) {
+                if read == 0 {
+                    break;
+                }
+                if let Ok(mut sink) = stderr_sink.lock() {
+                    let remaining = MAX_STARTUP_STDERR_BYTES.saturating_sub(sink.0.len());
+                    sink.0.extend_from_slice(&buffer[..read.min(remaining)]);
+                    sink.1 |= read > remaining;
+                }
             }
-            if let Ok(mut sink) = stderr_sink.lock() {
-                let remaining = MAX_STARTUP_STDERR_BYTES.saturating_sub(sink.0.len());
-                sink.0.extend_from_slice(&buffer[..read.min(remaining)]);
-                sink.1 |= read > remaining;
-            }
+        }) {
+        Ok(handle) => handle,
+        Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(AccessError::new("access_thread_spawn_failed"));
         }
-    });
+    };
     let status = loop {
         if let Some(status) = child
             .try_wait()
@@ -1836,6 +1892,30 @@ mod tests {
         assert!(
             ACCESS_SETUP_WATCHDOG >= DOWNLOAD_TIMEOUT + DAEMON_SOCKET_TIMEOUT + TUNNEL_UP_TIMEOUT,
             "legs run in sequence, so the ceiling must cover their sum"
+        );
+    }
+
+    #[test]
+    fn a_panic_is_converted_to_a_typed_code_with_its_message_preserved() {
+        // The r7/145133 and r8/145206 signature: setup returned silently ~4s in
+        // with one record missing. A panic must now surface as a code the
+        // server admits, and its text must survive for the panic record.
+        // Real catch_unwind payloads, not hand-boxed ones: the Any is the
+        // payload itself, and getting that wrong is exactly how a report would
+        // read "non-string panic payload" in production.
+        let of = |f: fn()| {
+            std::panic::catch_unwind(f)
+                .map(|_| unreachable!("closure must panic"))
+                .unwrap_err()
+        };
+        assert_eq!(panic_message(of(|| panic!("boom")).as_ref()), "boom");
+        assert_eq!(
+            panic_message(of(|| panic!("exact text {}", 42)).as_ref()),
+            "exact text 42"
+        );
+        assert_eq!(
+            panic_message(of(|| std::panic::panic_any(17_u8)).as_ref()),
+            "non-string panic payload"
         );
     }
 

@@ -295,6 +295,7 @@ impl LoggingController {
                 budget: Arc::new(Mutex::new(ByteBudget::new(RUNTIME_SSH_BYTES_PER_SECOND))),
                 queued_bytes: runtime_queued_bytes,
                 raw_expires_at_ms,
+                raw_window_marked: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             },
         });
         (
@@ -487,6 +488,9 @@ pub struct RuntimeSshLogEmitter {
     budget: Arc<Mutex<ByteBudget>>,
     queued_bytes: Arc<AtomicU64>,
     raw_expires_at_ms: Option<u64>,
+    /// One-shot: set when the raw-line window closes so the closure itself is
+    /// marked in the stream instead of looking like the daemon going quiet.
+    raw_window_marked: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl RuntimeSshLogEmitter {
@@ -497,7 +501,7 @@ impl RuntimeSshLogEmitter {
             "format": "lifecycle",
             "code": code,
         }));
-        self.enqueue(RuntimeSshRecord {
+        self.enqueue_critical(RuntimeSshRecord {
             event,
             timestamp: utc_timestamp(),
             admitted_bytes: canonical_json_bytes(&details).len(),
@@ -529,8 +533,27 @@ impl RuntimeSshLogEmitter {
             "outcome": outcome,
             "code": code,
         }));
-        self.enqueue(RuntimeSshRecord {
+        self.enqueue_critical(RuntimeSshRecord {
             event: "runtime.access.stage",
+            timestamp: utc_timestamp(),
+            admitted_bytes: canonical_json_bytes(&details).len(),
+            details,
+        });
+    }
+
+    /// A panic somewhere in access setup, with its message. Critical: the one
+    /// record explaining a failure must not compete with raw stderr for budget.
+    pub fn panic_report(&self, stage: &'static str, message: &str) {
+        let mut message = message.to_string();
+        message.truncate(600);
+        let details = without_nulls(json!({
+            "providerKind": "tailscale",
+            "format": "panic",
+            "stage": stage,
+            "message": message,
+        }));
+        self.enqueue_critical(RuntimeSshRecord {
+            event: "runtime.access.panic",
             timestamp: utc_timestamp(),
             admitted_bytes: canonical_json_bytes(&details).len(),
             details,
@@ -542,6 +565,26 @@ impl RuntimeSshLogEmitter {
             return;
         };
         if unix_time_ms() >= expires_at_ms {
+            // Mark the closure once. Prior investigations misread this silence
+            // as the daemon dying or the process being killed, and the
+            // unmarked absence cost days.
+            if !self
+                .raw_window_marked
+                .swap(true, std::sync::atomic::Ordering::AcqRel)
+            {
+                let details = without_nulls(json!({
+                    "providerKind": "tailscale",
+                    "component": "tailscaled",
+                    "format": "lifecycle",
+                    "expiresAtMs": expires_at_ms,
+                }));
+                self.enqueue_critical(RuntimeSshRecord {
+                    event: "runtime.access.tailscale.raw_window_closed",
+                    timestamp: utc_timestamp(),
+                    admitted_bytes: canonical_json_bytes(&details).len(),
+                    details,
+                });
+            }
             return;
         }
         let (message, redacted, truncated) =
@@ -560,6 +603,36 @@ impl RuntimeSshLogEmitter {
             admitted_bytes: line.len().min(RUNTIME_SSH_LINE_BYTES),
             details,
         });
+    }
+
+    /// Lifecycle, stage and panic records skip the raw-line byte budget: they
+    /// are rare, tiny, and are precisely the records that explain a failure.
+    /// On r8/145206 a failed setup's terminal records vanished while raw
+    /// stderr consumed the shared budget, and the run read as silent success.
+    /// They still respect the queue-memory bound, and drops are counted and
+    /// shouted to stderr.
+    fn enqueue_critical(&self, record: RuntimeSshRecord) {
+        if !reserve_queue_bytes(&self.queued_bytes, record.admitted_bytes) {
+            self.dropped.record(record.admitted_bytes);
+            eprintln!(
+                "liskov-runtime-contact: dropped critical runtime-ssh record {}",
+                record.event
+            );
+            return;
+        }
+        match self.sender.try_send(LogWork::RuntimeSsh(record)) {
+            Ok(()) => {}
+            Err(TrySendError::Full(LogWork::RuntimeSsh(record)))
+            | Err(TrySendError::Disconnected(LogWork::RuntimeSsh(record))) => {
+                release_queue_bytes(&self.queued_bytes, record.admitted_bytes);
+                self.dropped.record(record.admitted_bytes);
+                eprintln!(
+                    "liskov-runtime-contact: dropped critical runtime-ssh record {}",
+                    record.event
+                );
+            }
+            _ => {}
+        }
     }
 
     fn enqueue(&self, record: RuntimeSshRecord) {
@@ -1897,6 +1970,38 @@ fn utc_timestamp() -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn critical_records_survive_an_exhausted_byte_budget() {
+        // On r8/145206 the terminal records of a failed setup vanished while
+        // raw stderr consumed the shared budget, and the run read as a silent
+        // success. Stage and lifecycle records must not compete with raw lines.
+        let (sender, receiver) = std::sync::mpsc::sync_channel(16);
+        let emitter = RuntimeSshLogEmitter {
+            sender,
+            dropped: Arc::new(DroppedOutput::default()),
+            budget: Arc::new(Mutex::new(ByteBudget::new(0))), // nothing admitted
+            queued_bytes: Arc::new(AtomicU64::new(0)),
+            raw_expires_at_ms: Some(u64::MAX),
+            raw_window_marked: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        };
+        emitter.stage("up", 1234, "failed", Some("access_up_failed"));
+        emitter.lifecycle("runtime.access.degraded", Some("access_up_failed"));
+        emitter.panic_report("access_setup", "exact panic text");
+        let mut events = Vec::new();
+        while let Ok(LogWork::RuntimeSsh(record)) = receiver.try_recv() {
+            events.push(record.event);
+        }
+        assert_eq!(
+            events,
+            vec![
+                "runtime.access.stage",
+                "runtime.access.degraded",
+                "runtime.access.panic"
+            ],
+            "the records that explain a failure must never be budget-dropped"
+        );
+    }
     use super::*;
 
     #[derive(Clone)]
