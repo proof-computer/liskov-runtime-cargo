@@ -4,10 +4,18 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU8, Ordering};
 use std::sync::{Arc, Once};
 use std::thread;
 use std::time::{Duration, Instant};
+
+/// Which arm the supervised access setup last concluded through, readable from
+/// any thread in this process. 0 = the supervised call has not been reached,
+/// 1 = in flight (pending), 2 = Ok(session), 3 = Ok(no session), 4 = Err. The
+/// workload health loop stamps this (with the pid) into every `runtime.health`
+/// report, because health is the one emission proven to survive the r14
+/// windows in which every return-arm emission vanished.
+static ACCESS_SETUP_ARM: AtomicU8 = AtomicU8::new(0);
 
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -194,14 +202,29 @@ pub fn supervise_with_environment_access_and_processor_facts(
     // Supervised, not called directly: setup's own timeouts are cooperative and
     // a thread blocked in a syscall evaluates none of them, which left 144623's
     // attachment at `setup_started` for a whole schedule with no failure code.
+    //
+    // The arm marker below is the discriminator for the r14 paradox: the same
+    // process provably ran both the setup stages and the workload, yet no
+    // return arm's emissions ever appeared. If health beats (the one signal
+    // that survives these windows) report `accessSetupArm: 1` while the
+    // workload runs, the flow of control executing the workload loop never
+    // passed this match — a duplicated process image below source level, which
+    // the pid also stamped there exposes (a fork inherits runtimeInstanceId,
+    // but not a distinct pid history). Any named arm instead proves the
+    // wrapper returned and relocates the loss into the delivery paths.
+    ACCESS_SETUP_ARM.store(1, Ordering::Release);
     let mut access_setup_failed = false;
     let mut access_session = match setup_runtime_access_supervised(
         bootstrap,
         runtime_access_credential,
         runtime_ssh_logs.clone(),
     ) {
-        Ok(session) => session,
+        Ok(session) => {
+            ACCESS_SETUP_ARM.store(if session.is_some() { 2 } else { 3 }, Ordering::Release);
+            session
+        }
         Err(error) => {
+            ACCESS_SETUP_ARM.store(4, Ordering::Release);
             if let Some(attrs) = access_binding.clone() {
                 log_access(
                     runtime_ssh_logs.as_ref(),
@@ -531,6 +554,8 @@ fn supervise_with_reporter_and_environment(
                     json!({
                         "processAttempt": process_attempt,
                         "restartCount": restart_count,
+                        "accessSetupArm": ACCESS_SETUP_ARM.load(Ordering::Acquire),
+                        "pid": std::process::id(),
                     }),
                 );
                 next_health = Instant::now() + HEALTH_CADENCE;
