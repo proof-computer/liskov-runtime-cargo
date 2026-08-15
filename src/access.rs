@@ -82,6 +82,14 @@ const ACCESS_SETUP_WATCHDOG: Duration = Duration::from_secs(
 /// [`DAEMON_SOCKET_TIMEOUT`], while a loop that outlives its bound is
 /// unmistakable rather than silent.
 const SOCKET_WAIT_HEARTBEAT: Duration = Duration::from_secs(15);
+/// Budget for one bounded LocalAPI probe of the daemon socket. The probe runs
+/// in a child process precisely so that a syscall blocking against the
+/// PRoot-translated socket path hangs the child — which this deadline kills —
+/// and never the setup thread.
+const DAEMON_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Pause between LocalAPI probes. Spawning a child per probe is heavier than a
+/// stat, so probe at this cadence rather than `POLL_INTERVAL`.
+const DAEMON_PROBE_INTERVAL: Duration = Duration::from_secs(1);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// How long to let output readers drain after the child is gone. Bounded because
 /// a killed child's pipe can be held open by a surviving grandchild, in which
@@ -1004,11 +1012,14 @@ fn setup_in_root(
     // absence could not distinguish "never entered" from "entered and never
     // left".
     //
-    // The heartbeat is the discriminator. `socket.exists()` is the loop
-    // condition and the one call here that could plausibly block forever on a
-    // PRoot-backed path; if it does, we see `entered` and then nothing. If the
-    // loop is genuinely iterating, beats keep arriving and the bound itself is
-    // what failed. Those are different bugs.
+    // The heartbeat is the discriminator: if the loop is genuinely iterating,
+    // beats keep arriving and the bound itself is what failed; `entered` with
+    // zero beats means the loop body never ran. That signature was finally
+    // caught red-handed on r12/145508: `socket.exists()` — a stat against the
+    // PRoot-translated socket path — blocked forever on its FIRST evaluation
+    // while the daemon it was waiting for was fully up. Hence the readiness
+    // check below runs in a bounded CHILD process and this thread performs no
+    // filesystem syscall against the socket path at all.
     let socket_wait_started = std::time::Instant::now();
     let elapsed_ms =
         |start: std::time::Instant| u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -1016,7 +1027,7 @@ fn setup_in_root(
         logger.stage("daemon_socket", 0, "entered", None);
     }
     let mut next_beat_at = socket_wait_started + SOCKET_WAIT_HEARTBEAT;
-    while !socket.exists() {
+    loop {
         if let Some(status) = daemon
             .child_mut()
             .try_wait()
@@ -1058,7 +1069,31 @@ fn setup_in_root(
             }
             next_beat_at = now + SOCKET_WAIT_HEARTBEAT;
         }
-        thread::sleep(POLL_INTERVAL);
+        // Probe the daemon's LocalAPI through a bounded CHILD instead of
+        // stat'ing the socket path from this thread. 145508 (helper 0.10.21,
+        // short socket path, daemon fully started — WireGuard up) blocked
+        // forever inside `socket.exists()` on its FIRST evaluation: `entered`,
+        // then zero heartbeats, zero exits, for the rest of the window. Under
+        // PRoot no in-process filesystem syscall against the translated socket
+        // path can be trusted to return; a child that blocks the same way is
+        // simply killed at its deadline (`status: None`) and the probe reads as
+        // not-ready. The daemon answering `status --json` with any backend
+        // state proves the socket end-to-end harder than a stat ever did.
+        let probe_deadline = std::cmp::min(now + DAEMON_PROBE_TIMEOUT, daemon_deadline);
+        if let Ok(output) = run_command(
+            &tailscale_path,
+            &[
+                OsString::from(format!("--socket={}", socket.display())),
+                OsString::from("status"),
+                OsString::from("--json"),
+            ],
+            probe_deadline,
+        ) {
+            if probe_shows_daemon_ready(&output) {
+                break;
+            }
+        }
+        thread::sleep(DAEMON_PROBE_INTERVAL);
     }
     if let Some(logger) = client_logger.as_ref() {
         logger.stage("daemon_socket", elapsed_ms(socket_wait_started), "ok", None);
@@ -1499,6 +1534,17 @@ struct CommandOutput {
     output_too_large: bool,
     stderr: Vec<u8>,
     stderr_truncated: bool,
+}
+
+/// Whether a bounded `status --json` probe proves the daemon's LocalAPI socket
+/// is serving. Two things must both hold: the probe *returned* (a killed child
+/// means the probe itself blocked against the PRoot-translated path — the very
+/// failure mode the probe exists to absorb), and the daemon produced a status
+/// document (any `BackendState`, including `NeedsLogin` — login is the `up`
+/// leg's job, not this one's). A connect failure prints an error instead of a
+/// status document and reads as not-ready.
+fn probe_shows_daemon_ready(output: &CommandOutput) -> bool {
+    output.status.is_some() && String::from_utf8_lossy(&output.stdout).contains("\"BackendState\"")
 }
 
 fn run_command(
@@ -1981,8 +2027,48 @@ mod tests {
             beats_inside_bound <= 12,
             "but not so often it floods the bounded runtime-ssh queue"
         );
-        // The poll has to be finer than the beat or the cadence is meaningless.
-        assert!(POLL_INTERVAL < SOCKET_WAIT_HEARTBEAT);
+        // The probe cadence has to be finer than the beat or the cadence is
+        // meaningless, and a single blocked probe must burn well under the
+        // whole socket bound so several probes fit inside it.
+        assert!(DAEMON_PROBE_INTERVAL < SOCKET_WAIT_HEARTBEAT);
+        assert!(DAEMON_PROBE_TIMEOUT < SOCKET_WAIT_HEARTBEAT);
+        let worst_probe_cycle = DAEMON_PROBE_TIMEOUT + DAEMON_PROBE_INTERVAL;
+        assert!(
+            DAEMON_SOCKET_TIMEOUT.as_secs() / worst_probe_cycle.as_secs() >= 3,
+            "several probes must fit inside the socket bound even when every \
+             probe blocks to its own deadline"
+        );
+    }
+
+    #[test]
+    fn socket_probe_requires_a_returned_child_and_a_status_document() {
+        let ready = |status: Option<std::process::ExitStatus>, stdout: &[u8]| CommandOutput {
+            status,
+            stdout: stdout.to_vec(),
+            output_too_large: false,
+            stderr: Vec::new(),
+            stderr_truncated: false,
+        };
+        let exit_ok = std::process::Command::new("true").status().unwrap();
+        let exit_err = std::process::Command::new("false").status().unwrap();
+        // The daemon answering with any backend state — including NeedsLogin,
+        // which `status` reports with a nonzero exit — proves the socket.
+        assert!(probe_shows_daemon_ready(&ready(
+            Some(exit_ok),
+            br#"{"Version":"1.98.10","BackendState":"NeedsLogin"}"#
+        )));
+        assert!(probe_shows_daemon_ready(&ready(
+            Some(exit_err),
+            br#"{"BackendState":"NeedsLogin"}"#
+        )));
+        // A connect failure prints an error, not a status document.
+        assert!(!probe_shows_daemon_ready(&ready(Some(exit_err), b"")));
+        // A killed probe blocked against the translated path: absorbed, not
+        // trusted — even if partial output leaked before the kill.
+        assert!(!probe_shows_daemon_ready(&ready(
+            None,
+            br#"{"BackendState":"Running"}"#
+        )));
     }
 
     #[test]
