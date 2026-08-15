@@ -558,6 +558,26 @@ fn supervise_with_reporter_and_environment(
                         "pid": std::process::id(),
                     }),
                 );
+                // Accepted diagnostics are not queryable and their attrs are
+                // not logged server-side, so the arm marker also travels on the
+                // runtime-ssh log stream — the only surface an operator can
+                // read back. Doubly diagnostic in the r14 windows: the arm
+                // value answers fork-vs-return, and whether this record
+                // DELIVERS while customer output flows answers whether the
+                // runtime-ssh delivery path itself dies after the burst. The
+                // pid rides the elapsed field (documented abuse: `stage` has no
+                // attrs channel, and a fresh record shape would need a server
+                // deploy to be admitted).
+                if let Some(logger) = runtime_ssh_logs {
+                    let arm: &'static str = match ACCESS_SETUP_ARM.load(Ordering::Acquire) {
+                        0 => "unreached",
+                        1 => "pending",
+                        2 => "ok_session",
+                        3 => "ok_none",
+                        _ => "err",
+                    };
+                    logger.stage("arm_state", u64::from(std::process::id()), arm, None);
+                }
                 next_health = Instant::now() + HEALTH_CADENCE;
             }
             thread::sleep(POLL_INTERVAL);
