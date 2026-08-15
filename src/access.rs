@@ -513,7 +513,12 @@ pub fn setup_runtime_access_within(
 ) -> Result<Option<AccessSession>, AccessError> {
     let owned_bootstrap = bootstrap.clone();
     let panic_logger = provider_logger.clone();
-    run_with_external_deadline(budget, move || {
+    // Kept out of the closure so the wrapper can name its own return arm below
+    // even when the setup thread never returns.
+    let arm_logger = provider_logger.clone();
+    let access_present_at_entry = bootstrap.access.is_some();
+    let started = std::time::Instant::now();
+    let result = run_with_external_deadline(budget, move || {
         // A panic in setup previously surfaced only as the watchdog's generic
         // Disconnected arm, with the message lost entirely: r7/145133 and
         // r8/145206 both returned silently ~4s into the socket wait with one
@@ -530,7 +535,37 @@ pub fn setup_runtime_access_within(
                 Err(AccessError::new("access_setup_panicked"))
             }
         }
-    })
+    });
+    // Name the arm this wrapper actually returned through. Production has
+    // repeatedly shown the impossible pair "stages ran deep into setup, yet the
+    // supervisor saw neither degraded nor ready and the workload started
+    // seconds later" (r12/145508, r13 first windows) — which can only be
+    // resolved by knowing WHICH of these arms fired and whether the caller's
+    // bootstrap carried an access block at entry. Budget-exempt stage record,
+    // same closed delivery path as every other stage.
+    if let Some(logger) = arm_logger.as_ref() {
+        let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let outcome = match &result {
+            Ok(Some(_)) => "ok_session",
+            Ok(None) => {
+                if access_present_at_entry {
+                    // The arm production keeps implying and source cannot
+                    // produce: access was served, setup ran, and the wrapper
+                    // still yielded no session and no error.
+                    "ok_none_access_present"
+                } else {
+                    "ok_none_access_absent"
+                }
+            }
+            Err(_) => "err",
+        };
+        let code = match &result {
+            Err(error) => Some(error.code),
+            Ok(_) => None,
+        };
+        logger.stage("setup_return", elapsed, outcome, code);
+    }
+    result
 }
 
 /// Best-effort text of a panic payload; the two shapes `panic!` produces plus a

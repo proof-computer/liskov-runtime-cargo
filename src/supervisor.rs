@@ -194,6 +194,7 @@ pub fn supervise_with_environment_access_and_processor_facts(
     // Supervised, not called directly: setup's own timeouts are cooperative and
     // a thread blocked in a syscall evaluates none of them, which left 144623's
     // attachment at `setup_started` for a whole schedule with no failure code.
+    let mut access_setup_failed = false;
     let mut access_session = match setup_runtime_access_supervised(
         bootstrap,
         runtime_access_credential,
@@ -201,7 +202,7 @@ pub fn supervise_with_environment_access_and_processor_facts(
     ) {
         Ok(session) => session,
         Err(error) => {
-            if let Some(attrs) = access_binding {
+            if let Some(attrs) = access_binding.clone() {
                 log_access(
                     runtime_ssh_logs.as_ref(),
                     "runtime.access.degraded",
@@ -217,6 +218,7 @@ pub fn supervise_with_environment_access_and_processor_facts(
                     attrs,
                 );
             }
+            access_setup_failed = true;
             None
         }
     };
@@ -231,6 +233,31 @@ pub fn supervise_with_environment_access_and_processor_facts(
             None,
             session.ready_attrs(),
         );
+    } else if !access_setup_failed {
+        if let Some(attrs) = access_binding {
+            // The arm that has silently swallowed every wedge to date: access
+            // was served (setup_started fired above), setup concluded with
+            // neither a session nor an error, and until now nothing recorded
+            // that this happened — the attachment just sat at setup_started
+            // while the workload ran (r12/145508, r13 first windows). Emit on
+            // BOTH channels: the runtime-ssh log stream and the signed
+            // diagnostic, which does not depend on the blackbox logger
+            // existing.
+            log_access(
+                runtime_ssh_logs.as_ref(),
+                "runtime.access.skipped",
+                Some("access_present_no_session"),
+            );
+            report(
+                &mut reporter
+                    .as_mut()
+                    .map(|reporter| reporter as &mut dyn RuntimeReporter),
+                "runtime.access.skipped",
+                DiagnosticStatus::Failed,
+                Some("access_present_no_session"),
+                attrs,
+            );
+        }
     }
     let result = supervise_with_reporter_and_environment(
         command,
