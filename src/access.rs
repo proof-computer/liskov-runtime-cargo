@@ -44,6 +44,16 @@ const PROVIDER_FETCH_ATTEMPTS: u32 = 3;
 /// Pause between provider fetch/unpack attempts — long enough to let a momentary
 /// resource spike clear, short enough to stay well inside the setup budget.
 const PROVIDER_FETCH_BACKOFF: Duration = Duration::from_millis(300);
+/// Attempts for the full daemon bring-up (root, binaries, spawn, socket probe,
+/// `up`). The manual in-processor proof worked minutes after boot; the helper
+/// attempts bring-up seconds into the job and dies seconds after the daemon
+/// starts, so a young-daemon death is treated as possibly transient early-boot
+/// contention rather than final.
+const BRING_UP_ATTEMPTS: u32 = 3;
+/// Settle pause between bring-up attempts: long enough for PRoot/rootfs/
+/// workload boot churn to pass, and three worst-case attempts plus pauses stay
+/// well inside both the access setup deadline and the external watchdog.
+const BRING_UP_SETTLE_BACKOFF: Duration = Duration::from_secs(15);
 /// Budget for short, chatty client commands such as `tailscale status --json`
 /// (52 ms when measured in-processor).
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
@@ -666,27 +676,41 @@ pub fn setup_runtime_access_with_logger(
                         .map_err(stage_error("access_download_failed"))
                 },
             )?;
-            let root = timed_stage(stage_logger, "workspace", || {
-                private_root(&access.attachment_id).map_err(stage_error("access_workspace_failed"))
-            })?;
-            let setup = timed_stage(stage_logger, "bring_up", || {
-                setup_in_root(
-                    bootstrap,
-                    access,
-                    &root,
-                    &archive,
-                    &auth_key,
-                    deadline,
-                    provider_logger.clone(),
-                )
-            });
-            match setup {
-                Ok(session) => Ok(Some(AccessSession::Tailscale(session))),
-                Err(error) => {
-                    let _ = std::fs::remove_dir_all(root);
-                    Err(error)
-                }
-            }
+            // The whole bring-up — private root, binary writes, daemon spawn,
+            // socket probe, `up` — retries as one unit with a settle pause.
+            // The manual in-processor proof ran minutes after boot and worked;
+            // the helper spawns tailscaled ~10-15s into the job, at PRoot's
+            // busiest moment, and every canary window dies seconds after the
+            // daemon starts. If early-boot contention is the cause, a later
+            // attempt lands after the environment has settled and the tunnel
+            // simply comes up; if not, each attempt now names its code. Every
+            // attempt gets a fresh private root (the random suffix prevents
+            // collision with a leftover daemon still holding the old socket),
+            // and a failed attempt's tree is removed before the next.
+            retried_stage(
+                stage_logger,
+                "bring_up",
+                BRING_UP_ATTEMPTS,
+                BRING_UP_SETTLE_BACKOFF,
+                || {
+                    let root = private_root(&access.attachment_id)
+                        .map_err(stage_error("access_workspace_failed"))?;
+                    let result = setup_in_root(
+                        bootstrap,
+                        access,
+                        &root,
+                        &archive,
+                        &auth_key,
+                        deadline,
+                        provider_logger.clone(),
+                    );
+                    if result.is_err() {
+                        let _ = std::fs::remove_dir_all(&root);
+                    }
+                    result
+                },
+            )
+            .map(|session| Some(AccessSession::Tailscale(session)))
         }
         (
             RuntimeAccessBootstrap::Managed(access),
