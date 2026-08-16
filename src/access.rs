@@ -829,9 +829,14 @@ fn retried_stage_until<T>(
                     );
                 }
                 last = Some(error);
-                if !final_attempt {
-                    thread::sleep(backoff);
+                if final_attempt {
+                    // r15's first 0.10.29 windows: is_final only relabeled the
+                    // record and skipped the backoff — the loop still ran the
+                    // next attempt half a second later and burned the consumed
+                    // key. A final error ends the loop, not just the pause.
+                    break;
                 }
+                thread::sleep(backoff);
             }
         }
     }
@@ -1259,8 +1264,13 @@ fn setup_in_root(
                 .map_err(stage_error("access_deadline_exceeded"))?,
         )
         .map_err(stage_error("access_status_invalid"))?;
-        let parsed: TailscaleStatus = match serde_json::from_slice(&status_output.stdout) {
-            Ok(parsed) => parsed,
+        // While the backend is Starting, the status document carries null
+        // CurrentTailnet/Self — the strict parse fails on it, which turned
+        // "not Running yet" into access_status_invalid before the poll could
+        // wait even once (r15's first 0.10.29 windows). Probe BackendState
+        // alone first; the strict parse runs only on the Running document.
+        let probe: TailscaleBackendProbe = match serde_json::from_slice(&status_output.stdout) {
+            Ok(probe) => probe,
             Err(_) => {
                 if let Some(logger) = client_logger.as_ref() {
                     emit_command_stderr(
@@ -1273,11 +1283,23 @@ fn setup_in_root(
                 return Err(AccessError::new("access_status_invalid"));
             }
         };
-        if parsed.backend_state == "Running" {
-            break parsed;
+        if probe.backend_state == "Running" {
+            match serde_json::from_slice::<TailscaleStatus>(&status_output.stdout) {
+                Ok(parsed) => break parsed,
+                Err(_) => {
+                    if let Some(logger) = client_logger.as_ref() {
+                        emit_command_stderr(
+                            logger,
+                            auth_key,
+                            &status_output.stderr,
+                            status_output.stderr_truncated,
+                        );
+                    }
+                    return Err(AccessError::new("access_status_invalid"));
+                }
+            }
         }
-        if parsed.backend_state != "Starting" || std::time::Instant::now() >= status_ready_deadline
-        {
+        if probe.backend_state != "Starting" || std::time::Instant::now() >= status_ready_deadline {
             return Err(AccessError::new("access_status_unexpected"));
         }
         thread::sleep(STATUS_READY_INTERVAL);
@@ -1818,8 +1840,13 @@ fn runtime_hostname(application_uid: &str, deployment_id: &str) -> String {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
-struct TailscaleStatus {
+struct TailscaleBackendProbe {
     backend_state: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct TailscaleStatus {
     current_tailnet: TailscaleTailnet,
     #[serde(rename = "Self")]
     self_node: TailscaleSelf,
