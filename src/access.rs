@@ -50,6 +50,10 @@ const PROVIDER_FETCH_BACKOFF: Duration = Duration::from_millis(300);
 /// starts, so a young-daemon death is treated as possibly transient early-boot
 /// contention rather than final.
 const BRING_UP_ATTEMPTS: u32 = 3;
+/// How long the backend may take to reach Running after a successful `up`.
+const STATUS_READY_TIMEOUT: Duration = Duration::from_secs(30);
+/// Poll cadence while waiting for Running.
+const STATUS_READY_INTERVAL: Duration = Duration::from_secs(1);
 /// Settle pause between bring-up attempts: long enough for PRoot/rootfs/
 /// workload boot churn to pass, and three worst-case attempts plus pauses stay
 /// well inside both the access setup deadline and the external watchdog.
@@ -687,11 +691,19 @@ pub fn setup_runtime_access_with_logger(
             // attempt gets a fresh private root (the random suffix prevents
             // collision with a leftover daemon still holding the old socket),
             // and a failed attempt's tree is removed before the next.
-            retried_stage(
+            retried_stage_until(
                 stage_logger,
                 "bring_up",
                 BRING_UP_ATTEMPTS,
                 BRING_UP_SETTLE_BACKOFF,
+                // Anything at or past `up` consumed the one-off key; a fresh
+                // daemon cannot log in again, so report the real code at once.
+                |error| {
+                    matches!(
+                        error.code,
+                        "access_up_failed" | "access_status_invalid" | "access_status_unexpected"
+                    )
+                },
                 || {
                     let root = private_root(&access.attachment_id)
                         .map_err(stage_error("access_workspace_failed"))?;
@@ -775,6 +787,22 @@ fn retried_stage<T>(
     stage: &'static str,
     attempts: u32,
     backoff: Duration,
+    run: impl FnMut() -> Result<T, AccessError>,
+) -> Result<T, AccessError> {
+    retried_stage_until(logger, stage, attempts, backoff, |_| false, run)
+}
+
+/// [`retried_stage`], but `is_final` marks errors no retry can improve. The
+/// Tailscale one-off auth key is consumed by the first successful `up`, so any
+/// failure after that point is final: r14 v7 showed attempt 1 authenticate,
+/// fail post-`up` validation, and attempts 2-3 burn 30s re-running `up` with a
+/// spent key just to report `access_up_failed` instead of the real code.
+fn retried_stage_until<T>(
+    logger: Option<&RuntimeSshLogEmitter>,
+    stage: &'static str,
+    attempts: u32,
+    backoff: Duration,
+    is_final: impl Fn(&AccessError) -> bool,
     mut run: impl FnMut() -> Result<T, AccessError>,
 ) -> Result<T, AccessError> {
     let attempts = attempts.max(1);
@@ -790,7 +818,7 @@ fn retried_stage<T>(
                 return Ok(value);
             }
             Err(error) => {
-                let final_attempt = attempt + 1 >= attempts;
+                let final_attempt = attempt + 1 >= attempts || is_final(&error);
                 if let Some(logger) = logger {
                     let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
                     logger.stage(
@@ -1212,33 +1240,49 @@ fn setup_in_root(
     // 305ms, `up` ok in 2.6s, then this call). The status DOCUMENT is the
     // authority: parse stdout and let the semantic checks below decide. A
     // killed or truncated read still fails — its stdout cannot parse.
-    let status_output = run_command(
-        &tailscale_path,
-        &[
-            OsString::from(format!("--socket={}", socket.display())),
-            OsString::from("status"),
-            OsString::from("--json"),
-        ],
-        subprocess_deadline(deadline, COMMAND_TIMEOUT)
-            .map_err(stage_error("access_deadline_exceeded"))?,
-    )
-    .map_err(stage_error("access_status_invalid"))?;
-    let status: TailscaleStatus = match serde_json::from_slice(&status_output.stdout) {
-        Ok(status) => status,
-        Err(_) => {
-            if let Some(logger) = client_logger.as_ref() {
-                emit_command_stderr(
-                    logger,
-                    auth_key,
-                    &status_output.stderr,
-                    status_output.stderr_truncated,
-                );
+    // `up` returns at auth completion; the backend flips Starting -> Running
+    // moments later. Reading status exactly once at +0ms rejected the third
+    // authenticated tunnel in a row (r14 v7) as not-Running, so poll until
+    // Running with a bound. Any state other than Starting/Running will not
+    // improve by waiting and fails at once.
+    let status_ready_deadline = subprocess_deadline(deadline, STATUS_READY_TIMEOUT)
+        .map_err(stage_error("access_deadline_exceeded"))?;
+    let status = loop {
+        let status_output = run_command(
+            &tailscale_path,
+            &[
+                OsString::from(format!("--socket={}", socket.display())),
+                OsString::from("status"),
+                OsString::from("--json"),
+            ],
+            subprocess_deadline(deadline, COMMAND_TIMEOUT)
+                .map_err(stage_error("access_deadline_exceeded"))?,
+        )
+        .map_err(stage_error("access_status_invalid"))?;
+        let parsed: TailscaleStatus = match serde_json::from_slice(&status_output.stdout) {
+            Ok(parsed) => parsed,
+            Err(_) => {
+                if let Some(logger) = client_logger.as_ref() {
+                    emit_command_stderr(
+                        logger,
+                        auth_key,
+                        &status_output.stderr,
+                        status_output.stderr_truncated,
+                    );
+                }
+                return Err(AccessError::new("access_status_invalid"));
             }
-            return Err(AccessError::new("access_status_invalid"));
+        };
+        if parsed.backend_state == "Running" {
+            break parsed;
         }
+        if parsed.backend_state != "Starting" || std::time::Instant::now() >= status_ready_deadline
+        {
+            return Err(AccessError::new("access_status_unexpected"));
+        }
+        thread::sleep(STATUS_READY_INTERVAL);
     };
-    if status.backend_state != "Running"
-        || status.current_tailnet.name != access.expected_tailnet
+    if status.current_tailnet.name != access.expected_tailnet
         || status.self_node.id.is_empty()
         || status.self_node.id.len() > 256
         || status.self_node.dns_name.is_empty()
