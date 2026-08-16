@@ -1178,6 +1178,14 @@ fn setup_in_root(
                 OsString::from(format!("--socket={}", socket.display())),
                 OsString::from("status"),
                 OsString::from("--json"),
+                // The full status document includes every peer on the tailnet,
+                // and this tailnet accumulates one ephemeral liskov-* node per
+                // canary `up`. The doc outgrew the 1MB stdout capture, the
+                // truncated JSON failed to parse, and every Running tunnel
+                // died as access_status_invalid ~1.2s after `up` (r15,
+                // 0.10.29/0.10.30). BackendState, CurrentTailnet, and Self are
+                // all this code reads; peers were never needed.
+                OsString::from("--peers=false"),
             ],
             probe_deadline,
         ) {
@@ -1259,6 +1267,14 @@ fn setup_in_root(
                 OsString::from(format!("--socket={}", socket.display())),
                 OsString::from("status"),
                 OsString::from("--json"),
+                // The full status document includes every peer on the tailnet,
+                // and this tailnet accumulates one ephemeral liskov-* node per
+                // canary `up`. The doc outgrew the 1MB stdout capture, the
+                // truncated JSON failed to parse, and every Running tunnel
+                // died as access_status_invalid ~1.2s after `up` (r15,
+                // 0.10.29/0.10.30). BackendState, CurrentTailnet, and Self are
+                // all this code reads; peers were never needed.
+                OsString::from("--peers=false"),
             ],
             subprocess_deadline(deadline, COMMAND_TIMEOUT)
                 .map_err(stage_error("access_deadline_exceeded"))?,
