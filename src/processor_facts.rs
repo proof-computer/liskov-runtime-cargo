@@ -347,15 +347,15 @@ impl<T: std::fmt::Debug> std::fmt::Debug for Availability<T> {
 #[derive(Serialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AndroidCorroborationFact {
-    android_release: Availability<String>,
-    sdk_level: Availability<String>,
-    security_patch: Availability<String>,
-    manufacturer: Availability<String>,
-    brand: Availability<String>,
-    model: Availability<String>,
-    product_name: Availability<String>,
-    device: Availability<String>,
-    board_platform: Availability<String>,
+    pub(crate) android_release: Availability<String>,
+    pub(crate) sdk_level: Availability<String>,
+    pub(crate) security_patch: Availability<String>,
+    pub(crate) manufacturer: Availability<String>,
+    pub(crate) brand: Availability<String>,
+    pub(crate) model: Availability<String>,
+    pub(crate) product_name: Availability<String>,
+    pub(crate) device: Availability<String>,
+    pub(crate) board_platform: Availability<String>,
 }
 
 impl AndroidCorroborationFact {
@@ -404,8 +404,8 @@ enum AndroidField {
 #[derive(Serialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct KernelAbi {
-    major: u64,
-    minor: u64,
+    pub(crate) major: u64,
+    pub(crate) minor: u64,
 }
 
 #[derive(Serialize, Clone, PartialEq, Eq)]
@@ -426,13 +426,13 @@ pub enum CapabilityClass {
 #[derive(Serialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ExecutionSurfaceFact {
-    architecture: Availability<String>,
-    word_size_bits: Availability<u32>,
-    page_size_bytes: Availability<u64>,
-    kernel_abi: Availability<KernelAbi>,
-    no_new_privs: Availability<bool>,
-    seccomp: Availability<SeccompClass>,
-    effective_capabilities: Availability<CapabilityClass>,
+    pub(crate) architecture: Availability<String>,
+    pub(crate) word_size_bits: Availability<u32>,
+    pub(crate) page_size_bytes: Availability<u64>,
+    pub(crate) kernel_abi: Availability<KernelAbi>,
+    pub(crate) no_new_privs: Availability<bool>,
+    pub(crate) seccomp: Availability<SeccompClass>,
+    pub(crate) effective_capabilities: Availability<CapabilityClass>,
 }
 
 #[derive(Debug, Serialize, Clone, Copy, PartialEq, Eq)]

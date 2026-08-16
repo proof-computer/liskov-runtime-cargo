@@ -1,0 +1,154 @@
+{
+  "attestedIdentity": {
+    "brand": {
+      "status": "not_populated"
+    },
+    "device": {
+      "status": "observed",
+      "value": "a03su"
+    },
+    "manufacturer": {
+      "status": "observed",
+      "value": "samsung"
+    },
+    "model": {
+      "status": "observed",
+      "value": "SM-S135DL"
+    },
+    "osPatchLevel": {
+      "status": "not_populated"
+    },
+    "osVersion": {
+      "status": "observed",
+      "value": "130000"
+    },
+    "product": {
+      "status": "not_populated"
+    }
+  },
+  "attestedIdentityDigest": "sha256:c880923b4e1876d0d8e12eaa125b0ea8fd8c75eee46bd3b5f4bdd08226ca2145",
+  "canonicalSourceReadings": "{\"android\":{\"androidRelease\":{\"status\":\"observed\",\"value\":\"13\"},\"boardPlatform\":{\"status\":\"observed\",\"value\":\"mt6765\"},\"brand\":{\"status\":\"observed\",\"value\":\"samsung\"},\"device\":{\"status\":\"observed\",\"value\":\"a03su\"},\"manufacturer\":{\"status\":\"observed\",\"value\":\"samsung\"},\"model\":{\"status\":\"observed\",\"value\":\"SM-S135DL\"},\"productName\":{\"status\":\"observed\",\"value\":\"a03sutfnssu\"},\"sdkLevel\":{\"status\":\"observed\",\"value\":\"33\"},\"securityPatch\":{\"status\":\"observed\",\"value\":\"2023-09-01\"}},\"collectedAtMs\":1755350000000,\"domain\":\"proof.liskov.processor-hardware.v1\",\"execution\":{\"architecture\":{\"status\":\"observed\",\"value\":\"aarch64\"},\"effectiveCapabilities\":{\"status\":\"observed\",\"value\":\"none\"},\"kernelAbi\":{\"status\":\"observed\",\"value\":{\"major\":4,\"minor\":19}},\"noNewPrivs\":{\"status\":\"observed\",\"value\":true},\"pageSizeBytes\":{\"status\":\"observed\",\"value\":4096},\"seccomp\":{\"status\":\"observed\",\"value\":\"filter\"},\"wordSizeBits\":{\"status\":\"observed\",\"value\":64}},\"helperVersion\":\"0.10.30\",\"profile\":\"cargo-baseline-v1\"}",
+  "expectedAssessment": {
+    "androidRelease": {
+      "corroboration": "corroborated",
+      "source": "chain_attestation",
+      "value": "13"
+    },
+    "attestedIdentityDigest": "sha256:c880923b4e1876d0d8e12eaa125b0ea8fd8c75eee46bd3b5f4bdd08226ca2145",
+    "boardPlatform": {
+      "corroboration": "unknown",
+      "source": "active_probe",
+      "value": "mt6765"
+    },
+    "brand": {
+      "corroboration": "unknown",
+      "source": "active_probe",
+      "value": "samsung"
+    },
+    "derivationVersion": 1,
+    "device": {
+      "corroboration": "corroborated",
+      "source": "chain_attestation",
+      "value": "a03su"
+    },
+    "manufacturer": {
+      "corroboration": "corroborated",
+      "source": "chain_attestation",
+      "value": "samsung"
+    },
+    "model": {
+      "corroboration": "corroborated",
+      "source": "chain_attestation",
+      "value": "SM-S135DL"
+    },
+    "product": {
+      "corroboration": "unknown",
+      "source": "active_probe",
+      "value": "a03sutfnssu"
+    },
+    "securityPatch": {
+      "corroboration": "unknown",
+      "source": "active_probe",
+      "value": "2023-09"
+    },
+    "sourceReadingsDigest": "sha256:4a3940c88b189074b6f3a7d24bf3da5b5e9650f7a87cbed63031a6d07d98abaa"
+  },
+  "sourceReadings": {
+    "android": {
+      "androidRelease": {
+        "status": "observed",
+        "value": "13"
+      },
+      "boardPlatform": {
+        "status": "observed",
+        "value": "mt6765"
+      },
+      "brand": {
+        "status": "observed",
+        "value": "samsung"
+      },
+      "device": {
+        "status": "observed",
+        "value": "a03su"
+      },
+      "manufacturer": {
+        "status": "observed",
+        "value": "samsung"
+      },
+      "model": {
+        "status": "observed",
+        "value": "SM-S135DL"
+      },
+      "productName": {
+        "status": "observed",
+        "value": "a03sutfnssu"
+      },
+      "sdkLevel": {
+        "status": "observed",
+        "value": "33"
+      },
+      "securityPatch": {
+        "status": "observed",
+        "value": "2023-09-01"
+      }
+    },
+    "collectedAtMs": 1755350000000,
+    "domain": "proof.liskov.processor-hardware.v1",
+    "execution": {
+      "architecture": {
+        "status": "observed",
+        "value": "aarch64"
+      },
+      "effectiveCapabilities": {
+        "status": "observed",
+        "value": "none"
+      },
+      "kernelAbi": {
+        "status": "observed",
+        "value": {
+          "major": 4,
+          "minor": 19
+        }
+      },
+      "noNewPrivs": {
+        "status": "observed",
+        "value": true
+      },
+      "pageSizeBytes": {
+        "status": "observed",
+        "value": 4096
+      },
+      "seccomp": {
+        "status": "observed",
+        "value": "filter"
+      },
+      "wordSizeBits": {
+        "status": "observed",
+        "value": 64
+      }
+    },
+    "helperVersion": "0.10.30",
+    "profile": "cargo-baseline-v1"
+  },
+  "sourceReadingsDigest": "sha256:4a3940c88b189074b6f3a7d24bf3da5b5e9650f7a87cbed63031a6d07d98abaa"
+}

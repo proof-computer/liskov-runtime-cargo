@@ -21,9 +21,11 @@ use sha2::{Digest, Sha256};
 
 use crate::bridge::Bridge;
 use crate::diagnostics::canonical_json_bytes;
+use crate::hardware::{collect_hardware_source_readings, hardware_metric_digest};
 use crate::processor_facts::{
-    BridgeFactSigner, FactClock, FactSigner, HttpsResultDelivery, ResultDelivery, SystemFactClock,
-    bounded_identifier, valid_hex, valid_sha256,
+    AndroidFactCollector, AndroidPropertyCollector, BridgeFactSigner, ExecutionFactCollector,
+    FactClock, FactSigner, HttpsResultDelivery, LinuxExecutionCollector, ResultDelivery,
+    SecurePropertyFileReader, SystemFactClock, bounded_identifier, valid_hex, valid_sha256,
 };
 use crate::protocol::RuntimeBootstrapResponse;
 
@@ -36,6 +38,7 @@ const MAX_AUTHORIZATION_LIFETIME_MS: u64 = 86_400_000;
 const AUTHORIZATION_FUTURE_TOLERANCE_MS: u64 = 60 * 1000;
 const MAX_SUBMISSION_BYTES: usize = 16 * 1024;
 const BOOTSTRAP_PROBE_ID: &str = "runtime-bootstrap";
+const HARDWARE_CAPTURE_PROBE_ID: &str = "hardware-capture";
 const BOOTSTRAP_PROBE_REGION: &str = "processor-local";
 
 /// The frozen coverage-result envelope, byte-compatible with the
@@ -189,6 +192,18 @@ pub struct CoverageAuthorization {
     submit_url: String,
 }
 
+impl CoverageAuthorization {
+    /// The server assigns the workload target at mint from its exact
+    /// internal configuration; a native-image target is the fixed hardware
+    /// capture profile (ADR-0079 §2 — the payload cannot choose).
+    fn is_native_image_target(&self) -> bool {
+        matches!(
+            self.authorization.target.runtime,
+            CoverageTargetRuntime::NativeImage
+        )
+    }
+}
+
 /// Remove and validate the raw capability independently of bootstrap
 /// validity. Any malformed, unknown, out-of-contract, or misbound content
 /// simply returns `None`: the producer never runs, and the runtime never
@@ -267,6 +282,8 @@ pub struct CoverageProducerDependencies<'a> {
     pub clock: &'a dyn FactClock,
     pub signer: &'a dyn FactSigner,
     pub delivery: &'a dyn ResultDelivery,
+    pub android: &'a dyn AndroidFactCollector,
+    pub execution: &'a dyn ExecutionFactCollector,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -313,10 +330,14 @@ pub(crate) fn detached_coverage_task(
         let clock = SystemFactClock;
         let signer = BridgeFactSigner { bridge };
         let delivery = HttpsResultDelivery;
+        let android = AndroidPropertyCollector::<SecurePropertyFileReader>::default();
+        let execution = LinuxExecutionCollector;
         let dependencies = CoverageProducerDependencies {
             clock: &clock,
             signer: &signer,
             delivery: &delivery,
+            android: &android,
+            execution: &execution,
         };
         let outcome = run_coverage_producer(
             &activation.authorization,
@@ -344,7 +365,7 @@ pub(crate) fn run_coverage_producer(
     // zero-duration observation rather than an unrepresentable one.
     let completed_at_ms = observation.completed_at_ms.min(MAX_SAFE_INTEGER);
     let started_at_ms = observation.started_at_ms.min(completed_at_ms);
-    let outcomes = vec![CoverageOutcome {
+    let mut outcomes = vec![CoverageOutcome {
         probe_id: BOOTSTRAP_PROBE_ID.to_owned(),
         status: CoverageOutcomeStatus::Succeeded,
         region: BOOTSTRAP_PROBE_REGION.to_owned(),
@@ -357,13 +378,55 @@ pub(crate) fn run_coverage_producer(
         bytes_received: 0,
         errors: Vec::new(),
     }];
-    let Ok(outcomes_value) = serde_json::to_value(&outcomes) else {
-        return CoverageProducerOutcome::EnvelopeUnrepresentable;
+
+    // For the server-assigned native-image target, the committed metric
+    // payload is the proof.liskov.processor-hardware.v1 source readings:
+    // collected availability-first, digested, and dropped — the payload is
+    // never logged or transmitted in this slice, only its commitment.
+    let mut hardware_digest = None;
+    if coverage.is_native_image_target() {
+        let Some(capture_started_ms) = dependencies.clock.now_ms() else {
+            return CoverageProducerOutcome::ClockUnavailable;
+        };
+        let readings = collect_hardware_source_readings(
+            capture_started_ms.min(MAX_SAFE_INTEGER),
+            dependencies.android,
+            dependencies.execution,
+        );
+        let Some(digest) = hardware_metric_digest(&readings) else {
+            return CoverageProducerOutcome::EnvelopeUnrepresentable;
+        };
+        let Some(capture_completed_ms) = dependencies.clock.now_ms() else {
+            return CoverageProducerOutcome::ClockUnavailable;
+        };
+        let capture_completed_ms = capture_completed_ms.min(MAX_SAFE_INTEGER);
+        let capture_started_ms = capture_started_ms.min(capture_completed_ms);
+        outcomes.push(CoverageOutcome {
+            probe_id: HARDWARE_CAPTURE_PROBE_ID.to_owned(),
+            status: CoverageOutcomeStatus::Succeeded,
+            region: BOOTSTRAP_PROBE_REGION.to_owned(),
+            started_at_ms: capture_started_ms,
+            completed_at_ms: capture_completed_ms,
+            duration_ms: capture_completed_ms - capture_started_ms,
+            bytes_sent: 0,
+            bytes_received: 0,
+            errors: Vec::new(),
+        });
+        hardware_digest = Some(digest);
+    }
+
+    let normalized_metric_digest = match hardware_digest {
+        Some(digest) => digest,
+        None => {
+            let Ok(outcomes_value) = serde_json::to_value(&outcomes) else {
+                return CoverageProducerOutcome::EnvelopeUnrepresentable;
+            };
+            format!(
+                "sha256:{}",
+                hex::encode(Sha256::digest(canonical_json_bytes(&outcomes_value)))
+            )
+        }
     };
-    let normalized_metric_digest = format!(
-        "sha256:{}",
-        hex::encode(Sha256::digest(canonical_json_bytes(&outcomes_value)))
-    );
 
     let result = CoverageResultV1 {
         domain: LISKOV_PROCESSOR_COVERAGE_RESULT_DOMAIN_V1.to_owned(),
@@ -423,10 +486,34 @@ pub(crate) fn run_coverage_producer(
 mod tests {
     use std::collections::VecDeque;
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use serde_json::json;
 
     use super::*;
+    use crate::hardware::HardwareSourceReadingsV1;
+    use crate::hardware::tests::{fixture_android, fixture_execution};
+    use crate::processor_facts::{AndroidCorroborationFact, ExecutionSurfaceFact};
+
+    #[derive(Default)]
+    struct FakeAndroid(AtomicUsize);
+
+    impl AndroidFactCollector for FakeAndroid {
+        fn collect(&self) -> AndroidCorroborationFact {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            fixture_android()
+        }
+    }
+
+    #[derive(Default)]
+    struct FakeExecution(AtomicUsize);
+
+    impl ExecutionFactCollector for FakeExecution {
+        fn collect(&self) -> ExecutionSurfaceFact {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            fixture_execution()
+        }
+    }
 
     const NOW: u64 = 1_800_000_000_000;
 
@@ -479,6 +566,17 @@ mod tests {
             "replaySubject": "pcrs_0123456789abcdef",
             "submitUrl": "https://liskov.example/api/jobs/coverage-result",
         })
+    }
+
+    fn javascript_block() -> Value {
+        let mut block = minted_block();
+        block["target"] = json!({
+            "targetId": "acurast-js-source",
+            "provider": "acurast",
+            "runtime": "javascript",
+            "release": "source",
+        });
+        block
     }
 
     fn taken(block: Value) -> Option<CoverageAuthorization> {
@@ -677,6 +775,8 @@ mod tests {
         let clock = FixedClock(NOW);
         let signer = RecordingSigner::succeeding();
         let delivery = RecordingDelivery::new(true);
+        let android = FakeAndroid::default();
+        let execution = FakeExecution::default();
         let outcome = run_coverage_producer(
             &coverage,
             observation(),
@@ -684,6 +784,8 @@ mod tests {
                 clock: &clock,
                 signer: &signer,
                 delivery: &delivery,
+                android: &android,
+                execution: &execution,
             },
         );
         assert_eq!(outcome, CoverageProducerOutcome::Submitted);
@@ -732,21 +834,84 @@ mod tests {
         }
         assert!(submitted.get("submitUrl").is_none());
 
-        // The single outcome records the observed bootstrap exchange, and
-        // the metric digest commits to the canonical outcomes bytes.
+        // The native-image target records the bootstrap exchange plus the
+        // hardware capture, and the metric digest commits to the canonical
+        // proof.liskov.processor-hardware.v1 payload the collectors read —
+        // which itself never travels.
         assert_eq!(
             submitted["outcomes"],
-            json!([{
-                "probeId": BOOTSTRAP_PROBE_ID,
-                "status": "succeeded",
-                "region": BOOTSTRAP_PROBE_REGION,
-                "startedAtMs": NOW - 9_000,
-                "completedAtMs": NOW - 7_750,
-                "durationMs": 1_250,
-                "bytesSent": 0,
-                "bytesReceived": 0,
-                "errors": [],
-            }])
+            json!([
+                {
+                    "probeId": BOOTSTRAP_PROBE_ID,
+                    "status": "succeeded",
+                    "region": BOOTSTRAP_PROBE_REGION,
+                    "startedAtMs": NOW - 9_000,
+                    "completedAtMs": NOW - 7_750,
+                    "durationMs": 1_250,
+                    "bytesSent": 0,
+                    "bytesReceived": 0,
+                    "errors": [],
+                },
+                {
+                    "probeId": HARDWARE_CAPTURE_PROBE_ID,
+                    "status": "succeeded",
+                    "region": BOOTSTRAP_PROBE_REGION,
+                    "startedAtMs": NOW,
+                    "completedAtMs": NOW,
+                    "durationMs": 0,
+                    "bytesSent": 0,
+                    "bytesReceived": 0,
+                    "errors": [],
+                },
+            ])
+        );
+        assert_eq!(android.0.load(Ordering::SeqCst), 1);
+        assert_eq!(execution.0.load(Ordering::SeqCst), 1);
+        let expected_digest =
+            crate::hardware::hardware_metric_digest(&HardwareSourceReadingsV1::new(
+                env!("CARGO_PKG_VERSION").into(),
+                NOW,
+                fixture_android(),
+                fixture_execution(),
+            ))
+            .unwrap();
+        assert_eq!(submitted["normalizedMetricDigest"], json!(expected_digest));
+        for forbidden in ["SM-S135DL", "samsung", "a03su", "mt6765"] {
+            assert!(
+                !String::from_utf8_lossy(body).contains(forbidden),
+                "hardware readings must never travel in the envelope"
+            );
+        }
+    }
+
+    #[test]
+    fn javascript_target_commits_to_the_canonical_outcomes_without_collection() {
+        let coverage = taken(javascript_block()).expect("valid block");
+        let clock = FixedClock(NOW);
+        let signer = RecordingSigner::succeeding();
+        let delivery = RecordingDelivery::new(true);
+        let android = FakeAndroid::default();
+        let execution = FakeExecution::default();
+        let outcome = run_coverage_producer(
+            &coverage,
+            observation(),
+            &CoverageProducerDependencies {
+                clock: &clock,
+                signer: &signer,
+                delivery: &delivery,
+                android: &android,
+                execution: &execution,
+            },
+        );
+        assert_eq!(outcome, CoverageProducerOutcome::Submitted);
+        assert_eq!(android.0.load(Ordering::SeqCst), 0);
+        assert_eq!(execution.0.load(Ordering::SeqCst), 0);
+        let attempts = delivery.attempts.lock().unwrap();
+        let submitted: Value = serde_json::from_slice(&attempts[0].1).unwrap();
+        assert_eq!(submitted["outcomes"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            submitted["outcomes"][0]["probeId"],
+            json!(BOOTSTRAP_PROBE_ID)
         );
         let expected_digest = format!(
             "sha256:{}",
@@ -761,6 +926,8 @@ mod tests {
         let clock = FixedClock(NOW);
         let signer = RecordingSigner::succeeding();
         let delivery = RecordingDelivery::new(true);
+        let android = FakeAndroid::default();
+        let execution = FakeExecution::default();
         let outcome = run_coverage_producer(
             &coverage,
             CoverageContactObservation {
@@ -771,6 +938,8 @@ mod tests {
                 clock: &clock,
                 signer: &signer,
                 delivery: &delivery,
+                android: &android,
+                execution: &execution,
             },
         );
         assert_eq!(outcome, CoverageProducerOutcome::Submitted);
@@ -790,6 +959,8 @@ mod tests {
         let clock = FixedClock(NOW + 895_001);
         let signer = RecordingSigner::succeeding();
         let delivery = RecordingDelivery::new(true);
+        let android = FakeAndroid::default();
+        let execution = FakeExecution::default();
         let outcome = run_coverage_producer(
             &coverage,
             observation(),
@@ -797,6 +968,8 @@ mod tests {
                 clock: &clock,
                 signer: &signer,
                 delivery: &delivery,
+                android: &android,
+                execution: &execution,
             },
         );
         assert_eq!(outcome, CoverageProducerOutcome::AuthorizationExpired);
@@ -813,6 +986,8 @@ mod tests {
         let clock = FixedClock(NOW);
         let signer = RecordingSigner::succeeding();
         let delivery = RecordingDelivery::new(true);
+        let android = FakeAndroid::default();
+        let execution = FakeExecution::default();
         let outcome = run_coverage_producer(
             &coverage,
             observation(),
@@ -820,6 +995,8 @@ mod tests {
                 clock: &clock,
                 signer: &signer,
                 delivery: &delivery,
+                android: &android,
+                execution: &execution,
             },
         );
         assert_eq!(outcome, CoverageProducerOutcome::AuthorizationExpired);
@@ -833,6 +1010,8 @@ mod tests {
         let clock = FixedClock(NOW);
         let signer = RecordingSigner::failing();
         let delivery = RecordingDelivery::new(true);
+        let android = FakeAndroid::default();
+        let execution = FakeExecution::default();
         let outcome = run_coverage_producer(
             &coverage,
             observation(),
@@ -840,6 +1019,8 @@ mod tests {
                 clock: &clock,
                 signer: &signer,
                 delivery: &delivery,
+                android: &android,
+                execution: &execution,
             },
         );
         assert_eq!(outcome, CoverageProducerOutcome::SigningFailed);
@@ -852,6 +1033,8 @@ mod tests {
         let clock = FixedClock(NOW);
         let signer = RecordingSigner::succeeding();
         let delivery = RecordingDelivery::new(false);
+        let android = FakeAndroid::default();
+        let execution = FakeExecution::default();
         let outcome = run_coverage_producer(
             &coverage,
             observation(),
@@ -859,6 +1042,8 @@ mod tests {
                 clock: &clock,
                 signer: &signer,
                 delivery: &delivery,
+                android: &android,
+                execution: &execution,
             },
         );
         assert_eq!(outcome, CoverageProducerOutcome::DeliveryFailed);
@@ -870,13 +1055,15 @@ mod tests {
 
     #[test]
     fn expiry_between_attempts_stops_the_retry() {
-        let coverage = taken(minted_block()).expect("valid block");
+        let coverage = taken(javascript_block()).expect("valid block");
         let clock = SequenceClock {
             values: Mutex::new(VecDeque::from([NOW, NOW, NOW + 895_001])),
             fallback: NOW + 895_001,
         };
         let signer = RecordingSigner::succeeding();
         let delivery = RecordingDelivery::new(false);
+        let android = FakeAndroid::default();
+        let execution = FakeExecution::default();
         let outcome = run_coverage_producer(
             &coverage,
             observation(),
@@ -884,6 +1071,8 @@ mod tests {
                 clock: &clock,
                 signer: &signer,
                 delivery: &delivery,
+                android: &android,
+                execution: &execution,
             },
         );
         assert_eq!(outcome, CoverageProducerOutcome::AuthorizationExpired);
