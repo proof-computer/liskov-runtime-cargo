@@ -1,0 +1,57 @@
+{
+  "result": {
+    "domain": "proof.liskov.processor-coverage-result.v1",
+    "applicationId": "app-1",
+    "policyVersionId": "policy-version-5",
+    "policyDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "artifactDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "cycleId": "coverage-cycle-2026-08-13",
+    "target": {
+      "targetId": "acurast-js-source",
+      "provider": "acurast",
+      "runtime": "javascript",
+      "release": "source"
+    },
+    "deploymentId": "deployment-1",
+    "jobId": "job-7",
+    "processorId": "processor-acurast-1",
+    "probeVersion": "probe-v3",
+    "profileVersion": "profile-v2",
+    "sequence": 4,
+    "issuedAtMs": 1775000000000,
+    "expiresAtMs": 1775000060000,
+    "outcomes": [
+      {
+        "probeId": "runtime-bootstrap",
+        "status": "succeeded",
+        "region": "europe-west",
+        "startedAtMs": 1775000001000,
+        "completedAtMs": 1775000002250,
+        "durationMs": 1250,
+        "bytesSent": 384,
+        "bytesReceived": 2048,
+        "errors": []
+      },
+      {
+        "probeId": "provider-egress",
+        "status": "failed",
+        "region": "europe-west",
+        "startedAtMs": 1775000003000,
+        "completedAtMs": 1775000003500,
+        "durationMs": 500,
+        "bytesSent": 96,
+        "bytesReceived": 0,
+        "errors": [
+          {
+            "code": "coverage_target_unreachable",
+            "message": "The target refused the bounded coverage probe."
+          }
+        ]
+      }
+    ],
+    "normalizedMetricDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "challenge": "0x01020304",
+    "replaySubject": "coverage:coverage-cycle-2026-08-13:job-7:4"
+  },
+  "canonicalSigningPayload": "{\"applicationId\":\"app-1\",\"artifactDigest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"challenge\":\"0x01020304\",\"cycleId\":\"coverage-cycle-2026-08-13\",\"deploymentId\":\"deployment-1\",\"domain\":\"proof.liskov.processor-coverage-result.v1\",\"expiresAtMs\":1775000060000,\"issuedAtMs\":1775000000000,\"jobId\":\"job-7\",\"normalizedMetricDigest\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"outcomes\":[{\"bytesReceived\":2048,\"bytesSent\":384,\"completedAtMs\":1775000002250,\"durationMs\":1250,\"errors\":[],\"probeId\":\"runtime-bootstrap\",\"region\":\"europe-west\",\"startedAtMs\":1775000001000,\"status\":\"succeeded\"},{\"bytesReceived\":0,\"bytesSent\":96,\"completedAtMs\":1775000003500,\"durationMs\":500,\"errors\":[{\"code\":\"coverage_target_unreachable\",\"message\":\"The target refused the bounded coverage probe.\"}],\"probeId\":\"provider-egress\",\"region\":\"europe-west\",\"startedAtMs\":1775000003000,\"status\":\"failed\"}],\"policyDigest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"policyVersionId\":\"policy-version-5\",\"probeVersion\":\"probe-v3\",\"processorId\":\"processor-acurast-1\",\"profileVersion\":\"profile-v2\",\"replaySubject\":\"coverage:coverage-cycle-2026-08-13:job-7:4\",\"sequence\":4,\"target\":{\"provider\":\"acurast\",\"release\":\"source\",\"runtime\":\"javascript\",\"targetId\":\"acurast-js-source\"}}"
+}

@@ -245,8 +245,8 @@ pub trait FactSigner: Send + Sync {
     fn sign_ed25519(&self, message: &[u8]) -> Option<String>;
 }
 
-struct BridgeFactSigner {
-    bridge: Arc<dyn Bridge>,
+pub(crate) struct BridgeFactSigner {
+    pub(crate) bridge: Arc<dyn Bridge>,
 }
 
 impl FactSigner for BridgeFactSigner {
@@ -634,7 +634,7 @@ pub(crate) fn run_processor_fact_worker(
     Ok(())
 }
 
-fn bounded_identifier(value: &str, max: usize) -> bool {
+pub(crate) fn bounded_identifier(value: &str, max: usize) -> bool {
     !value.is_empty()
         && value.len() <= max
         && value
@@ -642,14 +642,14 @@ fn bounded_identifier(value: &str, max: usize) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'))
 }
 
-fn valid_hex(value: &str, bytes: usize) -> bool {
+pub(crate) fn valid_hex(value: &str, bytes: usize) -> bool {
     value.len() == bytes * 2
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-fn valid_sha256(value: &str) -> bool {
+pub(crate) fn valid_sha256(value: &str) -> bool {
     value
         .strip_prefix("sha256:")
         .is_some_and(|digest| valid_hex(digest, 32))

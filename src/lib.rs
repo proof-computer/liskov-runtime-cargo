@@ -3,6 +3,7 @@
 pub mod access;
 pub mod bridge;
 pub mod contact;
+pub mod coverage;
 pub mod diagnostics;
 pub mod handoff;
 pub mod http;

@@ -5,6 +5,10 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use clap::Parser;
 use liskov_runtime_cargo::bridge::UnixBridge;
+use liskov_runtime_cargo::coverage::{
+    CoverageContactObservation, CoverageProducerActivation, take_coverage_authorization,
+    wall_clock_ms,
+};
 use liskov_runtime_cargo::http::UreqHttpClient;
 use liskov_runtime_cargo::precontact::{
     DiagnosticFailure, MAX_PRECONTACT_RESPONSE_BYTES, PRECONTACT_HTTP_TIMEOUT, PrecontactError,
@@ -152,6 +156,7 @@ fn main() -> ExitCode {
         }
     }
 
+    let contact_started_wall_ms = wall_clock_ms();
     let contact_started = Instant::now();
     let mut bootstrap =
         match establish_runtime_contact(&core_url, &bridge_socket).inspect_err(|error| {
@@ -176,10 +181,26 @@ fn main() -> ExitCode {
                 return ExitCode::from(status);
             }
         };
-    // This raw optional capability is parsed independently and immediately
+    let contact_completed_wall_ms = wall_clock_ms();
+    // These raw optional capabilities are parsed independently and immediately
     // removed. Malformed or unknown content is dormant; valid content travels
-    // only to the detached fact worker and never to later bootstrap consumers.
+    // only to the detached fact workers and never to later bootstrap consumers.
     let processor_fact_authorization = take_processor_fact_authorization(&mut bootstrap);
+    let coverage_activation =
+        take_coverage_authorization(&mut bootstrap).and_then(|authorization| {
+            let (Some(started_at_ms), Some(completed_at_ms)) =
+                (contact_started_wall_ms, contact_completed_wall_ms)
+            else {
+                return None;
+            };
+            Some(CoverageProducerActivation {
+                authorization,
+                observation: CoverageContactObservation {
+                    started_at_ms,
+                    completed_at_ms,
+                },
+            })
+        });
     let bridge = match UnixBridge::new(&bridge_socket) {
         Ok(bridge) => bridge,
         Err(_) => {
@@ -231,6 +252,7 @@ fn main() -> ExitCode {
         runtime_access_credential,
         logging_hydrate_error,
         processor_fact_authorization,
+        coverage_activation,
     ) {
         SupervisorExit::Code(code) => ExitCode::from(u8::try_from(code).unwrap_or(70)),
         SupervisorExit::Signal(signal) => propagate_signal(signal),

@@ -22,6 +22,7 @@ use sha2::{Digest, Sha256};
 
 use crate::access::{AccessSession, setup_runtime_access_supervised};
 use crate::bridge::Bridge;
+use crate::coverage::{CoverageProducerActivation, detached_coverage_task};
 use crate::diagnostics::{
     AsyncDiagnosticReporter, DIAGNOSTIC_HTTP_TIMEOUT, DiagnosticStatus,
     MAX_DIAGNOSTIC_RESPONSE_BYTES,
@@ -134,12 +135,14 @@ pub fn supervise_with_environment_and_access(
         runtime_access_credential,
         logging_hydrate_error,
         None,
+        None,
     )
 }
 
 /// Full supervisor entrypoint. Existing wrappers retain their behavior and
-/// pass no processor-fact capability. The authorization is already removed
-/// from the retained bootstrap before this function is called.
+/// pass no processor-fact or coverage capability. Both authorizations are
+/// already removed from the retained bootstrap before this function is
+/// called.
 #[allow(clippy::too_many_arguments)]
 pub fn supervise_with_environment_access_and_processor_facts(
     command: &[OsString],
@@ -150,11 +153,24 @@ pub fn supervise_with_environment_access_and_processor_facts(
     runtime_access_credential: Option<String>,
     logging_hydrate_error: Option<&'static str>,
     processor_fact_authorization: Option<ProcessorFactAuthorization>,
+    coverage_activation: Option<CoverageProducerActivation>,
 ) -> SupervisorExit {
-    let processor_fact_task = processor_fact_authorization.and_then(|authorization| {
+    let mut detached_fact_tasks = Vec::new();
+    if let Some(run) = processor_fact_authorization.and_then(|authorization| {
         ProcessorFactBinding::from_bootstrap(bootstrap)
             .map(|binding| detached_processor_fact_task(authorization, binding, bridge.clone()))
-    });
+    }) {
+        detached_fact_tasks.push(DetachedFactTask {
+            name: "processor",
+            run,
+        });
+    }
+    if let Some(activation) = coverage_activation {
+        detached_fact_tasks.push(DetachedFactTask {
+            name: "coverage",
+            run: detached_coverage_task(activation, bridge.clone()),
+        });
+    }
     let http: Arc<dyn HttpClient> = Arc::new(UreqHttpClient::with_limits(
         DIAGNOSTIC_HTTP_TIMEOUT,
         MAX_DIAGNOSTIC_RESPONSE_BYTES,
@@ -293,7 +309,7 @@ pub fn supervise_with_environment_access_and_processor_facts(
         access_session.as_mut(),
         logging.as_ref().map(LoggingController::customer),
         runtime_ssh_logs.as_ref(),
-        processor_fact_task,
+        detached_fact_tasks,
     );
     if let Some(session) = access_session.as_mut() {
         let attrs = session.binding_attrs();
@@ -370,7 +386,7 @@ fn supervise_with_reporter(
         None,
         None,
         None,
-        None,
+        Vec::new(),
     )
 }
 
@@ -384,7 +400,7 @@ fn supervise_with_reporter_and_environment(
     mut access_session: Option<&mut AccessSession>,
     output_logger: Option<&OutputLogger>,
     runtime_ssh_logs: Option<&RuntimeSshLogEmitter>,
-    mut processor_fact_task: Option<Box<dyn FnOnce() + Send>>,
+    mut detached_fact_tasks: Vec<DetachedFactTask>,
 ) -> SupervisorExit {
     if command.is_empty() {
         report(
@@ -440,8 +456,8 @@ fn supervise_with_reporter_and_environment(
         if let Some(signal) = take_signal() {
             return SupervisorExit::Signal(signal);
         }
-        if let Some(task) = processor_fact_task.take() {
-            start_detached_processor_fact_task(task);
+        for task in detached_fact_tasks.drain(..) {
+            start_detached_fact_task(task);
         }
         let started_at = Instant::now();
         let child = spawn_customer(command, &environment, output_logger.is_some());
@@ -750,20 +766,29 @@ fn supervise_with_reporter_and_environment(
     }
 }
 
-fn start_detached_processor_fact_task(task: Box<dyn FnOnce() + Send>) {
+/// A one-shot authorization-gated worker started immediately before the
+/// first customer-process attempt, isolated on its own named thread.
+struct DetachedFactTask {
+    name: &'static str,
+    run: Box<dyn FnOnce() + Send>,
+}
+
+fn start_detached_fact_task(task: DetachedFactTask) {
     INSTALL_FACT_PANIC_FILTER.call_once(|| {
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |information| {
-            let is_fact_worker = thread::current().name() == Some("liskov-processor-facts");
+            let is_fact_worker = thread::current()
+                .name()
+                .is_some_and(|name| name.starts_with("liskov-facts-"));
             if !is_fact_worker {
                 previous(information);
             }
         }));
     });
     let _ = thread::Builder::new()
-        .name("liskov-processor-facts".to_owned())
+        .name(format!("liskov-facts-{}", task.name))
         .spawn(move || {
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(task));
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(task.run));
         });
 }
 
@@ -1415,7 +1440,7 @@ pub(crate) mod tests {
                 None,
                 None,
                 None,
-                None,
+                Vec::new(),
             ),
             SupervisorExit::Code(0)
         );
@@ -1445,7 +1470,10 @@ pub(crate) mod tests {
                 None,
                 None,
                 None,
-                Some(slow_task),
+                vec![DetachedFactTask {
+                    name: "processor",
+                    run: slow_task,
+                }],
             ),
             SupervisorExit::Code(0)
         );
@@ -1463,7 +1491,10 @@ pub(crate) mod tests {
                 None,
                 None,
                 None,
-                Some(panic_task),
+                vec![DetachedFactTask {
+                    name: "coverage",
+                    run: panic_task,
+                }],
             ),
             SupervisorExit::Code(17)
         );
@@ -1505,7 +1536,10 @@ pub(crate) mod tests {
                 None,
                 None,
                 None,
-                Some(task),
+                vec![DetachedFactTask {
+                    name: "processor",
+                    run: task,
+                }],
             ),
             SupervisorExit::Code(0)
         );
