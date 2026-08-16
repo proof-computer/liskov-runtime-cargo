@@ -70,6 +70,15 @@ pub struct RuntimeBootstrapResponse {
     /// fail authenticated first contact or customer execution.
     #[serde(default)]
     pub processor_facts: Option<Value>,
+    /// Raw, optional single-use ADR-0072 coverage-result admission authority:
+    /// the pre-filled partial `proof.liskov.processor-coverage-result.v1`
+    /// envelope the server minted for this exact job. Distinct from
+    /// `processor_facts` (the general processor-fact contract) and held raw
+    /// like it, so absent, malformed, or newer content can never fail
+    /// authenticated first contact. The coverage producer that consumes it is
+    /// separate follow-up work; until it lands the helper ignores the value.
+    #[serde(default)]
+    pub fact_authorization: Option<Value>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -1001,6 +1010,24 @@ mod tests {
             "slipwayUrl": "https://liskov.example"
         });
         assert!(validate_response(&request, &serde_json::to_vec(&valid).unwrap()).is_ok());
+        // Wire compatibility for the optional coverage authority: a default
+        // response carries none, and a response with the block keeps it raw
+        // without affecting bootstrap validity.
+        let parsed = validate_response(&request, &serde_json::to_vec(&valid).unwrap()).unwrap();
+        assert_eq!(parsed.fact_authorization, None);
+        let mut with_coverage = valid.clone();
+        with_coverage["factAuthorization"] = json!({
+            "domain": "proof.liskov.processor-coverage-result.v1",
+            "challenge": format!("0x{}", "ab".repeat(32)),
+            "sequence": 1,
+            "unknownFutureField": true,
+        });
+        let parsed =
+            validate_response(&request, &serde_json::to_vec(&with_coverage).unwrap()).unwrap();
+        assert_eq!(
+            parsed.fact_authorization,
+            Some(with_coverage["factAuthorization"].clone())
+        );
 
         for (field, value) in [
             (

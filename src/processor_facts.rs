@@ -2074,6 +2074,7 @@ mod tests {
             diagnostics: None,
             access: None,
             processor_facts,
+            fact_authorization: None,
         }
     }
 

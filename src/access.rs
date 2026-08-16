@@ -2507,6 +2507,7 @@ mod tests {
             diagnostics: None,
             access: Some(RuntimeAccessBootstrap::Tailscale(access.clone())),
             processor_facts: None,
+            fact_authorization: None,
         };
         let raw = serde_json::json!({
             "schema": CREDENTIAL_SCHEMA,

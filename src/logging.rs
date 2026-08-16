@@ -2053,6 +2053,7 @@ mod tests {
             diagnostics: None,
             access: None,
             processor_facts: None,
+            fact_authorization: None,
         }
     }
 
