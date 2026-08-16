@@ -205,6 +205,10 @@ struct RuntimeSshRecord {
     timestamp: String,
     details: Value,
     admitted_bytes: usize,
+    /// Lifecycle/stage/panic records outrank raw stderr at the worker's
+    /// pending cap: raw bursts must never evict the records that say how
+    /// setup ended (the r14 blindness).
+    critical: bool,
 }
 
 enum LogWork {
@@ -506,6 +510,7 @@ impl RuntimeSshLogEmitter {
             timestamp: utc_timestamp(),
             admitted_bytes: canonical_json_bytes(&details).len(),
             details,
+            critical: true,
         });
     }
 
@@ -538,6 +543,7 @@ impl RuntimeSshLogEmitter {
             timestamp: utc_timestamp(),
             admitted_bytes: canonical_json_bytes(&details).len(),
             details,
+            critical: true,
         });
     }
 
@@ -557,6 +563,7 @@ impl RuntimeSshLogEmitter {
             timestamp: utc_timestamp(),
             admitted_bytes: canonical_json_bytes(&details).len(),
             details,
+            critical: true,
         });
     }
 
@@ -583,6 +590,7 @@ impl RuntimeSshLogEmitter {
                     timestamp: utc_timestamp(),
                     admitted_bytes: canonical_json_bytes(&details).len(),
                     details,
+                    critical: true,
                 });
             }
             return;
@@ -602,6 +610,7 @@ impl RuntimeSshLogEmitter {
             timestamp: utc_timestamp(),
             admitted_bytes: line.len().min(RUNTIME_SSH_LINE_BYTES),
             details,
+            critical: false,
         });
     }
 
@@ -1269,6 +1278,10 @@ impl LogWorker {
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
             }
         }
+        // Drop evidence used to be admitted only at process Finish, so mid-run
+        // losses (the only kind that matter for a long window) were invisible.
+        // This is cheap: it emits only when drops occurred since the last take.
+        self.admit_drop_evidence_for(LogOrigin::RuntimeSsh);
         finish
     }
 
@@ -1405,13 +1418,23 @@ impl LogWorker {
     }
 
     fn admit_runtime_ssh(&mut self, record: RuntimeSshRecord) {
-        if self
+        // Raw stderr must not evict the records that say how setup ended. On
+        // r14 the tailscaled bring-up burst held this window at its cap while
+        // flushes stalled, and the socket-wait exit, setup_return, and
+        // degraded records were all silently dropped here — the investigation
+        // ran blind for days. Non-critical (raw) records keep the batch-sized
+        // cap; critical records are admitted with 3x headroom, still bounded.
+        let pending = self
             .pending_records
             .iter()
             .filter(|record| record.origin == LogOrigin::RuntimeSsh)
-            .count()
-            >= MAX_BATCH_RECORDS
-        {
+            .count();
+        let cap = if record.critical {
+            MAX_BATCH_RECORDS * 3
+        } else {
+            MAX_BATCH_RECORDS
+        };
+        if pending >= cap {
             self.runtime_dropped.record(record.admitted_bytes);
             return;
         }
@@ -2358,6 +2381,7 @@ mod tests {
                 "truncated": false,
             }),
             admitted_bytes: 20,
+            critical: false,
         });
         worker.resolved = Some(ResolvedSink {
             sink_id: "sink".into(),
@@ -2372,6 +2396,42 @@ mod tests {
         assert_eq!(batch["labels"]["source"], "runtime-ssh-tailscaled");
         assert!(!batch.to_string().contains("redacted daemon line"));
         assert_eq!(batch["encrypted"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn critical_records_outrank_the_raw_pending_cap() {
+        let config = config();
+        let labels = RuntimeLabels::from(&bootstrap(Some(json!({"enabled": true}))));
+        let http: Arc<dyn LogHttpClient> = Arc::new(PanicHttp);
+        let dropped = Arc::new(DroppedOutput::default());
+        let mut worker =
+            LogWorker::new(config, labels, http, dropped.clone(), LogOrigin::RuntimeSsh).unwrap();
+        let record = |event: &'static str, critical: bool| RuntimeSshRecord {
+            event,
+            timestamp: "2026-08-15T23:28:13.000Z".into(),
+            details: json!({"format": "raw_canary", "redacted": true}),
+            admitted_bytes: 20,
+            critical,
+        };
+        // A stderr burst fills the non-critical cap...
+        for _ in 0..MAX_BATCH_RECORDS {
+            worker.admit_runtime_ssh(record("runtime.access.tailscale.stderr", false));
+        }
+        worker.admit_runtime_ssh(record("runtime.access.tailscale.stderr", false));
+        assert!(dropped.take().is_some(), "raw beyond the cap is dropped");
+        // ...but the records that say how setup ended still get in.
+        worker.admit_runtime_ssh(record("runtime.access.degraded", true));
+        worker.admit_runtime_ssh(record("runtime.access.stage", true));
+        assert!(
+            dropped.take().is_none(),
+            "critical records must not be cap-dropped by a raw burst"
+        );
+        let pending = worker
+            .pending_records
+            .iter()
+            .filter(|record| record.origin == LogOrigin::RuntimeSsh)
+            .count();
+        assert_eq!(pending, MAX_BATCH_RECORDS + 2);
     }
 
     #[test]
@@ -2391,6 +2451,7 @@ mod tests {
             timestamp: "2026-08-03T12:00:00.000Z".into(),
             details: json!({"format": "lifecycle"}),
             admitted_bytes: 10,
+            critical: true,
         });
         worker.admit_chunk(OutputChunk {
             output_sequence: 1,
