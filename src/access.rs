@@ -1203,7 +1203,16 @@ fn setup_in_root(
         );
         return Err(stage_error("access_up_failed")(error));
     }
-    let status = run_bounded_capture(
+    // `tailscale status` exits nonzero whenever the backend carries health
+    // warnings — and on a TUN-less PRoot phone running userspace networking
+    // with the permission-fallback netmon, warnings are a permanent fact of
+    // life even while the tunnel is Running and serving. Requiring exit 0 here
+    // rejected every working tunnel as access_status_invalid (r14, caught
+    // 2026-08-16 the moment the telemetry could finally say so: socket ok in
+    // 305ms, `up` ok in 2.6s, then this call). The status DOCUMENT is the
+    // authority: parse stdout and let the semantic checks below decide. A
+    // killed or truncated read still fails — its stdout cannot parse.
+    let status_output = run_command(
         &tailscale_path,
         &[
             OsString::from(format!("--socket={}", socket.display())),
@@ -1212,11 +1221,22 @@ fn setup_in_root(
         ],
         subprocess_deadline(deadline, COMMAND_TIMEOUT)
             .map_err(stage_error("access_deadline_exceeded"))?,
-        client_logger.as_ref().map(|logger| (logger, auth_key)),
     )
     .map_err(stage_error("access_status_invalid"))?;
-    let status: TailscaleStatus =
-        serde_json::from_slice(&status).map_err(|_| AccessError::new("access_status_invalid"))?;
+    let status: TailscaleStatus = match serde_json::from_slice(&status_output.stdout) {
+        Ok(status) => status,
+        Err(_) => {
+            if let Some(logger) = client_logger.as_ref() {
+                emit_command_stderr(
+                    logger,
+                    auth_key,
+                    &status_output.stderr,
+                    status_output.stderr_truncated,
+                );
+            }
+            return Err(AccessError::new("access_status_invalid"));
+        }
+    };
     if status.backend_state != "Running"
         || status.current_tailnet.name != access.expected_tailnet
         || status.self_node.id.is_empty()
@@ -1563,27 +1583,6 @@ fn run_bounded(
         );
     }
     Err(AccessError::new("access_setup_failed"))
-}
-
-fn run_bounded_capture(
-    binary: &Path,
-    args: &[OsString],
-    deadline: std::time::Instant,
-    failure_logger: Option<(&RuntimeSshLogEmitter, &str)>,
-) -> Result<Vec<u8>, AccessError> {
-    let output = run_command(binary, args, deadline)?;
-    if !output.status.is_some_and(|status| status.success()) || output.output_too_large {
-        if let Some((logger, exact_auth_key)) = failure_logger {
-            emit_command_stderr(
-                logger,
-                exact_auth_key,
-                &output.stderr,
-                output.stderr_truncated,
-            );
-        }
-        return Err(AccessError::new("access_setup_failed"));
-    }
-    Ok(output.stdout)
 }
 
 struct CommandOutput {
