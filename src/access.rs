@@ -2012,6 +2012,14 @@ struct TailscaleTailnet {
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct TailscaleSelf {
+    /// Tailscale emits `"ID"`, and serde's PascalCase rule produces `"Id"` —
+    /// so this field never matched and every status document failed to
+    /// deserialize with a missing-field error, reported as
+    /// access_status_invalid. That rejected a tunnel that was up, authenticated
+    /// and on the expected tailnet, on every canary window that ever reached
+    /// this line (captured in full on r16/147038: BackendState Running,
+    /// CurrentTailnet.Name moose.run, Self.ID present).
+    #[serde(rename = "ID")]
     id: String,
     #[serde(rename = "DNSName")]
     dns_name: String,
@@ -2025,6 +2033,42 @@ mod tests {
     use crate::protocol::{
         RuntimeAccessArtifact, RuntimeAccessProvider, RuntimeAccessProviderKind,
     };
+
+    #[test]
+    fn a_real_status_document_deserializes() {
+        // Verbatim field spellings from the document captured on r16/147038 —
+        // the tunnel that was up, Running, on moose.run, and rejected anyway.
+        // "ID" is upper-case in Tailscale's output; serde's PascalCase rule
+        // would look for "Id" and miss it, which is exactly what happened in
+        // production on every window that got this far.
+        let document = br#"{
+          "Version": "1.98.10-liskov.1-t6581064fb",
+          "TUN": false,
+          "BackendState": "Running",
+          "Self": {
+            "ID": "nhkyLkyoBo11CNTRL",
+            "HostName": "liskov-e2d60cda263243cf",
+            "DNSName": "liskov-e2d60cda263243cf.tail3b99c3.ts.net.",
+            "OS": "linux"
+          },
+          "Health": ["Some peers are advertising routes but --accept-routes is false"],
+          "CurrentTailnet": {
+            "Name": "moose.run",
+            "MagicDNSSuffix": "tail3b99c3.ts.net",
+            "MagicDNSEnabled": true
+          },
+          "Peer": null
+        }"#;
+        let probe: TailscaleBackendProbe = serde_json::from_slice(document).unwrap();
+        assert_eq!(probe.backend_state, "Running");
+        let status: TailscaleStatus = serde_json::from_slice(document).unwrap();
+        assert_eq!(status.current_tailnet.name, "moose.run");
+        assert_eq!(status.self_node.id, "nhkyLkyoBo11CNTRL");
+        assert_eq!(
+            status.self_node.dns_name.trim_end_matches('.'),
+            "liskov-e2d60cda263243cf.tail3b99c3.ts.net"
+        );
+    }
 
     #[test]
     fn status_json_is_extracted_from_anything_printed_around_it() {
