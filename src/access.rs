@@ -1285,7 +1285,8 @@ fn setup_in_root(
         // "not Running yet" into access_status_invalid before the poll could
         // wait even once (r15's first 0.10.29 windows). Probe BackendState
         // alone first; the strict parse runs only on the Running document.
-        let probe: TailscaleBackendProbe = match serde_json::from_slice(&status_output.stdout) {
+        let status_json = json_object_slice(&status_output.stdout);
+        let probe: TailscaleBackendProbe = match serde_json::from_slice(status_json) {
             Ok(probe) => probe,
             Err(_) => {
                 if let Some(logger) = client_logger.as_ref() {
@@ -1304,6 +1305,12 @@ fn setup_in_root(
                         },
                         None,
                     );
+                    // The raw channel is expiry-gated and was shut when this
+                    // mattered most; panic_report is critical and carries text.
+                    logger.panic_report(
+                        "status_parse",
+                        &printable_prefix(&status_output.stdout, 400),
+                    );
                     emit_command_stderr(
                         logger,
                         auth_key,
@@ -1321,7 +1328,7 @@ fn setup_in_root(
             }
         };
         if probe.backend_state == "Running" {
-            match serde_json::from_slice::<TailscaleStatus>(&status_output.stdout) {
+            match serde_json::from_slice::<TailscaleStatus>(status_json) {
                 Ok(parsed) => break parsed,
                 Err(_) => {
                     if let Some(logger) = client_logger.as_ref() {
@@ -1334,6 +1341,12 @@ fn setup_in_root(
                                 "captured"
                             },
                             None,
+                        );
+                        // The raw channel is expiry-gated and was shut when this
+                        // mattered most; panic_report is critical and carries text.
+                        logger.panic_report(
+                            "status_parse",
+                            &printable_prefix(&status_output.stdout, 400),
                         );
                         emit_command_stderr(
                             logger,
@@ -1377,6 +1390,39 @@ fn setup_in_root(
         client_digest: format!("sha256:{}", access.artifact.sha256),
         degraded_reported: false,
     })
+}
+
+/// The JSON object inside a CLI capture, tolerating anything printed around it.
+///
+/// `tailscale status --json` is a CLI, not an API: it may print banners,
+/// warnings, or trailing bytes around its document, and a strict whole-buffer
+/// parse rejects the lot. Eight straight r15 windows authenticated (`up` ok)
+/// then died at `access_status_invalid` with a 2552-byte, untruncated capture —
+/// small, complete, unparseable whole. Slice first `{` to last `}`.
+fn json_object_slice(bytes: &[u8]) -> &[u8] {
+    let start = bytes.iter().position(|byte| *byte == b'{');
+    let end = bytes.iter().rposition(|byte| *byte == b'}');
+    match (start, end) {
+        (Some(start), Some(end)) if end > start => &bytes[start..=end],
+        _ => bytes,
+    }
+}
+
+/// A short printable-ASCII prefix of a capture, for reporting a document that
+/// still refuses to parse; non-printable bytes become `.` so binary or
+/// truncated captures stay legible.
+fn printable_prefix(bytes: &[u8], limit: usize) -> String {
+    bytes
+        .iter()
+        .take(limit)
+        .map(|byte| {
+            if byte.is_ascii_graphic() || *byte == b' ' {
+                *byte as char
+            } else {
+                '.'
+            }
+        })
+        .collect()
 }
 
 fn extract_binaries(archive: &[u8]) -> Result<(Vec<u8>, Vec<u8>), AccessError> {
@@ -1927,6 +1973,23 @@ mod tests {
     use crate::protocol::{
         RuntimeAccessArtifact, RuntimeAccessProvider, RuntimeAccessProviderKind,
     };
+
+    #[test]
+    fn status_json_is_extracted_from_anything_printed_around_it() {
+        // A CLI may print a banner, a warning, or trailing bytes around its
+        // document; the object is what matters.
+        let plain = br#"{"BackendState":"Running"}"#;
+        assert_eq!(json_object_slice(plain), plain);
+        let banner = b"Warning: health check failed\n{\"BackendState\":\"Running\"}\n";
+        assert_eq!(json_object_slice(banner), plain);
+        let bom = b"\xef\xbb\xbf{\"BackendState\":\"Starting\"}  ";
+        assert_eq!(json_object_slice(bom), br#"{"BackendState":"Starting"}"#);
+        // Nothing object-shaped: hand the buffer back and let serde report.
+        assert_eq!(json_object_slice(b"totally not json"), b"totally not json");
+        // The prefix report stays legible and bounded whatever the bytes are.
+        assert_eq!(printable_prefix(b"ok\n\x00\xff line", 400), "ok... line");
+        assert_eq!(printable_prefix(&vec![b'x'; 900], 400).len(), 400);
+    }
 
     #[test]
     fn private_root_socket_path_stays_short_for_sun_path() {
