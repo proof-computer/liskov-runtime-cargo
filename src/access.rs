@@ -50,6 +50,11 @@ const PROVIDER_FETCH_BACKOFF: Duration = Duration::from_millis(300);
 /// starts, so a young-daemon death is treated as possibly transient early-boot
 /// contention rather than final.
 const BRING_UP_ATTEMPTS: u32 = 3;
+/// Bytes per capture chunk; panic_report truncates its message at 600.
+const CAPTURE_CHUNK_BYTES: usize = 480;
+/// Ceiling on chunks per capture, so a pathological document cannot flood the
+/// critical channel: 12 x 480 = 5760 bytes, twice the observed 2552.
+const CAPTURE_MAX_CHUNKS: usize = 12;
 /// How long the backend may take to reach Running after a successful `up`.
 const STATUS_READY_TIMEOUT: Duration = Duration::from_secs(30);
 /// Poll cadence while waiting for Running.
@@ -1305,11 +1310,19 @@ fn setup_in_root(
                         },
                         None,
                     );
-                    // The raw channel is expiry-gated and was shut when this
-                    // mattered most; panic_report is critical and carries text.
-                    logger.panic_report(
-                        "status_parse",
-                        &printable_prefix(&status_output.stdout, 400),
+                    // Capture the whole document and stderr — reading beats
+                    // guessing, and five releases guessed.
+                    report_capture(
+                        logger,
+                        "status_stdout_text",
+                        &status_output.stdout,
+                        auth_key,
+                    );
+                    report_capture(
+                        logger,
+                        "status_stderr_text",
+                        &status_output.stderr,
+                        auth_key,
                     );
                     emit_command_stderr(
                         logger,
@@ -1342,11 +1355,19 @@ fn setup_in_root(
                             },
                             None,
                         );
-                        // The raw channel is expiry-gated and was shut when this
-                        // mattered most; panic_report is critical and carries text.
-                        logger.panic_report(
-                            "status_parse",
-                            &printable_prefix(&status_output.stdout, 400),
+                        // Capture the whole document and stderr — reading beats
+                        // guessing, and five releases guessed.
+                        report_capture(
+                            logger,
+                            "status_stdout_text",
+                            &status_output.stdout,
+                            auth_key,
+                        );
+                        report_capture(
+                            logger,
+                            "status_stderr_text",
+                            &status_output.stderr,
+                            auth_key,
                         );
                         emit_command_stderr(
                             logger,
@@ -1423,6 +1444,37 @@ fn printable_prefix(bytes: &[u8], limit: usize) -> String {
             }
         })
         .collect()
+}
+
+/// Report an entire command capture, chunked, through the critical channel.
+///
+/// Five releases guessed at a status document nobody had ever read, and each
+/// guess cost a canary window. Stop rationing evidence: emit the whole thing
+/// (printable-sanitized, auth key redacted, bounded by CAPTURE_MAX_CHUNKS) as
+/// numbered records, so the format is simply readable in `application logs`.
+/// The critical channel is used deliberately — the raw tailscaled channel is
+/// expiry-gated and was shut exactly when these bytes were needed.
+fn report_capture(
+    logger: &RuntimeSshLogEmitter,
+    stage: &'static str,
+    bytes: &[u8],
+    exact_auth_key: &str,
+) {
+    let text = String::from_utf8_lossy(bytes).replace(exact_auth_key, "[redacted]");
+    let sanitized = printable_prefix(text.as_bytes(), CAPTURE_MAX_CHUNKS * CAPTURE_CHUNK_BYTES);
+    let chunks: Vec<&str> = sanitized
+        .as_bytes()
+        .chunks(CAPTURE_CHUNK_BYTES)
+        .filter_map(|chunk| std::str::from_utf8(chunk).ok())
+        .collect();
+    let total = chunks.len().max(1);
+    if chunks.is_empty() {
+        logger.panic_report(stage, "<empty capture>");
+        return;
+    }
+    for (index, chunk) in chunks.iter().enumerate() {
+        logger.panic_report(stage, &format!("{}/{} {}", index + 1, total, chunk));
+    }
 }
 
 fn extract_binaries(archive: &[u8]) -> Result<(Vec<u8>, Vec<u8>), AccessError> {
