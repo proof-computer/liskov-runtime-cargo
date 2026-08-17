@@ -1289,6 +1289,27 @@ fn setup_in_root(
             Ok(probe) => probe,
             Err(_) => {
                 if let Some(logger) = client_logger.as_ref() {
+                    // The stdout BYTES are the question: four helper versions
+                    // failed here on every window while `up` succeeded, and
+                    // every hypothesis about why the document does not parse
+                    // has died. Emit what the CLI actually printed (bounded,
+                    // redacted), with the captured length in the elapsed field.
+                    logger.stage(
+                        "status_stdout",
+                        u64::try_from(status_output.stdout.len()).unwrap_or(u64::MAX),
+                        if status_output.output_too_large {
+                            "truncated"
+                        } else {
+                            "captured"
+                        },
+                        None,
+                    );
+                    emit_command_stderr(
+                        logger,
+                        auth_key,
+                        &status_output.stdout,
+                        status_output.output_too_large,
+                    );
                     emit_command_stderr(
                         logger,
                         auth_key,
@@ -1304,6 +1325,22 @@ fn setup_in_root(
                 Ok(parsed) => break parsed,
                 Err(_) => {
                     if let Some(logger) = client_logger.as_ref() {
+                        logger.stage(
+                            "status_stdout",
+                            u64::try_from(status_output.stdout.len()).unwrap_or(u64::MAX),
+                            if status_output.output_too_large {
+                                "truncated"
+                            } else {
+                                "captured"
+                            },
+                            None,
+                        );
+                        emit_command_stderr(
+                            logger,
+                            auth_key,
+                            &status_output.stdout,
+                            status_output.output_too_large,
+                        );
                         emit_command_stderr(
                             logger,
                             auth_key,
