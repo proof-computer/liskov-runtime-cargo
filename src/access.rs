@@ -273,6 +273,13 @@ pub struct TailscaleAccessSession {
 }
 
 impl AccessSession {
+    #[cfg(test)]
+    pub(crate) fn managed_for_test(program: &str, args: &[&str]) -> Result<Self, AccessError> {
+        Ok(Self::Managed(managed::ManagedAccessSession::for_test(
+            program, args,
+        )?))
+    }
+
     pub fn binding_attrs(&self) -> serde_json::Value {
         match self {
             Self::Tailscale(session) => session.binding_attrs(),
@@ -478,10 +485,17 @@ pub(super) fn terminate_child(child: &mut Child) -> Result<(), AccessError> {
 
 pub fn take_runtime_access_credential(bootstrap: &mut RuntimeBootstrapResponse) -> Option<String> {
     let signed_bootstrap_value = match bootstrap.access.as_mut() {
-        Some(RuntimeAccessBootstrap::Managed(access)) => access
-            .credential
-            .take()
-            .and_then(|credential| serde_json::to_string(&credential).ok()),
+        Some(RuntimeAccessBootstrap::Managed(access)) => {
+            let had_signed = access.credential.is_some();
+            let value = access
+                .credential
+                .take()
+                .and_then(|credential| serde_json::to_string(&credential).ok());
+            if had_signed {
+                access.credential_consumed = true;
+            }
+            value
+        }
         Some(RuntimeAccessBootstrap::Tailscale(access)) => access
             .credential
             .take()
@@ -494,7 +508,16 @@ pub fn take_runtime_access_credential(bootstrap: &mut RuntimeBootstrapResponse) 
     unsafe {
         std::env::remove_var(RUNTIME_SSH_CREDENTIAL_ENV);
     }
-    signed_bootstrap_value.or(environment_value)
+    if signed_bootstrap_value.is_some() {
+        return signed_bootstrap_value;
+    }
+    if matches!(
+        bootstrap.access.as_ref(),
+        Some(RuntimeAccessBootstrap::Managed(access)) if access.credential_consumed
+    ) {
+        return None;
+    }
+    environment_value
 }
 
 pub fn setup_runtime_access(
@@ -2911,6 +2934,97 @@ mod tests {
             panic!("managed access expected");
         };
         assert!(access.credential.is_none());
+    }
+
+    #[test]
+    fn managed_compact_bootstrap_credential_is_taken_once_and_preferred_over_the_environment() {
+        let _lock = crate::supervisor::tests::PROCESS_TEST_LOCK.lock().unwrap();
+        let compact_token = "o8c9-bootstrap.payload.sig";
+        let decoy_token = "o8c9-decoy.payload.sig";
+        let decoy = serde_json::json!({
+            "schema": MANAGED_CREDENTIAL_SCHEMA_V2,
+            "provider": {"kind": "liskov", "connectorToken": decoy_token},
+            "attachmentId": "att-decoy",
+            "fence": 1,
+            "expiresAtMs": 1_800_000_000_000_u64,
+        })
+        .to_string();
+        let mut bootstrap: RuntimeBootstrapResponse = serde_json::from_value(serde_json::json!({
+            "ok": true,
+            "domain": "proof.liskov.runtime-bootstrap-response.v2",
+            "applicationUid": "app-uid-1",
+            "applicationId": "app-1",
+            "policyDigest": "sha256:policy",
+            "deploymentId": "dep-1",
+            "jobId": "job-1",
+            "processorId": "processor-1",
+            "runtimeInstanceId": "instance-1",
+            "slipwayUrl": "https://liskov.example",
+            "access": {
+                "provider": {"kind": "liskov"},
+                "attachmentId": "att-1",
+                "fence": 7,
+                "gatewayUrl": "wss://gateway.example",
+                "tunnelId": "tunnel_1",
+                "protocol": "liskov_access_v1",
+                "setupDeadlineMs": 1_800_000_000_000_u64,
+                "binding": {
+                    "organizationId": "org-1",
+                    "applicationId": "app-1",
+                    "applicationUid": "app-uid-1",
+                    "liskovDeploymentId": "dep-1",
+                    "deploymentId": "provider-dep-1",
+                    "liskovJobId": "job-1",
+                    "jobId": "provider-job-1",
+                    "policyDigest": "sha256:policy"
+                },
+                "authorizedKeys": [
+                    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+                ],
+                "authorizedKeyFingerprints": [format!(
+                    "SHA256:{}",
+                    base64::engine::general_purpose::STANDARD_NO_PAD.encode([1_u8; 32])
+                )],
+                "toolchain": {
+                    "runtimeContactSha256": "1".repeat(64),
+                    "dropbearSha256": "2".repeat(64),
+                    "dropbearkeySha256": "3".repeat(64)
+                },
+                "credential": {
+                    "schema": MANAGED_CREDENTIAL_SCHEMA_V2,
+                    "provider": {
+                        "kind": "liskov",
+                        "connectorToken": compact_token
+                    },
+                    "attachmentId": "att-1",
+                    "fence": 7,
+                    "expiresAtMs": 1_800_000_000_000_u64
+                }
+            }
+        }))
+        .unwrap();
+
+        // SAFETY: PROCESS_TEST_LOCK serializes env mutation against other tests.
+        unsafe {
+            std::env::set_var(RUNTIME_SSH_CREDENTIAL_ENV, &decoy);
+        }
+        let raw = take_runtime_access_credential(&mut bootstrap).unwrap();
+        let credential: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(credential["provider"]["connectorToken"], compact_token);
+        assert!(std::env::var(RUNTIME_SSH_CREDENTIAL_ENV).is_err());
+        let Some(RuntimeAccessBootstrap::Managed(access)) = bootstrap.access.as_ref() else {
+            panic!("managed access expected");
+        };
+        assert!(access.credential.is_none());
+
+        unsafe {
+            std::env::set_var(RUNTIME_SSH_CREDENTIAL_ENV, &decoy);
+        }
+        assert!(
+            take_runtime_access_credential(&mut bootstrap).is_none(),
+            "a second take must not revive an environment decoy"
+        );
+        assert!(std::env::var(RUNTIME_SSH_CREDENTIAL_ENV).is_err());
     }
 
     /// The Tailscale credential moves off the Acurast `setEnvironment` handoff

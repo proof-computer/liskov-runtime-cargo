@@ -30,7 +30,8 @@ use super::{
     runtime_job_ids_match, terminate_child, unix_time_ms,
 };
 use crate::protocol::{
-    ManagedRuntimeAccessBootstrap, RuntimeAccessProviderKind, RuntimeBootstrapResponse,
+    ManagedRuntimeAccessBootstrap, ManagedRuntimeAccessToolchain, RuntimeAccessProviderKind,
+    RuntimeBootstrapResponse,
 };
 
 const SETUP_LIMIT: Duration = Duration::from_secs(180);
@@ -103,6 +104,60 @@ impl ManagedAccessSession {
             .map_err(|_| AccessError::new("access_cleanup_failed"));
         connector_result.and(dropbear_result).and(remove_result)
     }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(program: &str, args: &[&str]) -> Result<Self, AccessError> {
+        let root = private_root("o8c9-session-test")?;
+        let mut command = Command::new(program);
+        command
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        // SAFETY: this pre-exec hook performs only async-signal-safe setpgid.
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setpgid(0, 0) == 0 {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::last_os_error())
+                }
+            });
+        }
+        let mut dropbear = command
+            .spawn()
+            .map_err(|_| AccessError::new("access_sidecar_spawn_failed"))?;
+        let cancel = Arc::new(AtomicBool::new(false));
+        let worker_cancel = cancel.clone();
+        let handle = match thread::Builder::new()
+            .name("liskov-managed-access-test".into())
+            .spawn(move || {
+                while !worker_cancel.load(Ordering::Acquire) {
+                    thread::sleep(Duration::from_millis(10));
+                }
+            }) {
+            Ok(handle) => handle,
+            Err(_) => {
+                let _ = terminate_child(&mut dropbear);
+                let _ = std::fs::remove_dir_all(&root);
+                return Err(AccessError::new("access_connector_start_failed"));
+            }
+        };
+        Ok(Self {
+            dropbear,
+            connector: ConnectorWorker {
+                cancel,
+                handle: Some(handle),
+            },
+            root,
+            attachment_id: "att-test".into(),
+            fence: 1,
+            host_public_key: String::new(),
+            host_fingerprint: String::new(),
+            degraded_reported: false,
+            stopped: false,
+        })
+    }
 }
 
 struct ConnectorWorker {
@@ -153,7 +208,7 @@ pub(super) fn setup(
 struct ValidatedCredential {
     connector_token: Zeroizing<String>,
     authorized_keys: Zeroizing<Vec<String>>,
-    toolchain: Option<VerifiedToolchain>,
+    toolchain: ManagedRuntimeAccessToolchain,
     expires_at_ms: u64,
 }
 
@@ -216,15 +271,10 @@ fn validate_binding(
                     {
                         return Err(AccessError::new("access_setup_failed"));
                     }
-                    let verified = verify_fixed_toolchain(
-                        &toolchain.runtime_contact_sha256,
-                        &toolchain.dropbear_sha256,
-                        &toolchain.dropbearkey_sha256,
-                    )?;
                     Ok(ValidatedCredential {
                         connector_token: Zeroizing::new(std::mem::take(connector_token)),
                         authorized_keys: Zeroizing::new(keys),
-                        toolchain: Some(verified),
+                        toolchain: expected_toolchain.clone(),
                         expires_at_ms: credential.expires_at_ms,
                     })
                 }
@@ -256,15 +306,10 @@ fn validate_binding(
                     if fingerprints != access.authorized_key_fingerprints {
                         return Err(AccessError::new("access_setup_failed"));
                     }
-                    let verified = verify_fixed_toolchain(
-                        &expected_toolchain.runtime_contact_sha256,
-                        &expected_toolchain.dropbear_sha256,
-                        &expected_toolchain.dropbearkey_sha256,
-                    )?;
                     Ok(ValidatedCredential {
                         connector_token: Zeroizing::new(std::mem::take(connector_token)),
                         authorized_keys: Zeroizing::new(keys),
-                        toolchain: Some(verified),
+                        toolchain: expected_toolchain.clone(),
                         expires_at_ms: credential.expires_at_ms,
                     })
                 }
@@ -390,13 +435,13 @@ fn setup_in_root(
     root: &Path,
     deadline: Instant,
 ) -> Result<ManagedAccessSession, AccessError> {
-    let (dropbear, dropbearkey) = match credential.toolchain.as_ref() {
-        Some(toolchain) => (
-            toolchain.dropbear.as_path(),
-            toolchain.dropbearkey.as_path(),
-        ),
-        None => (Path::new("dropbear"), Path::new("dropbearkey")),
-    };
+    let verified = verify_fixed_toolchain(
+        &credential.toolchain.runtime_contact_sha256,
+        &credential.toolchain.dropbear_sha256,
+        &credential.toolchain.dropbearkey_sha256,
+    )?;
+    let dropbear = verified.dropbear.as_path();
+    let dropbearkey = verified.dropbearkey.as_path();
     verify_dropbear_options(dropbear, deadline)?;
 
     let host_key_path = root.join("dropbear-ed25519-host-key");
@@ -500,6 +545,25 @@ fn verify_dropbear_options(dropbear: &Path, deadline: Instant) -> Result<(), Acc
     Ok(())
 }
 
+fn dropbear_arguments(host_key: &Path, authorization_dir: &Path, pid_file: &Path) -> Vec<OsString> {
+    vec![
+        OsString::from("-F"),
+        OsString::from("-E"),
+        OsString::from("-s"),
+        OsString::from("-g"),
+        OsString::from("-j"),
+        OsString::from("-k"),
+        OsString::from("-p"),
+        OsString::from(FIXED_SSH_TARGET),
+        OsString::from("-r"),
+        host_key.as_os_str().to_os_string(),
+        OsString::from("-D"),
+        authorization_dir.as_os_str().to_os_string(),
+        OsString::from("-P"),
+        pid_file.as_os_str().to_os_string(),
+    ]
+}
+
 fn spawn_dropbear(
     dropbear: &Path,
     host_key_path: &Path,
@@ -512,13 +576,11 @@ fn spawn_dropbear(
         // SSH banner on Dropbear's normal fexecve(2) path. Use Dropbear's built-
         // in straight-fork fallback by giving it an unopenable argv[0].
         .arg0(DROPBEAR_ARGV0_NO_REEXEC)
-        .args(["-F", "-E", "-s", "-g", "-j", "-k", "-p", FIXED_SSH_TARGET])
-        .arg("-r")
-        .arg(host_key_path)
-        .arg("-D")
-        .arg(authorization_dir)
-        .arg("-P")
-        .arg(pid_file)
+        .args(dropbear_arguments(
+            host_key_path,
+            authorization_dir,
+            pid_file,
+        ))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -729,7 +791,9 @@ fn parse_ed25519_public_key(value: &str) -> Option<String> {
 }
 
 fn valid_connector_token(value: &str) -> bool {
-    !value.is_empty() && value.len() <= 1024 && value.bytes().all(|byte| byte.is_ascii_graphic())
+    value.len() <= 4096
+        && value.split('.').count() == 3
+        && value.bytes().all(|byte| byte.is_ascii_graphic())
 }
 
 fn connector_endpoint(gateway_url: &str, tunnel_id: &str) -> Result<String, AccessError> {
@@ -766,14 +830,23 @@ fn spawn_connector(
                 .enable_all()
                 .build();
             if let Ok(runtime) = runtime {
-                runtime.block_on(connector_loop(
-                    endpoint,
-                    token,
+                connector_driver(
+                    unix_time_ms,
+                    reconnect_delay,
+                    |registered| {
+                        runtime.block_on(connect_once(
+                            &endpoint,
+                            &token,
+                            subprotocol,
+                            worker_cancel.clone(),
+                            registered,
+                        ))
+                    },
+                    |delay| runtime.block_on(wait_cancelled(worker_cancel.clone(), delay)),
+                    &worker_cancel,
                     expires_at_ms,
-                    subprotocol,
-                    worker_cancel,
-                    registered,
-                ));
+                    Some(registered),
+                );
             }
         })
         .map_err(|_| AccessError::new("access_connector_start_failed"))?;
@@ -783,28 +856,23 @@ fn spawn_connector(
     })
 }
 
-async fn connector_loop(
-    endpoint: String,
-    token: Zeroizing<String>,
+fn connector_driver<Now, Delay, Connect, Wait>(
+    mut now_ms: Now,
+    mut delay_for_attempt: Delay,
+    mut connect_once: Connect,
+    mut wait: Wait,
+    cancel: &AtomicBool,
     expires_at_ms: u64,
-    subprotocol: &'static str,
-    cancel: Arc<AtomicBool>,
-    registered: mpsc::SyncSender<()>,
-) {
-    let mut registered = Some(registered);
+    mut registered: Option<mpsc::SyncSender<()>>,
+) where
+    Now: FnMut() -> Option<u64>,
+    Delay: FnMut(u32) -> Duration,
+    Connect: FnMut(Option<&mpsc::SyncSender<()>>) -> Result<(), ()>,
+    Wait: FnMut(Duration) -> bool,
+{
     let mut attempt = 0_u32;
-    while !cancel.load(Ordering::Acquire)
-        && unix_time_ms().is_some_and(|now_ms| now_ms < expires_at_ms)
-    {
-        match connect_once(
-            &endpoint,
-            &token,
-            subprotocol,
-            cancel.clone(),
-            registered.as_ref(),
-        )
-        .await
-        {
+    while !cancel.load(Ordering::Acquire) && now_ms().is_some_and(|now_ms| now_ms < expires_at_ms) {
+        match connect_once(registered.as_ref()) {
             Ok(()) => {
                 registered = None;
                 attempt = 0;
@@ -813,8 +881,7 @@ async fn connector_loop(
                 attempt = attempt.saturating_add(1);
             }
         }
-        let delay = reconnect_delay(attempt);
-        if wait_cancelled(cancel.clone(), delay).await {
+        if wait(delay_for_attempt(attempt)) {
             break;
         }
     }
@@ -1094,6 +1161,7 @@ mod tests {
                 dropbearkey_sha256: "3".repeat(64),
             }),
             credential: None,
+            credential_consumed: false,
         };
         let credential =
             ManagedRuntimeSshCredential::V1Full(Box::new(ManagedRuntimeSshCredentialV2 {
@@ -1180,6 +1248,7 @@ mod tests {
                 dropbearkey_sha256: "3".repeat(64),
             }),
             credential: None,
+            credential_consumed: false,
         };
         let credential =
             ManagedRuntimeSshCredential::V1Compact(CompactManagedRuntimeSshCredentialV2 {
@@ -1198,5 +1267,260 @@ mod tests {
                 .code,
             "access_setup_failed"
         );
+    }
+
+    fn compact_binding_fixture(
+        now_ms: u64,
+        application_id: &str,
+        fence: u64,
+        expires_at_ms: u64,
+        connector_token: &str,
+    ) -> (
+        RuntimeBootstrapResponse,
+        ManagedRuntimeAccessBootstrap,
+        CompactManagedRuntimeSshCredentialV2,
+    ) {
+        let fingerprint = ssh_public_key_fingerprint(PUBLIC_KEY).unwrap();
+        let bootstrap = RuntimeBootstrapResponse {
+            ok: true,
+            domain: "proof.liskov.runtime-bootstrap-response.v2".into(),
+            application_uid: "app-uid".into(),
+            application_id: application_id.into(),
+            policy_digest: "sha256:policy".into(),
+            deployment_id: "provider-deployment".into(),
+            job_id: "provider-job".into(),
+            processor_id: "processor".into(),
+            runtime_instance_id: "instance".into(),
+            slipway_url: "https://liskov.example".into(),
+            runtime_env: None,
+            supervision: None,
+            logging: None,
+            logging_outage_canary: false,
+            diagnostics: None,
+            access: None,
+            processor_facts: None,
+            fact_authorization: None,
+        };
+        let access = ManagedRuntimeAccessBootstrap {
+            provider: RuntimeAccessProvider {
+                kind: RuntimeAccessProviderKind::Liskov,
+            },
+            attachment_id: "att-1".into(),
+            fence: 1,
+            gateway_url: "wss://gateway.example".into(),
+            tunnel_id: "tun_1".into(),
+            protocol: ManagedRuntimeAccessProtocol::LiskovAccessV1,
+            setup_deadline_ms: now_ms + 30_000,
+            binding: Some(ManagedRuntimeAccessBinding {
+                organization_id: "org-1".into(),
+                application_id: "app-id".into(),
+                application_uid: "app-uid".into(),
+                liskov_deployment_id: "canonical-deployment".into(),
+                deployment_id: "provider-deployment".into(),
+                liskov_job_id: "canonical-job".into(),
+                job_id: "provider-job".into(),
+                policy_digest: "sha256:policy".into(),
+            }),
+            authorized_keys: vec![PUBLIC_KEY.into()],
+            authorized_key_fingerprints: vec![fingerprint],
+            toolchain: Some(ManagedRuntimeAccessToolchain {
+                runtime_contact_sha256: "1".repeat(64),
+                dropbear_sha256: "2".repeat(64),
+                dropbearkey_sha256: "3".repeat(64),
+            }),
+            credential: None,
+            credential_consumed: false,
+        };
+        let credential = CompactManagedRuntimeSshCredentialV2 {
+            schema: MANAGED_CREDENTIAL_SCHEMA_V2.into(),
+            provider: CompactManagedRuntimeSshCredentialProviderV2::Liskov {
+                connector_token: connector_token.into(),
+            },
+            attachment_id: "att-1".into(),
+            fence,
+            expires_at_ms,
+        };
+        (bootstrap, access, credential)
+    }
+
+    #[test]
+    fn compact_v2_credential_accepts_the_exact_signed_bootstrap_binding() {
+        let now_ms = unix_time_ms().unwrap();
+        let expires_at_ms = now_ms + 60_000;
+        let token = "header.payload.signature";
+        let (bootstrap, access, credential) =
+            compact_binding_fixture(now_ms, "app-id", 1, expires_at_ms, token);
+        let validated = validate_binding(
+            &bootstrap,
+            &access,
+            ManagedRuntimeSshCredential::V1Compact(credential),
+            now_ms,
+        )
+        .expect("matching compact credential must verify offline");
+        assert_eq!(validated.connector_token.as_str(), token);
+        assert_eq!(validated.authorized_keys.as_slice(), [PUBLIC_KEY]);
+        assert_eq!(validated.expires_at_ms, expires_at_ms);
+
+        let (bootstrap, access, credential) =
+            compact_binding_fixture(now_ms, "substituted-app", 1, expires_at_ms, token);
+        assert_eq!(
+            validate_binding(
+                &bootstrap,
+                &access,
+                ManagedRuntimeSshCredential::V1Compact(credential),
+                now_ms,
+            )
+            .err()
+            .unwrap()
+            .code,
+            "access_setup_failed"
+        );
+
+        let (bootstrap, access, credential) =
+            compact_binding_fixture(now_ms, "app-id", 2, expires_at_ms, token);
+        assert_eq!(
+            validate_binding(
+                &bootstrap,
+                &access,
+                ManagedRuntimeSshCredential::V1Compact(credential),
+                now_ms,
+            )
+            .err()
+            .unwrap()
+            .code,
+            "access_setup_failed"
+        );
+
+        let (bootstrap, access, credential) =
+            compact_binding_fixture(now_ms, "app-id", 1, now_ms, token);
+        assert_eq!(
+            validate_binding(
+                &bootstrap,
+                &access,
+                ManagedRuntimeSshCredential::V1Compact(credential),
+                now_ms,
+            )
+            .err()
+            .unwrap()
+            .code,
+            "access_setup_failed"
+        );
+
+        let (bootstrap, access, credential) =
+            compact_binding_fixture(now_ms, "app-id", 1, expires_at_ms, "header.payload");
+        assert_eq!(
+            validate_binding(
+                &bootstrap,
+                &access,
+                ManagedRuntimeSshCredential::V1Compact(credential),
+                now_ms,
+            )
+            .err()
+            .unwrap()
+            .code,
+            "access_setup_failed"
+        );
+    }
+
+    #[test]
+    fn dropbear_listens_only_on_loopback_port_2222() {
+        let host_key = Path::new("/tmp/dropbear-ed25519-host-key");
+        let authorization_dir = Path::new("/tmp/authorization");
+        let pid_file = Path::new("/tmp/dropbear.pid");
+        let arguments = dropbear_arguments(host_key, authorization_dir, pid_file);
+        let rendered: Vec<String> = arguments
+            .iter()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect();
+        let listen = rendered
+            .windows(2)
+            .find(|pair| pair[0] == "-p")
+            .map(|pair| pair[1].as_str());
+        assert_eq!(listen, Some(FIXED_SSH_TARGET));
+        assert_eq!(listen, Some("127.0.0.1:2222"));
+        for flag in ["-F", "-E", "-s", "-g", "-j", "-k", "-r", "-D", "-P"] {
+            assert!(
+                rendered.iter().any(|value| value == flag),
+                "missing dropbear flag {flag}"
+            );
+        }
+        assert!(!rendered.iter().any(|value| value.contains("0.0.0.0")));
+        assert!(
+            !rendered
+                .iter()
+                .any(|value| value == ":22" || value.ends_with(":22")),
+            "listen spec must not be :22"
+        );
+    }
+
+    #[test]
+    fn connector_driver_reconnects_until_expiry_and_stops_on_cancel() {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let attempts = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = attempts.clone();
+        let worker_cancel = cancel.clone();
+        let handle = thread::spawn(move || {
+            connector_driver(
+                || Some(1_000),
+                |_| Duration::ZERO,
+                |_registered| {
+                    let mut attempts = recorded.lock().unwrap();
+                    attempts.push((
+                        "wss://access.example/v1/connectors/tun_1",
+                        true,
+                        CONNECTOR_SUBPROTOCOL_V1,
+                    ));
+                    if attempts.len() >= 3 {
+                        worker_cancel.store(true, Ordering::Release);
+                    }
+                    Err(())
+                },
+                |_| worker_cancel.load(Ordering::Acquire),
+                &worker_cancel,
+                5_000,
+                None,
+            );
+        });
+        handle.join().unwrap();
+        let recorded = attempts.lock().unwrap();
+        assert_eq!(recorded.len(), 3);
+        assert!(
+            recorded
+                .iter()
+                .all(|(endpoint, token_present, subprotocol)| {
+                    *endpoint == "wss://access.example/v1/connectors/tun_1"
+                        && *token_present
+                        && *subprotocol == CONNECTOR_SUBPROTOCOL_V1
+                })
+        );
+
+        let connects = std::sync::atomic::AtomicU32::new(0);
+        let cancel = AtomicBool::new(false);
+        connector_driver(
+            || Some(10_000),
+            |_| Duration::ZERO,
+            |_| {
+                connects.fetch_add(1, Ordering::SeqCst);
+                Err(())
+            },
+            |_| false,
+            &cancel,
+            5_000,
+            None,
+        );
+        assert_eq!(connects.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn managed_session_stop_joins_the_connector_and_removes_the_exact_root() {
+        let _lock = crate::supervisor::tests::PROCESS_TEST_LOCK.lock().unwrap();
+        let mut session = ManagedAccessSession::for_test("/bin/sleep", &["30"]).unwrap();
+        let root = session.root.clone();
+        assert!(root.is_dir());
+        session.stop().unwrap();
+        assert!(session.dropbear.try_wait().ok().flatten().is_some());
+        assert!(session.connector.is_finished());
+        assert!(!root.exists());
+        session.stop().unwrap();
     }
 }

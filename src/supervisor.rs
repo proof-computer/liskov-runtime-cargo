@@ -1575,6 +1575,7 @@ pub(crate) mod tests {
                 authorized_key_fingerprints: Vec::new(),
                 toolchain: None,
                 credential: None,
+                credential_consumed: false,
             },
         )));
         let bridge = Arc::new(crate::bridge::UnixBridge::new("unused-test-bridge").unwrap());
@@ -1589,6 +1590,182 @@ pub(crate) mod tests {
                 None,
             ),
             SupervisorExit::Code(23)
+        );
+    }
+
+    const MANAGED_PUBLIC_KEY: &str =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    const MANAGED_CONNECTOR_TOKEN: &str = "o8c9-secret-token.payload.sig";
+
+    fn managed_access_bootstrap() -> crate::protocol::ManagedRuntimeAccessBootstrap {
+        crate::protocol::ManagedRuntimeAccessBootstrap {
+            provider: crate::protocol::RuntimeAccessProvider {
+                kind: crate::protocol::RuntimeAccessProviderKind::Liskov,
+            },
+            attachment_id: "att-managed-test".into(),
+            fence: 1,
+            gateway_url: "wss://access.example".into(),
+            tunnel_id: "tunnel_managed_test".into(),
+            protocol: crate::protocol::ManagedRuntimeAccessProtocol::LiskovAccessV1,
+            setup_deadline_ms: u64::MAX,
+            binding: Some(crate::protocol::ManagedRuntimeAccessBinding {
+                organization_id: "org-1".into(),
+                application_id: "app".into(),
+                application_uid: "app-uid".into(),
+                liskov_deployment_id: "liskov-dep-1".into(),
+                deployment_id: "deployment".into(),
+                liskov_job_id: "liskov-job-1".into(),
+                job_id: "job".into(),
+                policy_digest: "digest".into(),
+            }),
+            authorized_keys: vec![MANAGED_PUBLIC_KEY.into()],
+            authorized_key_fingerprints: vec!["SHA256:key".into()],
+            toolchain: Some(crate::protocol::ManagedRuntimeAccessToolchain {
+                runtime_contact_sha256: "1".repeat(64),
+                dropbear_sha256: "2".repeat(64),
+                dropbearkey_sha256: "3".repeat(64),
+            }),
+            credential: None,
+            credential_consumed: false,
+        }
+    }
+
+    fn compact_credential_json(token: &str) -> String {
+        serde_json::json!({
+            "schema": "proof.liskov.runtime-ssh-credential.v2",
+            "provider": {"kind": "liskov", "connectorToken": token},
+            "attachmentId": "att-managed-test",
+            "fence": 1,
+            "expiresAtMs": u64::MAX,
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn managed_connector_token_never_reaches_the_customer_environment() {
+        let _lock = PROCESS_TEST_LOCK.lock().unwrap();
+        let dump = std::env::temp_dir().join(format!(
+            "liskov-runtime-cargo-env-dump-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&dump);
+        let mut never = bootstrap(json!({
+            "mode": "never",
+            "serverTimeMs": 1,
+            "scheduleEndMs": 60_001,
+        }));
+        never.access = Some(RuntimeAccessBootstrap::Managed(Box::new(
+            managed_access_bootstrap(),
+        )));
+        let compact = compact_credential_json(MANAGED_CONNECTOR_TOKEN);
+        // SAFETY: PROCESS_TEST_LOCK serializes env mutation against other tests.
+        unsafe {
+            std::env::set_var(crate::access::RUNTIME_SSH_CREDENTIAL_ENV, compact.as_str());
+            std::env::set_var("LISKOV_SUPERVISOR_TEST_VISIBLE", "yes");
+        }
+        let bridge = Arc::new(crate::bridge::UnixBridge::new("unused-test-bridge").unwrap());
+        let command = vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            "env > \"$1\"".into(),
+            "liskov-env-dump".into(),
+            dump.as_os_str().to_owned(),
+        ];
+        let result = supervise_with_environment_and_access(
+            &command,
+            &never,
+            bridge,
+            Duration::ZERO,
+            &BTreeMap::new(),
+            Some(compact),
+            None,
+        );
+        unsafe {
+            std::env::remove_var(crate::access::RUNTIME_SSH_CREDENTIAL_ENV);
+            std::env::remove_var("LISKOV_SUPERVISOR_TEST_VISIBLE");
+        }
+        assert_eq!(result, SupervisorExit::Code(0));
+        let dumped = std::fs::read_to_string(&dump).unwrap();
+        let _ = std::fs::remove_file(&dump);
+        assert!(
+            !dumped.contains("LISKOV_RUNTIME_SSH_CREDENTIAL_V1"),
+            "credential env name must be stripped before the customer"
+        );
+        assert!(
+            !dumped.contains(MANAGED_CONNECTOR_TOKEN),
+            "connector token must not leak into the customer environment"
+        );
+        assert!(
+            dumped.contains("LISKOV_SUPERVISOR_TEST_VISIBLE=yes"),
+            "benign inherited values must still reach the customer"
+        );
+    }
+
+    #[test]
+    fn managed_access_setup_failure_still_starts_and_restarts_the_customer_command() {
+        let _lock = PROCESS_TEST_LOCK.lock().unwrap();
+        let marker = std::env::temp_dir().join(format!(
+            "liskov-runtime-cargo-access-fail-once-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&marker);
+        let mut policy = bootstrap(json!({
+            "mode": "on_failure",
+            "restartLimit": {"kind": "attempts", "maxRestarts": 1},
+            "serverTimeMs": 1,
+            "scheduleEndMs": 60_001,
+        }));
+        policy.access = Some(RuntimeAccessBootstrap::Managed(Box::new(
+            managed_access_bootstrap(),
+        )));
+        let command = vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            "if [ -f \"$1\" ]; then exit 0; else : > \"$1\"; exit 9; fi".into(),
+            "liskov-access-fail-once".into(),
+            marker.as_os_str().to_owned(),
+        ];
+        let bridge = Arc::new(crate::bridge::UnixBridge::new("unused-test-bridge").unwrap());
+        assert_eq!(
+            supervise_with_environment_and_access(
+                &command,
+                &policy,
+                bridge,
+                Duration::ZERO,
+                &BTreeMap::new(),
+                Some("malformed-managed-credential".into()),
+                None,
+            ),
+            SupervisorExit::Code(0)
+        );
+        assert!(marker.exists());
+        std::fs::remove_file(marker).unwrap();
+    }
+
+    #[test]
+    fn managed_access_crash_during_the_customer_run_does_not_change_exit() {
+        let _lock = PROCESS_TEST_LOCK.lock().unwrap();
+        let never = bootstrap(json!({
+            "mode": "never",
+            "serverTimeMs": 1,
+            "scheduleEndMs": 60_001,
+        }));
+        let mut session = crate::access::AccessSession::managed_for_test("/bin/true", &[])
+            .expect("test managed session");
+        thread::sleep(Duration::from_millis(50));
+        assert_eq!(
+            supervise_with_reporter_and_environment(
+                &["/bin/sh".into(), "-c".into(), "exit 19".into()],
+                &never,
+                Duration::ZERO,
+                &BTreeMap::new(),
+                None,
+                Some(&mut session),
+                None,
+                None,
+                Vec::new(),
+            ),
+            SupervisorExit::Code(19)
         );
     }
 

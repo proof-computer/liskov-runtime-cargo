@@ -4,6 +4,7 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use thiserror::Error;
+use zeroize::Zeroize;
 
 use crate::bridge::{Bridge, BridgeError};
 
@@ -285,7 +286,7 @@ pub struct ManagedRuntimeAccessToolchain {
     pub dropbearkey_sha256: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ManagedRuntimeAccessCredential {
     pub(crate) schema: String,
@@ -295,13 +296,44 @@ pub struct ManagedRuntimeAccessCredential {
     pub(crate) expires_at_ms: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ManagedRuntimeAccessCredentialProvider {
     Liskov {
         #[serde(rename = "connectorToken")]
         connector_token: String,
     },
+}
+
+impl std::fmt::Debug for ManagedRuntimeAccessCredentialProvider {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Liskov { .. } => formatter
+                .debug_struct("Liskov")
+                .field("kind", &"liskov")
+                .field("connectorToken", &"[redacted]")
+                .finish(),
+        }
+    }
+}
+
+impl std::fmt::Debug for ManagedRuntimeAccessCredential {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ManagedRuntimeAccessCredential")
+            .field("attachmentId", &self.attachment_id)
+            .field("expiresAtMs", &self.expires_at_ms)
+            .field("provider", &self.provider)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for ManagedRuntimeAccessCredentialProvider {
+    fn drop(&mut self) {
+        match self {
+            Self::Liskov { connector_token } => connector_token.zeroize(),
+        }
+    }
 }
 
 impl ManagedRuntimeAccessCredential {
@@ -340,6 +372,8 @@ pub struct ManagedRuntimeAccessBootstrap {
     pub toolchain: Option<ManagedRuntimeAccessToolchain>,
     #[serde(default)]
     pub credential: Option<ManagedRuntimeAccessCredential>,
+    #[serde(skip)]
+    pub(crate) credential_consumed: bool,
 }
 
 impl ManagedRuntimeAccessBootstrap {
@@ -1315,6 +1349,104 @@ mod tests {
             validate_response(&request, &serde_json::to_vec(&response).unwrap()),
             Err(ProtocolError::InvalidResponse)
         ));
+    }
+
+    #[test]
+    fn managed_compact_credential_is_accepted_on_the_v2_bootstrap_and_debug_redacts_the_token() {
+        let request = signed_request();
+        let token = "o8c9-header.payload.signature";
+        let mut response = json!({
+            "ok": true,
+            "domain": RUNTIME_BOOTSTRAP_RESPONSE_DOMAIN_V2,
+            "applicationUid": "app-uid-1",
+            "applicationId": "app-1",
+            "policyDigest": "sha256:policy",
+            "deploymentId": "dep-1",
+            "jobId": request.job_id,
+            "processorId": request.processor_id,
+            "runtimeInstanceId": request.nonce,
+            "slipwayUrl": "https://liskov.example",
+            "access": {
+                "provider": {"kind": "liskov"},
+                "attachmentId": "att-managed-1",
+                "fence": 1,
+                "gatewayUrl": "wss://access.example",
+                "tunnelId": "tunnel_managed_1",
+                "protocol": "liskov_access_v1",
+                "setupDeadlineMs": 60_000,
+                "binding": {
+                    "organizationId": "org-1",
+                    "applicationId": "app-1",
+                    "applicationUid": "app-uid-1",
+                    "liskovDeploymentId": "liskov-dep-1",
+                    "deploymentId": "dep-1",
+                    "liskovJobId": "liskov-job-1",
+                    "jobId": request.job_id,
+                    "policyDigest": "sha256:policy",
+                },
+                "authorizedKeyFingerprints": [format!(
+                    "SHA256:{}",
+                    base64::engine::general_purpose::STANDARD_NO_PAD.encode([1_u8; 32])
+                )],
+                "authorizedKeys": [
+                    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+                ],
+                "toolchain": {
+                    "runtimeContactSha256": "1".repeat(64),
+                    "dropbearSha256": "2".repeat(64),
+                    "dropbearkeySha256": "3".repeat(64),
+                },
+                "credential": {
+                    "schema": "proof.liskov.runtime-ssh-credential.v2",
+                    "provider": {"kind": "liskov", "connectorToken": token},
+                    "attachmentId": "att-managed-1",
+                    "fence": 1,
+                    "expiresAtMs": 60_000,
+                }
+            }
+        });
+        let parsed = validate_response(&request, &serde_json::to_vec(&response).unwrap()).unwrap();
+        assert!(
+            matches!(
+                parsed.access.as_ref(),
+                Some(RuntimeAccessBootstrap::Managed(_))
+            ),
+            "o58f compact managed access must be admitted"
+        );
+        assert!(
+            !format!("{parsed:?}").contains(token),
+            "connectorToken must not survive Debug of the bootstrap response"
+        );
+
+        for (field, value) in [
+            ("attachmentId", json!("att-other")),
+            ("fence", json!(2)),
+            ("schema", json!("proof.liskov.runtime-ssh-credential.v1")),
+        ] {
+            let mut rejected = response.clone();
+            rejected["access"]["credential"][field] = value;
+            assert!(
+                matches!(
+                    validate_response(&request, &serde_json::to_vec(&rejected).unwrap()),
+                    Err(ProtocolError::InvalidResponse)
+                ),
+                "credential {field} must bind to the access block"
+            );
+        }
+
+        let mut rejected = response.clone();
+        rejected["access"]["credential"]["provider"]["connectorToken"] = json!("only.two");
+        assert!(
+            matches!(
+                validate_response(&request, &serde_json::to_vec(&rejected).unwrap()),
+                Err(ProtocolError::InvalidResponse)
+            ),
+            "connectorToken must be a 3-part graphic JWT"
+        );
+        response["access"]
+            .as_object_mut()
+            .unwrap()
+            .remove("credential");
     }
 
     #[test]
