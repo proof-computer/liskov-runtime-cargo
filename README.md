@@ -15,9 +15,11 @@ customer's exact exit status or terminating signal after cleanup. If identity,
 signing, transport, or bootstrap validation fails, the customer command does
 not start.
 
-When `PROOF_SLIPWAY_BOOTSTRAP` contains the Liskov-owned `x.pc` extension, the
-helper also emits bounded pre-contact evidence before bridge discovery and once
-more on terminal contact failure. This bearer-authenticated evidence is
+When the signed bootstrap envelope contains the Liskov-owned `x.pc` extension,
+the helper also emits bounded pre-contact evidence before bridge discovery and
+once more on terminal contact failure. The envelope is read from
+`LISKOV_BOOTSTRAP`, falling back to the legacy `PROOF_SLIPWAY_BOOTSTRAP` name
+the platform still emits. This bearer-authenticated evidence is
 diagnostic only: it never authorizes command execution or replaces the signed
 runtime-bootstrap gate.
 
@@ -46,7 +48,11 @@ The core URL is selected in this order:
 
 1. `--core-url URL`
 2. `LISKOV_CORE_URL`
-3. `https://liskov.proof.computer`
+3. `https://runtime.liskov.proof.computer`
+
+`runtime.liskov.proof.computer` is the fleet's own control-plane name. It is
+deliberately not the operator console hostname, so console protection rules,
+maintenance, and edge changes cannot wedge running jobs.
 
 Only HTTPS URLs without user information, a query, or a fragment are accepted.
 `BRIDGE_SOCKET` is required and is supplied by the Acurast Cargo runtime.
@@ -82,8 +88,9 @@ job. A signed runtime-environment value takes precedence over an inherited
 process value. When neither contains the config, the supervisor uses the
 signed `/api/jobs/secret-bootstrap` protocol to discover the exact job grant,
 then requests only `blackbox-log-config` and decrypts its response through the
-Acurast bridge. The transitional job-bound `PROOF_LOCKBOX_BOOTSTRAP` value is
-still accepted when present. Both paths verify the response,
+Acurast bridge. The transitional job-bound Lockbox bootstrap value is still
+accepted when present, read from `LISKOV_LOCKBOX_BOOTSTRAP` and falling back to
+the legacy `PROOF_LOCKBOX_BOOTSTRAP` name. Both paths verify the response,
 encrypted-payload, AAD, plaintext, and secret bindings before installing the
 value in memory. This narrow lookup
 lets the controller start before Runtime SSH without making the supervisor the
@@ -152,10 +159,12 @@ variable is an internal fail-closed canary control, is removed before customer
 startup, and is not a customer-authored policy surface. Managed Runtime SSH
 receives its exact-job connector credential in the authenticated
 runtime-bootstrap response and takes it out of that in-memory response before
-customer startup. The transitional bootstrap secret, supervision canary
-control, and reserved Runtime SSH environment credential are removed from the
-captured customer environment. Runtime values cannot reintroduce those
-protected names.
+customer startup. Both spellings of the bootstrap secret
+(`LISKOV_BOOTSTRAP` and `PROOF_SLIPWAY_BOOTSTRAP`), the supervision canary
+control, and the reserved Runtime SSH environment credential are removed from
+the captured customer environment. Runtime values cannot reintroduce those
+protected names. The Lockbox bootstrap value is not one of them: it is
+fetch metadata rather than a secret, so it stays deliverable and visible.
 
 For bounded release canaries whose Shell host does not retain stderr,
 `--diagnostic-exit-codes` replaces status `70`/`75` with a non-secret stage

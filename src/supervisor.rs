@@ -27,6 +27,7 @@ use crate::diagnostics::{
     AsyncDiagnosticReporter, DIAGNOSTIC_HTTP_TIMEOUT, DiagnosticStatus,
     MAX_DIAGNOSTIC_RESPONSE_BYTES,
 };
+use crate::env_names::PROTECTED_ENV_NAMES;
 use crate::http::{HttpClient, UreqHttpClient};
 use crate::logging::{LoggingController, OutputLogger, RuntimeSshLogEmitter};
 use crate::processor_facts::{
@@ -945,20 +946,21 @@ fn merge_runtime_environment(
     environment
 }
 
+/// Remove the internal, server-owned credentials and controls from the
+/// environment the customer command inherits.
+///
+/// The list is shared with the signed runtime-environment reserved names
+/// (`crate::env_names::PROTECTED_ENV_NAMES`) so a name can never be redacted
+/// here while remaining settable there, or vice versa — the exact failure mode
+/// `BKLG-20260829-m8kd` warns a rename introduces.
 fn sanitize_environment_values(
     values: impl IntoIterator<Item = (OsString, OsString)>,
 ) -> Vec<(OsString, OsString)> {
     values
         .into_iter()
         .filter(|(key, _)| {
-            !matches!(
-                key.to_str(),
-                Some(
-                    "PROOF_SLIPWAY_BOOTSTRAP"
-                        | "LISKOV_CARGO_SUPERVISION_CANARY_JSON"
-                        | "LISKOV_RUNTIME_SSH_CREDENTIAL_V1"
-                )
-            )
+            !key.to_str()
+                .is_some_and(|key| PROTECTED_ENV_NAMES.contains(&key))
         })
         .collect()
 }
@@ -1390,6 +1392,45 @@ pub(crate) mod tests {
                 .iter()
                 .any(|(key, value)| { key == "LISKOV_SUPERVISOR_TEST_VISIBLE" && value == "yes" })
         );
+    }
+
+    #[test]
+    fn redacts_every_spelling_of_the_signed_bootstrap_envelope() {
+        // BKLG-20260829-m8kd: the reader now accepts `LISKOV_BOOTSTRAP`, so it
+        // must be removed from the customer environment exactly like the legacy
+        // name. Missing this is how a rename carries a signed bootstrap secret
+        // past the supervisor.
+        for name in crate::env_names::BOOTSTRAP_ENV_NAMES {
+            let environment = sanitize_environment_values([
+                (OsString::from(*name), OsString::from("secret")),
+                (
+                    OsString::from("LISKOV_SUPERVISOR_TEST_VISIBLE"),
+                    OsString::from("yes"),
+                ),
+            ]);
+            assert!(
+                !environment.iter().any(|(key, _)| key == name),
+                "{name} must not reach the customer environment"
+            );
+            assert!(
+                environment
+                    .iter()
+                    .any(|(key, _)| key == "LISKOV_SUPERVISOR_TEST_VISIBLE")
+            );
+        }
+    }
+
+    #[test]
+    fn keeps_the_lockbox_bootstrap_metadata_visible_under_both_spellings() {
+        // Metadata, never a secret, and customer workloads read it today.
+        for name in crate::env_names::LOCKBOX_BOOTSTRAP_ENV_NAMES {
+            let environment =
+                sanitize_environment_values([(OsString::from(*name), OsString::from("metadata"))]);
+            assert!(
+                environment.iter().any(|(key, _)| key == name),
+                "{name} must stay visible to the customer command"
+            );
+        }
     }
 
     #[test]

@@ -17,11 +17,11 @@ use zeroize::Zeroizing;
 
 use crate::bridge::{Bridge, BridgeError};
 use crate::diagnostics::canonical_json_bytes;
+use crate::env_names::{LOCKBOX_BOOTSTRAP_ENV_NAMES, first_present};
 use crate::http::{HttpClient, HttpError, UreqHttpClient};
 use crate::protocol::RuntimeBootstrapResponse;
 
 pub const BLACKBOX_LOG_CONFIG_ENV: &str = "BLACKBOX_LOG_CONFIG";
-const LOCKBOX_BOOTSTRAP_ENV: &str = "PROOF_LOCKBOX_BOOTSTRAP";
 const BLACKBOX_LOG_CONFIG_SECRET_ID: &str = "blackbox-log-config";
 const BLACKBOX_LOG_CONFIG_BUNDLE_ID: &str = "blackbox-log-config";
 const DEFAULT_SECRETS_URL: &str = "https://secrets.liskov.proof.computer";
@@ -163,10 +163,8 @@ pub fn hydrate_blackbox_log_config(
     if !bootstrap.logging_enabled() || runtime_environment.contains_key(BLACKBOX_LOG_CONFIG_ENV) {
         return Ok(());
     }
-    let ambient_bootstrap = runtime_environment
-        .get(LOCKBOX_BOOTSTRAP_ENV)
-        .cloned()
-        .or_else(|| std::env::var(LOCKBOX_BOOTSTRAP_ENV).ok());
+    let ambient_bootstrap =
+        ambient_lockbox_bootstrap(runtime_environment, |name| std::env::var(name).ok());
     let mut bootstrap_nonce = [0_u8; 16];
     getrandom::fill(&mut bootstrap_nonce).map_err(|_| LogConfigSecretError::Randomness)?;
     let mut request_nonce = [0_u8; 16];
@@ -205,6 +203,25 @@ pub fn hydrate_blackbox_log_config(
         runtime_environment.insert(BLACKBOX_LOG_CONFIG_ENV.to_owned(), config);
     }
     Ok(())
+}
+
+/// The job-bound Lockbox bootstrap metadata, if any is already ambient.
+///
+/// Channel order is unchanged and load-bearing: a signed runtime-environment
+/// value outranks an inherited process value, as the README documents. Within
+/// each channel the `LISKOV_*` name is preferred and the legacy
+/// `PROOF_LOCKBOX_BOOTSTRAP` is the migration bridge (`BKLG-20260829-m8kd`).
+fn ambient_lockbox_bootstrap<F>(
+    runtime_environment: &BTreeMap<String, String>,
+    process_env: F,
+) -> Option<String>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    first_present(LOCKBOX_BOOTSTRAP_ENV_NAMES, |name| {
+        runtime_environment.get(name).cloned()
+    })
+    .or_else(|| first_present(LOCKBOX_BOOTSTRAP_ENV_NAMES, process_env))
 }
 
 fn discover_lockbox_bootstrap_with(
@@ -651,6 +668,7 @@ mod tests {
     use std::sync::Mutex;
 
     use super::*;
+    use crate::env_names::{LEGACY_LOCKBOX_BOOTSTRAP_ENV, LOCKBOX_BOOTSTRAP_ENV};
     use crate::http::HttpResponse;
 
     const APP_UID: &str = "app-0123456789abcdef0123456789abcdef";
@@ -992,7 +1010,7 @@ mod tests {
         let plaintext = plaintext("config");
         let bridge = FakeBridge::new(&plaintext);
         let mut environment =
-            BTreeMap::from([(LOCKBOX_BOOTSTRAP_ENV.to_owned(), compact_bootstrap())]);
+            BTreeMap::from([(LEGACY_LOCKBOX_BOOTSTRAP_ENV.to_owned(), compact_bootstrap())]);
         hydrate_blackbox_log_config(&bootstrap(false), &bridge, &mut environment).unwrap();
         assert!(bridge.calls.lock().unwrap().is_empty());
 
@@ -1066,5 +1084,73 @@ mod tests {
         );
         assert!(bridge.calls.lock().unwrap().is_empty());
         assert!(http.calls.lock().unwrap().is_empty());
+    }
+
+    fn process_env(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> + use<> {
+        let pairs: Vec<(String, String)> = pairs
+            .iter()
+            .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+            .collect();
+        move |name| {
+            pairs
+                .iter()
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| value.clone())
+        }
+    }
+
+    #[test]
+    fn the_signed_runtime_environment_outranks_the_inherited_process_value() {
+        let environment = BTreeMap::from([(
+            LEGACY_LOCKBOX_BOOTSTRAP_ENV.to_owned(),
+            "signed-legacy".to_owned(),
+        )]);
+        assert_eq!(
+            ambient_lockbox_bootstrap(
+                &environment,
+                process_env(&[(LOCKBOX_BOOTSTRAP_ENV, "process-new")])
+            ),
+            Some("signed-legacy".to_owned())
+        );
+    }
+
+    #[test]
+    fn the_liskov_lockbox_name_is_preferred_within_each_channel() {
+        let environment = BTreeMap::from([
+            (LOCKBOX_BOOTSTRAP_ENV.to_owned(), "signed-new".to_owned()),
+            (
+                LEGACY_LOCKBOX_BOOTSTRAP_ENV.to_owned(),
+                "signed-legacy".to_owned(),
+            ),
+        ]);
+        assert_eq!(
+            ambient_lockbox_bootstrap(&environment, process_env(&[])),
+            Some("signed-new".to_owned())
+        );
+        assert_eq!(
+            ambient_lockbox_bootstrap(
+                &BTreeMap::new(),
+                process_env(&[
+                    (LOCKBOX_BOOTSTRAP_ENV, "process-new"),
+                    (LEGACY_LOCKBOX_BOOTSTRAP_ENV, "process-legacy"),
+                ])
+            ),
+            Some("process-new".to_owned())
+        );
+    }
+
+    #[test]
+    fn the_legacy_lockbox_name_still_resolves_on_its_own() {
+        assert_eq!(
+            ambient_lockbox_bootstrap(
+                &BTreeMap::new(),
+                process_env(&[(LEGACY_LOCKBOX_BOOTSTRAP_ENV, "process-legacy")])
+            ),
+            Some("process-legacy".to_owned())
+        );
+        assert_eq!(
+            ambient_lockbox_bootstrap(&BTreeMap::new(), process_env(&[])),
+            None
+        );
     }
 }
