@@ -9,6 +9,7 @@ use thiserror::Error;
 
 use crate::bridge::{Bridge, BridgeError};
 use crate::diagnostics::canonical_json_bytes;
+use crate::env_names::PROTECTED_ENV_NAMES;
 use crate::http::{HttpClient, HttpError, UreqHttpClient};
 use crate::protocol::RuntimeBootstrapResponse;
 
@@ -17,11 +18,6 @@ pub const RUNTIME_ENV_RESPONSE_DOMAIN_V2: &str = "proof.liskov.runtime-env-respo
 pub const RUNTIME_ENV_REQUEST_TTL_MS: u64 = 60_000;
 
 const MAX_RUNTIME_ENV_VALUES: usize = 128;
-const PROTECTED_ENV_NAMES: &[&str] = &[
-    "PROOF_SLIPWAY_BOOTSTRAP",
-    "LISKOV_CARGO_SUPERVISION_CANARY_JSON",
-    "LISKOV_RUNTIME_SSH_CREDENTIAL_V1",
-];
 
 #[derive(Debug, Error)]
 pub enum RuntimeEnvError {
@@ -465,6 +461,41 @@ mod tests {
             load_runtime_environment_with(&bootstrap(true), &bridge, &protected, 1_000, [7; 16]),
             Err(RuntimeEnvError::InvalidResponse)
         ));
+
+        // BKLG-20260829-m8kd: both spellings of the signed bootstrap envelope
+        // are reserved. A signed runtime-env response that sets either one is
+        // rejected, so the rename cannot open an override path.
+        for name in crate::env_names::BOOTSTRAP_ENV_NAMES {
+            let reserved = FakeHttp::new(response(json!({ *name: "secret" })));
+            assert!(
+                matches!(
+                    load_runtime_environment_with(
+                        &bootstrap(true),
+                        &bridge,
+                        &reserved,
+                        1_000,
+                        [7; 16]
+                    ),
+                    Err(RuntimeEnvError::InvalidResponse)
+                ),
+                "{name} must be reserved against signed runtime-env override"
+            );
+        }
+
+        // The Lockbox bootstrap names are deliberately deliverable through this
+        // channel under both spellings; reserving them would sever it.
+        for name in crate::env_names::LOCKBOX_BOOTSTRAP_ENV_NAMES {
+            let deliverable = FakeHttp::new(response(json!({ *name: "metadata" })));
+            let values = load_runtime_environment_with(
+                &bootstrap(true),
+                &bridge,
+                &deliverable,
+                1_000,
+                [7; 16],
+            )
+            .expect("the lockbox bootstrap metadata must stay deliverable");
+            assert_eq!(values[*name], "metadata");
+        }
 
         let mut substituted = bootstrap(true);
         substituted.runtime_env.as_mut().unwrap().url = "https://other.example".into();

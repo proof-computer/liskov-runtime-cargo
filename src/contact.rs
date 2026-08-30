@@ -12,7 +12,34 @@ use crate::protocol::{
     sign_request, validate_response,
 };
 
-pub const DEFAULT_CORE_URL: &str = "https://liskov.proof.computer";
+/// The fleet's control-plane endpoint.
+///
+/// `runtime.liskov.proof.computer` is a fleet-only name for the same
+/// `liskov-api` application the console's `api.` name resolves to
+/// (`BKLG-20260829-t4rp`). It is deliberately not the operator console
+/// hostname: processors on residential broadband and browsers need different
+/// rate limits, protection rules and failure domains, and a deployed helper is
+/// the least reachable client there is.
+pub const DEFAULT_CORE_URL: &str = "https://runtime.liskov.proof.computer";
+
+/// Environment override for [`DEFAULT_CORE_URL`], delivered by the on-chain
+/// `acurast.setEnvironments` handoff.
+pub const CORE_URL_ENV: &str = "LISKOV_CORE_URL";
+
+/// The Liskov core base URL, selected exactly as the CLI documents it:
+/// `--core-url`, then `LISKOV_CORE_URL`, then [`DEFAULT_CORE_URL`].
+///
+/// `--core-url` outranks the environment on purpose: a runtime-image entrypoint
+/// passes it explicitly, and a stale entrypoint must not be silently overridden
+/// by a handoff push.
+pub fn resolve_core_url<F>(cli_core_url: Option<String>, env_lookup: F) -> String
+where
+    F: Fn(&str) -> Option<String>,
+{
+    cli_core_url
+        .or_else(|| env_lookup(CORE_URL_ENV))
+        .unwrap_or_else(|| DEFAULT_CORE_URL.to_owned())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i32)]
@@ -323,6 +350,41 @@ mod tests {
 
     use super::*;
     use crate::bridge::BridgeError;
+
+    #[test]
+    fn the_compiled_in_default_is_the_fleet_hostname_not_the_console() {
+        // BKLG-20260829-t4rp: the console hostname is an operator-facing name
+        // that `84f5` moves to a different origin. A deployed helper cannot be
+        // re-pointed cheaply, so its compiled-in default must name the
+        // fleet-only hostname.
+        let url = Url::parse(DEFAULT_CORE_URL).expect("the default must be a valid URL");
+        assert_eq!(url.scheme(), "https");
+        assert_eq!(url.host_str(), Some("runtime.liskov.proof.computer"));
+        assert_eq!(url.path(), "/");
+        assert!(url.query().is_none() && url.fragment().is_none());
+        assert_eq!(DEFAULT_CORE_URL, "https://runtime.liskov.proof.computer");
+    }
+
+    #[test]
+    fn core_url_precedence_is_cli_then_environment_then_default() {
+        let env =
+            |name: &str| (name == CORE_URL_ENV).then(|| "https://from-env.example".to_owned());
+        assert_eq!(
+            resolve_core_url(Some("https://from-cli.example".to_owned()), env),
+            "https://from-cli.example"
+        );
+        assert_eq!(resolve_core_url(None, env), "https://from-env.example");
+        assert_eq!(resolve_core_url(None, |_| None), DEFAULT_CORE_URL);
+    }
+
+    #[test]
+    fn no_environment_name_other_than_liskov_core_url_moves_the_core_url() {
+        assert_eq!(
+            resolve_core_url(None, |name| (name != CORE_URL_ENV)
+                .then(|| "https://wrong.example".to_owned())),
+            DEFAULT_CORE_URL
+        );
+    }
 
     struct FakeBridge {
         replies: Mutex<VecDeque<Value>>,

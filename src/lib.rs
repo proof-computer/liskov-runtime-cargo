@@ -5,6 +5,7 @@ pub mod bridge;
 pub mod contact;
 pub mod coverage;
 pub mod diagnostics;
+pub mod env_names;
 pub mod handoff;
 pub mod hardware;
 pub mod http;

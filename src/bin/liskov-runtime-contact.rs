@@ -5,10 +5,12 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use clap::Parser;
 use liskov_runtime_cargo::bridge::UnixBridge;
+use liskov_runtime_cargo::contact::resolve_core_url;
 use liskov_runtime_cargo::coverage::{
     CoverageContactObservation, CoverageProducerActivation, take_coverage_authorization,
     wall_clock_ms,
 };
+use liskov_runtime_cargo::env_names::{BOOTSTRAP_ENV_NAMES, first_present_in_process_env};
 use liskov_runtime_cargo::http::UreqHttpClient;
 use liskov_runtime_cargo::precontact::{
     DiagnosticFailure, MAX_PRECONTACT_RESPONSE_BYTES, PRECONTACT_HTTP_TIMEOUT, PrecontactError,
@@ -17,7 +19,7 @@ use liskov_runtime_cargo::precontact::{
 use liskov_runtime_cargo::probe::{SystemProbeRuntime, run_bridge_probe};
 use liskov_runtime_cargo::processor_facts::take_processor_fact_authorization;
 use liskov_runtime_cargo::{
-    DEFAULT_CORE_URL, SupervisorExit, establish_runtime_contact, hydrate_blackbox_log_config,
+    SupervisorExit, establish_runtime_contact, hydrate_blackbox_log_config,
     load_runtime_environment, supervise_with_environment_access_and_processor_facts,
 };
 
@@ -58,14 +60,13 @@ fn emit_precontact_probe(phase: &'static str, error: &PrecontactError) {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    let core_url = cli
-        .core_url
-        .or_else(|| std::env::var("LISKOV_CORE_URL").ok())
-        .unwrap_or_else(|| DEFAULT_CORE_URL.to_owned());
+    let core_url = resolve_core_url(cli.core_url, |name| std::env::var(name).ok());
     let diagnostic_http =
         UreqHttpClient::with_limits(PRECONTACT_HTTP_TIMEOUT, MAX_PRECONTACT_RESPONSE_BYTES);
-    let reporter = match std::env::var("PROOF_SLIPWAY_BOOTSTRAP") {
-        Ok(raw) => {
+    // BKLG-20260829-m8kd step 1: prefer `LISKOV_BOOTSTRAP`, fall back to the
+    // legacy `PROOF_SLIPWAY_BOOTSTRAP` the platform still emits.
+    let reporter = match first_present_in_process_env(BOOTSTRAP_ENV_NAMES) {
+        Some(raw) => {
             let now_ms = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .ok()
@@ -83,7 +84,7 @@ fn main() -> ExitCode {
                 }
             }
         }
-        Err(_) => {
+        None => {
             if cli.bridge_probe {
                 emit_precontact_probe("setup", &PrecontactError::Missing);
             }
