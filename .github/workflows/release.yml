@@ -161,7 +161,7 @@ jobs:
                   --header "Authorization: Bearer ${token}" \
                   --header "Content-Type: application/json" \
                   --data "$(jq -cn --arg tag "$TAG" '{domain:"proof.liskov.runtime-contact-release.v1",tag:$tag}')" \
-                  https://liskov.proof.computer/api/runtime-contact/releases/github
+                  https://runtime.liskov.proof.computer/api/runtime-contact/releases/github
               ) || status=000
             fi
 
