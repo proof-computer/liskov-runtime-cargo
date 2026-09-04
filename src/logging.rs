@@ -21,7 +21,9 @@ use sha2::{Digest, Sha256};
 use url::Url;
 
 use crate::diagnostics::canonical_json_bytes;
-use crate::protocol::RuntimeBootstrapResponse;
+use crate::protocol::{
+    RuntimeAccessBootstrap, RuntimeAccessProviderKind, RuntimeBootstrapResponse,
+};
 
 const BLACKBOX_CONFIG_ENV: &str = "BLACKBOX_LOG_CONFIG";
 const BLACKBOX_CONFIG_DOMAIN_V2: &str = "proof.liskov.blackbox-log-config.v2";
@@ -292,6 +294,7 @@ impl LoggingController {
             budget: Arc::new(Mutex::new(ByteBudget::new(OUTPUT_BYTES_PER_SECOND))),
             next_output_sequence: Arc::new(AtomicU64::new(0)),
         };
+        let (provider_kind, component) = runtime_ssh_log_identity(bootstrap);
         let runtime_ssh = raw_expires_at_ms.map(|raw_expires_at_ms| RuntimeSshLogger {
             emitter: RuntimeSshLogEmitter {
                 sender: runtime_sender,
@@ -300,6 +303,8 @@ impl LoggingController {
                 queued_bytes: runtime_queued_bytes,
                 raw_expires_at_ms,
                 raw_window_marked: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                provider_kind,
+                component,
             },
         });
         (
@@ -495,13 +500,26 @@ pub struct RuntimeSshLogEmitter {
     /// One-shot: set when the raw-line window closes so the closure itself is
     /// marked in the stream instead of looking like the daemon going quiet.
     raw_window_marked: Arc<std::sync::atomic::AtomicBool>,
+    provider_kind: &'static str,
+    component: &'static str,
+}
+
+fn runtime_ssh_log_identity(bootstrap: &RuntimeBootstrapResponse) -> (&'static str, &'static str) {
+    match bootstrap
+        .access
+        .as_ref()
+        .map(RuntimeAccessBootstrap::provider_kind)
+    {
+        Some(RuntimeAccessProviderKind::Liskov) => ("liskov", "connector"),
+        _ => ("tailscale", "tailscaled"),
+    }
 }
 
 impl RuntimeSshLogEmitter {
     pub fn lifecycle(&self, event: &'static str, code: Option<&'static str>) {
         let details = without_nulls(json!({
-            "providerKind": "tailscale",
-            "component": "tailscaled",
+            "providerKind": self.provider_kind,
+            "component": self.component,
             "format": "lifecycle",
             "code": code,
         }));
@@ -530,8 +548,8 @@ impl RuntimeSshLogEmitter {
         code: Option<&'static str>,
     ) {
         let details = without_nulls(json!({
-            "providerKind": "tailscale",
-            "component": "tailscaled",
+            "providerKind": self.provider_kind,
+            "component": self.component,
             "format": "stage",
             "stage": stage,
             "elapsedMs": elapsed_ms,
@@ -553,7 +571,7 @@ impl RuntimeSshLogEmitter {
         let mut message = message.to_string();
         message.truncate(600);
         let details = without_nulls(json!({
-            "providerKind": "tailscale",
+            "providerKind": self.provider_kind,
             "format": "panic",
             "stage": stage,
             "message": message,
@@ -2007,6 +2025,8 @@ mod tests {
             queued_bytes: Arc::new(AtomicU64::new(0)),
             raw_expires_at_ms: Some(u64::MAX),
             raw_window_marked: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            provider_kind: "tailscale",
+            component: "tailscaled",
         };
         emitter.stage("up", 1234, "failed", Some("access_up_failed"));
         emitter.lifecycle("runtime.access.degraded", Some("access_up_failed"));
@@ -2024,6 +2044,32 @@ mod tests {
             ],
             "the records that explain a failure must never be budget-dropped"
         );
+    }
+
+    #[test]
+    fn managed_lifecycle_records_do_not_claim_tailscale() {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(16);
+        let emitter = RuntimeSshLogEmitter {
+            sender,
+            dropped: Arc::new(DroppedOutput::default()),
+            budget: Arc::new(Mutex::new(ByteBudget::new(0))),
+            queued_bytes: Arc::new(AtomicU64::new(0)),
+            raw_expires_at_ms: Some(u64::MAX),
+            raw_window_marked: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            provider_kind: "liskov",
+            component: "connector",
+        };
+        emitter.lifecycle("runtime.access.degraded", Some("connector_unreachable"));
+        let record = match receiver.try_recv() {
+            Ok(LogWork::RuntimeSsh(record)) => record,
+            Ok(_) => panic!("expected a lifecycle record"),
+            Err(error) => panic!("expected a lifecycle record: {error}"),
+        };
+        assert_eq!(record.event, "runtime.access.degraded");
+        assert_eq!(record.details["providerKind"], "liskov");
+        assert_eq!(record.details["component"], "connector");
+        assert_ne!(record.details["providerKind"], "tailscale");
+        assert_ne!(record.details["component"], "tailscaled");
     }
     use super::*;
 
