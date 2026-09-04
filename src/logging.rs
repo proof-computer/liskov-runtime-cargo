@@ -547,6 +547,27 @@ impl RuntimeSshLogEmitter {
         outcome: &'static str,
         code: Option<&'static str>,
     ) {
+        self.stage_with_http_status(stage, elapsed_ms, outcome, code, None);
+    }
+
+    pub(crate) fn connector_stage(
+        &self,
+        elapsed_ms: u64,
+        outcome: &'static str,
+        code: Option<&'static str>,
+        http_status: Option<u16>,
+    ) {
+        self.stage_with_http_status("connector", elapsed_ms, outcome, code, http_status);
+    }
+
+    fn stage_with_http_status(
+        &self,
+        stage: &'static str,
+        elapsed_ms: u64,
+        outcome: &'static str,
+        code: Option<&'static str>,
+        http_status: Option<u16>,
+    ) {
         let details = without_nulls(json!({
             "providerKind": self.provider_kind,
             "component": self.component,
@@ -555,6 +576,7 @@ impl RuntimeSshLogEmitter {
             "elapsedMs": elapsed_ms,
             "outcome": outcome,
             "code": code,
+            "httpStatus": http_status,
         }));
         self.enqueue_critical(RuntimeSshRecord {
             event: "runtime.access.stage",
@@ -2070,6 +2092,39 @@ mod tests {
         assert_eq!(record.details["component"], "connector");
         assert_ne!(record.details["providerKind"], "tailscale");
         assert_ne!(record.details["component"], "tailscaled");
+    }
+
+    #[test]
+    fn connector_stage_reports_only_the_bounded_http_status() {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(16);
+        let emitter = RuntimeSshLogEmitter {
+            sender,
+            dropped: Arc::new(DroppedOutput::default()),
+            budget: Arc::new(Mutex::new(ByteBudget::new(0))),
+            queued_bytes: Arc::new(AtomicU64::new(0)),
+            raw_expires_at_ms: Some(u64::MAX),
+            raw_window_marked: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            provider_kind: "liskov",
+            component: "connector",
+        };
+        emitter.connector_stage(
+            42,
+            "retry",
+            Some("access_connector_http_refused"),
+            Some(503),
+        );
+        let record = match receiver.try_recv() {
+            Ok(LogWork::RuntimeSsh(record)) => record,
+            Ok(_) => panic!("expected a runtime SSH record"),
+            Err(error) => panic!("expected a runtime SSH record: {error}"),
+        };
+        assert_eq!(record.event, "runtime.access.stage");
+        assert_eq!(record.details["providerKind"], "liskov");
+        assert_eq!(record.details["component"], "connector");
+        assert_eq!(record.details["stage"], "connector");
+        assert_eq!(record.details["outcome"], "retry");
+        assert_eq!(record.details["code"], "access_connector_http_refused");
+        assert_eq!(record.details["httpStatus"], 503);
     }
     use super::*;
 

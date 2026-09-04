@@ -759,6 +759,7 @@ pub fn setup_runtime_access_with_logger(
             bootstrap,
             access,
             ManagedRuntimeSshCredential::V1Compact(credential),
+            provider_logger,
         )
         .map(|session| Some(AccessSession::Managed(session))),
         (
@@ -768,6 +769,7 @@ pub fn setup_runtime_access_with_logger(
             bootstrap,
             access,
             ManagedRuntimeSshCredential::V1Full(credential),
+            provider_logger,
         )
         .map(|session| Some(AccessSession::Managed(session))),
         _ => Err(AccessError::new("access_setup_failed")),

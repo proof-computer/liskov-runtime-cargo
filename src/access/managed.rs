@@ -18,6 +18,7 @@ use futures_util::{SinkExt, StreamExt};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+use tokio_tungstenite::tungstenite::Error as WebSocketError;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::header::{AUTHORIZATION, SEC_WEBSOCKET_PROTOCOL};
@@ -29,6 +30,7 @@ use super::{
     ManagedRuntimeSshCredential, ManagedRuntimeSshCredentialProviderV2, private_root,
     runtime_job_ids_match, terminate_child, unix_time_ms,
 };
+use crate::logging::RuntimeSshLogEmitter;
 use crate::protocol::{
     ManagedRuntimeAccessBootstrap, ManagedRuntimeAccessToolchain, RuntimeAccessProviderKind,
     RuntimeBootstrapResponse,
@@ -46,6 +48,53 @@ const DROPBEAR_ARGV0_NO_REEXEC: &str = "/liskov-dropbear-no-reexec";
 const DROPBEAR_FILENAME: &str = "liskov-dropbear";
 const DROPBEARKEY_FILENAME: &str = "liskov-dropbearkey";
 const MAX_TOOLCHAIN_BINARY_BYTES: u64 = 32 * 1024 * 1024;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConnectorAttemptError {
+    ConfigurationFailed,
+    ConnectTimeout,
+    HttpRefused(u16),
+    TransportFailed,
+    ProtocolFailed,
+    RelayFailed,
+    Cancelled,
+}
+
+impl ConnectorAttemptError {
+    fn code(self) -> Option<&'static str> {
+        match self {
+            Self::ConfigurationFailed => Some("access_connector_configuration_failed"),
+            Self::ConnectTimeout => Some("access_connector_connect_timeout"),
+            Self::HttpRefused(_) => Some("access_connector_http_refused"),
+            Self::TransportFailed => Some("access_connector_transport_failed"),
+            Self::ProtocolFailed => Some("access_connector_protocol_failed"),
+            Self::RelayFailed => Some("access_connector_relay_failed"),
+            Self::Cancelled => None,
+        }
+    }
+
+    fn http_status(self) -> Option<u16> {
+        match self {
+            Self::HttpRefused(status) => Some(status),
+            _ => None,
+        }
+    }
+
+    fn access_error(self) -> Option<AccessError> {
+        self.code().map(AccessError::new)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConnectorRegistrationEvent {
+    Registered,
+    Failed(ConnectorAttemptError),
+}
+
+enum ConnectorConnectResult<T> {
+    Completed(Result<T, WebSocketError>),
+    TimedOut,
+    Cancelled,
+}
 
 pub struct ManagedAccessSession {
     dropbear: Child,
@@ -193,12 +242,13 @@ pub(super) fn setup(
     bootstrap: &RuntimeBootstrapResponse,
     access: &ManagedRuntimeAccessBootstrap,
     credential: ManagedRuntimeSshCredential,
+    provider_logger: Option<RuntimeSshLogEmitter>,
 ) -> Result<ManagedAccessSession, AccessError> {
     let now_ms = unix_time_ms().ok_or_else(|| AccessError::new("access_setup_failed"))?;
     let setup_deadline = setup_deadline(access.setup_deadline_ms, now_ms)?;
     let validated = validate_binding(bootstrap, access, credential, now_ms)?;
     let root = private_root(&access.attachment_id)?;
-    let result = setup_in_root(access, validated, &root, setup_deadline);
+    let result = setup_in_root(access, validated, &root, setup_deadline, provider_logger);
     if result.is_err() {
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -434,6 +484,7 @@ fn setup_in_root(
     credential: ValidatedCredential,
     root: &Path,
     deadline: Instant,
+    provider_logger: Option<RuntimeSshLogEmitter>,
 ) -> Result<ManagedAccessSession, AccessError> {
     let verified = verify_fixed_toolchain(
         &credential.toolchain.runtime_contact_sha256,
@@ -497,13 +548,17 @@ fn setup_in_root(
         return Err(error);
     }
 
-    let (registered_sender, registered_receiver) = mpsc::sync_channel(1);
+    // The connector may fail and then register before this thread is scheduled
+    // again. Preserve both ordered events: dropping a full-channel registration
+    // would turn a successful retry back into a false setup timeout.
+    let (registered_sender, registered_receiver) = mpsc::channel();
     let mut connector = match spawn_connector(
         endpoint,
         credential.connector_token,
         credential.expires_at_ms,
         CONNECTOR_SUBPROTOCOL_V1,
         registered_sender,
+        provider_logger,
     ) {
         Ok(connector) => connector,
         Err(error) => {
@@ -511,14 +566,10 @@ fn setup_in_root(
             return Err(error);
         }
     };
-    let registration_wait = deadline.saturating_duration_since(Instant::now());
-    match registered_receiver.recv_timeout(registration_wait) {
-        Ok(()) => {}
-        Err(_) => {
-            let _ = connector.stop();
-            let _ = terminate_child(&mut dropbear);
-            return Err(AccessError::new("access_connector_registration_failed"));
-        }
+    if let Err(error) = wait_for_connector_registration(&registered_receiver, deadline) {
+        let _ = connector.stop();
+        let _ = terminate_child(&mut dropbear);
+        return Err(error);
     }
 
     Ok(ManagedAccessSession {
@@ -532,6 +583,35 @@ fn setup_in_root(
         degraded_reported: false,
         stopped: false,
     })
+}
+
+fn wait_for_connector_registration(
+    receiver: &mpsc::Receiver<ConnectorRegistrationEvent>,
+    deadline: Instant,
+) -> Result<(), AccessError> {
+    let mut latest_failure = None;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(latest_failure
+                .and_then(ConnectorAttemptError::access_error)
+                .unwrap_or_else(|| AccessError::new("access_connector_registration_failed")));
+        }
+        match receiver.recv_timeout(remaining) {
+            Ok(ConnectorRegistrationEvent::Registered) => return Ok(()),
+            Ok(ConnectorRegistrationEvent::Failed(error)) => latest_failure = Some(error),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                return Err(latest_failure
+                    .and_then(ConnectorAttemptError::access_error)
+                    .unwrap_or_else(|| AccessError::new("access_connector_registration_failed")));
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(latest_failure
+                    .and_then(ConnectorAttemptError::access_error)
+                    .unwrap_or_else(|| AccessError::new("access_connector_registration_failed")));
+            }
+        }
+    }
 }
 
 fn verify_dropbear_options(dropbear: &Path, deadline: Instant) -> Result<(), AccessError> {
@@ -819,7 +899,8 @@ fn spawn_connector(
     token: Zeroizing<String>,
     expires_at_ms: u64,
     subprotocol: &'static str,
-    registered: mpsc::SyncSender<()>,
+    registered: mpsc::Sender<ConnectorRegistrationEvent>,
+    provider_logger: Option<RuntimeSshLogEmitter>,
 ) -> Result<ConnectorWorker, AccessError> {
     let cancel = Arc::new(AtomicBool::new(false));
     let worker_cancel = cancel.clone();
@@ -832,7 +913,6 @@ fn spawn_connector(
             if let Ok(runtime) = runtime {
                 connector_driver(
                     unix_time_ms,
-                    reconnect_delay,
                     |registered| {
                         runtime.block_on(connect_once(
                             &endpoint,
@@ -843,6 +923,11 @@ fn spawn_connector(
                         ))
                     },
                     |delay| runtime.block_on(wait_cancelled(worker_cancel.clone(), delay)),
+                    |elapsed_ms, outcome, code, http_status| {
+                        if let Some(logger) = provider_logger.as_ref() {
+                            logger.connector_stage(elapsed_ms, outcome, code, http_status);
+                        }
+                    },
                     &worker_cancel,
                     expires_at_ms,
                     Some(registered),
@@ -856,32 +941,57 @@ fn spawn_connector(
     })
 }
 
-fn connector_driver<Now, Delay, Connect, Wait>(
+fn connector_driver<Now, Connect, Wait, Report>(
     mut now_ms: Now,
-    mut delay_for_attempt: Delay,
     mut connect_once: Connect,
     mut wait: Wait,
+    mut report: Report,
     cancel: &AtomicBool,
     expires_at_ms: u64,
-    mut registered: Option<mpsc::SyncSender<()>>,
+    mut registered: Option<mpsc::Sender<ConnectorRegistrationEvent>>,
 ) where
     Now: FnMut() -> Option<u64>,
-    Delay: FnMut(u32) -> Duration,
-    Connect: FnMut(Option<&mpsc::SyncSender<()>>) -> Result<(), ()>,
+    Connect: FnMut(
+        Option<&mpsc::Sender<ConnectorRegistrationEvent>>,
+    ) -> Result<(), ConnectorAttemptError>,
     Wait: FnMut(Duration) -> bool,
+    Report: FnMut(u64, &'static str, Option<&'static str>, Option<u16>),
 {
     let mut attempt = 0_u32;
     while !cancel.load(Ordering::Acquire) && now_ms().is_some_and(|now_ms| now_ms < expires_at_ms) {
+        let started = Instant::now();
         match connect_once(registered.as_ref()) {
             Ok(()) => {
+                let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                report(elapsed_ms, "ok", None, None);
                 registered = None;
                 attempt = 0;
             }
-            Err(()) => {
+            Err(ConnectorAttemptError::Cancelled) => {
+                let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                report(elapsed_ms, "cancelled", None, None);
+                break;
+            }
+            Err(error) => {
+                if let Some(registered) = registered.as_ref() {
+                    let _ = registered.send(ConnectorRegistrationEvent::Failed(error));
+                }
                 attempt = attempt.saturating_add(1);
+                let can_retry = !cancel.load(Ordering::Acquire)
+                    && now_ms().is_some_and(|now_ms| now_ms < expires_at_ms);
+                let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                report(
+                    elapsed_ms,
+                    if can_retry { "retry" } else { "failed" },
+                    error.code(),
+                    error.http_status(),
+                );
+                if !can_retry {
+                    break;
+                }
             }
         }
-        if wait(delay_for_attempt(attempt)) {
+        if wait(reconnect_delay(attempt)) {
             break;
         }
     }
@@ -892,22 +1002,33 @@ async fn connect_once(
     token: &str,
     subprotocol: &'static str,
     cancel: Arc<AtomicBool>,
-    registered: Option<&mpsc::SyncSender<()>>,
-) -> Result<(), ()> {
-    let mut request = endpoint.into_client_request().map_err(|_| ())?;
-    let authorization = format!("Bearer {token}").parse().map_err(|_| ())?;
+    registered: Option<&mpsc::Sender<ConnectorRegistrationEvent>>,
+) -> Result<(), ConnectorAttemptError> {
+    let mut request = endpoint
+        .into_client_request()
+        .map_err(|_| ConnectorAttemptError::ConfigurationFailed)?;
+    let authorization = format!("Bearer {token}")
+        .parse()
+        .map_err(|_| ConnectorAttemptError::ConfigurationFailed)?;
     request.headers_mut().insert(AUTHORIZATION, authorization);
-    request
-        .headers_mut()
-        .insert(SEC_WEBSOCKET_PROTOCOL, subprotocol.parse().map_err(|_| ())?);
+    request.headers_mut().insert(
+        SEC_WEBSOCKET_PROTOCOL,
+        subprotocol
+            .parse()
+            .map_err(|_| ConnectorAttemptError::ConfigurationFailed)?,
+    );
     let mut config = WebSocketConfig::default();
     config.max_message_size = Some(MAX_FRAME_BYTES);
     config.max_frame_size = Some(MAX_FRAME_BYTES);
     let connecting = tokio_tungstenite::connect_async_with_config(request, Some(config), false);
-    let (mut websocket, response) = tokio::select! {
-        result = tokio::time::timeout(CONNECT_TIMEOUT, connecting) => result.map_err(|_| ())?.map_err(|_| ())?,
-        _ = wait_until_cancelled(cancel.clone()) => return Err(()),
+    let connect_result = tokio::select! {
+        result = tokio::time::timeout(CONNECT_TIMEOUT, connecting) => match result {
+            Ok(result) => ConnectorConnectResult::Completed(result),
+            Err(_) => ConnectorConnectResult::TimedOut,
+        },
+        _ = wait_until_cancelled(cancel.clone()) => ConnectorConnectResult::Cancelled,
     };
+    let (mut websocket, response) = classify_connector_connect(connect_result)?;
     if response
         .headers()
         .get(SEC_WEBSOCKET_PROTOCOL)
@@ -915,18 +1036,32 @@ async fn connect_once(
         != Some(subprotocol)
     {
         let _ = websocket.close(None).await;
-        return Err(());
+        return Err(ConnectorAttemptError::ProtocolFailed);
     }
     if let Some(registered) = registered {
-        let _ = registered.try_send(());
+        let _ = registered.send(ConnectorRegistrationEvent::Registered);
     }
     wait_for_open_and_relay(&mut websocket, cancel).await
+}
+
+fn classify_connector_connect<T>(
+    result: ConnectorConnectResult<T>,
+) -> Result<T, ConnectorAttemptError> {
+    match result {
+        ConnectorConnectResult::Completed(Ok(connection)) => Ok(connection),
+        ConnectorConnectResult::Completed(Err(WebSocketError::Http(response))) => Err(
+            ConnectorAttemptError::HttpRefused(response.status().as_u16()),
+        ),
+        ConnectorConnectResult::Completed(Err(_)) => Err(ConnectorAttemptError::TransportFailed),
+        ConnectorConnectResult::TimedOut => Err(ConnectorAttemptError::ConnectTimeout),
+        ConnectorConnectResult::Cancelled => Err(ConnectorAttemptError::Cancelled),
+    }
 }
 
 async fn wait_for_open_and_relay<S>(
     websocket: &mut tokio_tungstenite::WebSocketStream<S>,
     cancel: Arc<AtomicBool>,
-) -> Result<(), ()>
+) -> Result<(), ConnectorAttemptError>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
@@ -935,23 +1070,28 @@ where
             message = websocket.next() => message,
             _ = wait_until_cancelled(cancel.clone()) => {
                 let _ = websocket.close(None).await;
-                return Ok(());
+                return Err(ConnectorAttemptError::Cancelled);
             }
         };
         match message {
             Some(Ok(Message::Text(text))) if text == "open" => break,
-            Some(Ok(Message::Ping(bytes))) => {
-                websocket.send(Message::Pong(bytes)).await.map_err(|_| ())?
-            }
+            Some(Ok(Message::Ping(bytes))) => websocket
+                .send(Message::Pong(bytes))
+                .await
+                .map_err(|_| ConnectorAttemptError::RelayFailed)?,
             Some(Ok(Message::Pong(_))) => {}
-            Some(Ok(Message::Close(_))) | Some(Err(_)) | None => return Err(()),
-            Some(Ok(_)) => return Err(()),
+            Some(Ok(Message::Close(_))) | Some(Err(_)) | None => {
+                return Err(ConnectorAttemptError::RelayFailed);
+            }
+            Some(Ok(_)) => return Err(ConnectorAttemptError::ProtocolFailed),
         }
     }
 
     let mut tcp = tokio::select! {
-        result = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(FIXED_SSH_TARGET)) => result.map_err(|_| ())?.map_err(|_| ())?,
-        _ = wait_until_cancelled(cancel.clone()) => return Ok(()),
+        result = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(FIXED_SSH_TARGET)) => result
+            .map_err(|_| ConnectorAttemptError::RelayFailed)?
+            .map_err(|_| ConnectorAttemptError::RelayFailed)?,
+        _ = wait_until_cancelled(cancel.clone()) => return Err(ConnectorAttemptError::Cancelled),
     };
     let mut tcp_buffer = vec![0_u8; MAX_FRAME_BYTES];
     let mut websocket_to_tcp = 0_u64;
@@ -959,42 +1099,54 @@ where
     loop {
         tokio::select! {
             read = tcp.read(&mut tcp_buffer) => {
-                let read = read.map_err(|_| ())?;
+                let read = read.map_err(|_| ConnectorAttemptError::RelayFailed)?;
                 if read == 0 {
                     let _ = websocket.close(None).await;
                     return Ok(());
                 }
-                tcp_to_websocket = tcp_to_websocket.saturating_add(u64::try_from(read).map_err(|_| ())?);
+                tcp_to_websocket = tcp_to_websocket.saturating_add(
+                    u64::try_from(read).map_err(|_| ConnectorAttemptError::RelayFailed)?
+                );
                 if tcp_to_websocket > MAX_DIRECTION_BYTES {
-                    return Err(());
+                    return Err(ConnectorAttemptError::RelayFailed);
                 }
                 websocket
                     .send(Message::Binary(tcp_buffer[..read].to_vec().into()))
                     .await
-                    .map_err(|_| ())?;
+                    .map_err(|_| ConnectorAttemptError::RelayFailed)?;
             }
             message = websocket.next() => {
                 match message {
                     Some(Ok(Message::Binary(bytes))) => {
                         if bytes.len() > MAX_FRAME_BYTES {
-                            return Err(());
+                            return Err(ConnectorAttemptError::RelayFailed);
                         }
-                        websocket_to_tcp = websocket_to_tcp.saturating_add(u64::try_from(bytes.len()).map_err(|_| ())?);
+                        websocket_to_tcp = websocket_to_tcp.saturating_add(
+                            u64::try_from(bytes.len())
+                                .map_err(|_| ConnectorAttemptError::RelayFailed)?
+                        );
                         if websocket_to_tcp > MAX_DIRECTION_BYTES {
-                            return Err(());
+                            return Err(ConnectorAttemptError::RelayFailed);
                         }
-                        tcp.write_all(&bytes).await.map_err(|_| ())?;
+                        tcp.write_all(&bytes)
+                            .await
+                            .map_err(|_| ConnectorAttemptError::RelayFailed)?;
                     }
-                    Some(Ok(Message::Ping(bytes))) => websocket.send(Message::Pong(bytes)).await.map_err(|_| ())?,
+                    Some(Ok(Message::Ping(bytes))) => websocket
+                        .send(Message::Pong(bytes))
+                        .await
+                        .map_err(|_| ConnectorAttemptError::RelayFailed)?,
                     Some(Ok(Message::Pong(_))) => {}
                     Some(Ok(Message::Close(_))) | Some(Err(_)) | None => return Ok(()),
-                    Some(Ok(Message::Text(_))) | Some(Ok(Message::Frame(_))) => return Err(()),
+                    Some(Ok(Message::Text(_))) | Some(Ok(Message::Frame(_))) => {
+                        return Err(ConnectorAttemptError::ProtocolFailed);
+                    }
                 }
             }
             _ = wait_until_cancelled(cancel.clone()) => {
                 let _ = tcp.shutdown().await;
                 let _ = websocket.close(None).await;
-                return Ok(());
+                return Err(ConnectorAttemptError::Cancelled);
             }
         }
     }
@@ -1454,15 +1606,65 @@ mod tests {
     }
 
     #[test]
+    fn connector_connect_classification_preserves_http_status_and_timeout() {
+        let response = tokio_tungstenite::tungstenite::http::Response::builder()
+            .status(503)
+            .body(None::<Vec<u8>>)
+            .unwrap();
+        let refused = classify_connector_connect::<()>(ConnectorConnectResult::Completed(Err(
+            WebSocketError::Http(Box::new(response)),
+        )))
+        .unwrap_err();
+        assert_eq!(refused.code(), Some("access_connector_http_refused"));
+        assert_eq!(refused.http_status(), Some(503));
+
+        let timeout =
+            classify_connector_connect::<()>(ConnectorConnectResult::TimedOut).unwrap_err();
+        assert_eq!(timeout.code(), Some("access_connector_connect_timeout"));
+        assert_eq!(timeout.http_status(), None);
+    }
+
+    #[test]
+    fn registration_deadline_reports_the_latest_typed_connector_failure() {
+        let (sender, receiver) = mpsc::channel();
+        sender
+            .send(ConnectorRegistrationEvent::Failed(
+                ConnectorAttemptError::HttpRefused(401),
+            ))
+            .unwrap();
+        drop(sender);
+        assert_eq!(
+            wait_for_connector_registration(&receiver, Instant::now() + Duration::from_secs(1))
+                .unwrap_err()
+                .code,
+            "access_connector_http_refused"
+        );
+
+        let (sender, receiver) = mpsc::channel();
+        sender
+            .send(ConnectorRegistrationEvent::Failed(
+                ConnectorAttemptError::TransportFailed,
+            ))
+            .unwrap();
+        sender.send(ConnectorRegistrationEvent::Registered).unwrap();
+        assert!(
+            wait_for_connector_registration(&receiver, Instant::now() + Duration::from_secs(1))
+                .is_ok(),
+            "a typed failed attempt must not hide a later successful retry"
+        );
+    }
+
+    #[test]
     fn connector_driver_reconnects_until_expiry_and_stops_on_cancel() {
         let cancel = Arc::new(AtomicBool::new(false));
         let attempts = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let reports = Arc::new(std::sync::Mutex::new(Vec::new()));
         let recorded = attempts.clone();
+        let recorded_reports = reports.clone();
         let worker_cancel = cancel.clone();
         let handle = thread::spawn(move || {
             connector_driver(
                 || Some(1_000),
-                |_| Duration::ZERO,
                 |_registered| {
                     let mut attempts = recorded.lock().unwrap();
                     attempts.push((
@@ -1473,9 +1675,15 @@ mod tests {
                     if attempts.len() >= 3 {
                         worker_cancel.store(true, Ordering::Release);
                     }
-                    Err(())
+                    Err(ConnectorAttemptError::TransportFailed)
                 },
                 |_| worker_cancel.load(Ordering::Acquire),
+                |elapsed_ms, outcome, code, http_status| {
+                    recorded_reports
+                        .lock()
+                        .unwrap()
+                        .push((elapsed_ms, outcome, code, http_status));
+                },
                 &worker_cancel,
                 5_000,
                 None,
@@ -1493,17 +1701,23 @@ mod tests {
                         && *subprotocol == CONNECTOR_SUBPROTOCOL_V1
                 })
         );
+        let reports = reports.lock().unwrap();
+        assert_eq!(reports.len(), 3);
+        assert_eq!(reports[0].1, "retry");
+        assert_eq!(reports[0].2, Some("access_connector_transport_failed"));
+        assert_eq!(reports[0].3, None);
+        assert_eq!(reports[2].1, "failed");
 
         let connects = std::sync::atomic::AtomicU32::new(0);
         let cancel = AtomicBool::new(false);
         connector_driver(
             || Some(10_000),
-            |_| Duration::ZERO,
             |_| {
                 connects.fetch_add(1, Ordering::SeqCst);
-                Err(())
+                Err(ConnectorAttemptError::TransportFailed)
             },
             |_| false,
+            |_, _, _, _| {},
             &cancel,
             5_000,
             None,
