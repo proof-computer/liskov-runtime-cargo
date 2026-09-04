@@ -32,7 +32,10 @@ cleanup() {
     kill -TERM "${dropbear_pid}" 2>/dev/null || true
     wait "${dropbear_pid}" 2>/dev/null || true
   fi
-  rm -rf -- "${private_root}"
+  # PRoot/QEMU can leave a guest-created key that the outer runner cannot
+  # unlink even though every behavioral assertion already passed. Cleanup is
+  # best-effort test hygiene; it must not turn a green access smoke red.
+  rm -rf -- "${private_root}" 2>/dev/null || true
 }
 trap cleanup EXIT HUP INT TERM
 
