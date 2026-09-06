@@ -3,8 +3,8 @@
 //! The Cargo supervisor must own Runtime SSH logging before the provider
 //! sidecar starts. `BLACKBOX_LOG_CONFIG` is nevertheless delivered as a
 //! job-bound Lockbox secret, so the supervisor resolves only that exact secret
-//! through the Acurast bridge. Customer secrets remain owned by the workload's
-//! runtime SDK.
+//! through the Acurast bridge. The customer-secret module reuses this wire
+//! verifier and decoder without coupling customer delivery to logging.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -36,6 +36,8 @@ const MAX_CONFIG_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Error)]
 pub enum LogConfigSecretError {
+    #[error("runtime secret file installation failed")]
+    FileInstallation,
     #[error("runtime log-config bootstrap was invalid")]
     InvalidBootstrap,
     #[error("runtime log-config clock was unavailable")]
@@ -73,6 +75,7 @@ impl LogConfigSecretError {
     /// `hydrateErrorCode` attr — secret-free, one token per variant.
     pub fn code(&self) -> &'static str {
         match self {
+            Self::FileInstallation => "file_installation",
             Self::InvalidBootstrap => "invalid_bootstrap",
             Self::Clock => "clock",
             Self::TimestampOverflow => "timestamp_overflow",
@@ -92,7 +95,7 @@ impl LogConfigSecretError {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct CompactBootstrap {
     v: u8,
     u: String,
@@ -224,7 +227,7 @@ where
     .or_else(|| first_present(LOCKBOX_BOOTSTRAP_ENV_NAMES, process_env))
 }
 
-fn discover_lockbox_bootstrap_with(
+pub(crate) fn discover_lockbox_bootstrap_with(
     bootstrap: &RuntimeBootstrapResponse,
     bridge: &dyn Bridge,
     http: &dyn HttpClient,
@@ -297,12 +300,6 @@ fn discover_lockbox_bootstrap_with(
     {
         return Err(LogConfigSecretError::ResponseBinding);
     }
-    if !requested_secret_ids
-        .iter()
-        .any(|secret_id| secret_id.as_str() == Some(BLACKBOX_LOG_CONFIG_SECRET_ID))
-    {
-        return Ok(None);
-    }
     let requested_secret_ids = requested_secret_ids
         .iter()
         .filter_map(Value::as_str)
@@ -331,6 +328,30 @@ fn load_blackbox_log_config_with(
     now_ms: u64,
     nonce: [u8; 16],
 ) -> Result<Option<String>, LogConfigSecretError> {
+    let mut config: CompactBootstrap =
+        serde_json::from_str(raw_bootstrap).map_err(|_| LogConfigSecretError::InvalidBootstrap)?;
+    if !config
+        .s
+        .iter()
+        .any(|id| id == BLACKBOX_LOG_CONFIG_SECRET_ID)
+    {
+        return Ok(None);
+    }
+    config.s = vec![BLACKBOX_LOG_CONFIG_SECRET_ID.to_owned()];
+    let raw = serde_json::to_string(&config).map_err(LogConfigSecretError::Serialization)?;
+    let payload = load_job_secret_payload_with(bootstrap, bridge, http, &raw, now_ms, nonce)?;
+    validate_secret_versions(&payload["secrets"])?;
+    extract_blackbox_config(&payload).map(Some)
+}
+
+pub(crate) fn load_job_secret_payload_with(
+    bootstrap: &RuntimeBootstrapResponse,
+    bridge: &dyn Bridge,
+    http: &dyn HttpClient,
+    raw_bootstrap: &str,
+    now_ms: u64,
+    nonce: [u8; 16],
+) -> Result<Value, LogConfigSecretError> {
     let config: CompactBootstrap =
         serde_json::from_str(raw_bootstrap).map_err(|_| LogConfigSecretError::InvalidBootstrap)?;
     let policy_digest = normalize_policy_digest(&bootstrap.policy_digest)
@@ -344,13 +365,6 @@ fn load_blackbox_log_config_with(
     {
         return Err(LogConfigSecretError::InvalidBootstrap);
     }
-    if !config
-        .s
-        .iter()
-        .any(|secret_id| secret_id == BLACKBOX_LOG_CONFIG_SECRET_ID)
-    {
-        return Ok(None);
-    }
     let endpoint = secure_endpoint(&config.u)?;
     let response_encryption_key = encryption_public_key(bridge)?;
     let unsigned = UnsignedRequest {
@@ -362,7 +376,7 @@ fn load_blackbox_log_config_with(
         job_id: bootstrap.job_id.clone(),
         deployment_id: bootstrap.deployment_id.clone(),
         processor_id: bootstrap.processor_id.clone(),
-        requested_secret_ids: vec![BLACKBOX_LOG_CONFIG_SECRET_ID.to_owned()],
+        requested_secret_ids: config.s,
         nonce: hex::encode(nonce),
         issued_at_ms: now_ms,
         expires_at_ms: now_ms
@@ -388,7 +402,7 @@ fn load_blackbox_log_config_with(
     if !(200..300).contains(&response.status) {
         return Err(LogConfigSecretError::Rejected);
     }
-    validate_and_decrypt_response(&unsigned, bridge, &response.body).map(Some)
+    decrypt_job_secret_payload(&unsigned, bridge, &response.body)
 }
 
 fn secure_endpoint(raw: &str) -> Result<url::Url, LogConfigSecretError> {
@@ -440,11 +454,11 @@ fn sign(bridge: &dyn Bridge, message: &[u8]) -> Result<String, LogConfigSecretEr
     Ok(format!("0x{signature}"))
 }
 
-fn validate_and_decrypt_response(
+fn decrypt_job_secret_payload(
     request: &UnsignedRequest,
     bridge: &dyn Bridge,
     body: &[u8],
-) -> Result<String, LogConfigSecretError> {
+) -> Result<Value, LogConfigSecretError> {
     let response: Value =
         serde_json::from_slice(body).map_err(|_| LogConfigSecretError::InvalidResponse)?;
     if response["ok"].as_bool() != Some(true)
@@ -457,14 +471,17 @@ fn validate_and_decrypt_response(
         || response["jobId"].as_str() != Some(request.job_id.as_str())
         || response["deploymentId"].as_str() != Some(request.deployment_id.as_str())
         || response["processorId"].as_str() != Some(request.processor_id.as_str())
-        || response["requestedSecretIds"] != json!([BLACKBOX_LOG_CONFIG_SECRET_ID])
+        || response["requestedSecretIds"] != json!(request.requested_secret_ids)
         || response["requestId"]
             .as_str()
             .is_none_or(|request_id| request_id.is_empty())
     {
         return Err(LogConfigSecretError::ResponseBinding);
     }
-    validate_secret_versions(&response["secretVersions"])?;
+    crate::job_secrets::validate_versions(
+        &response["secretVersions"],
+        &request.requested_secret_ids,
+    )?;
 
     let encrypted = response["encryptedPayload"]
         .as_object()
@@ -533,7 +550,8 @@ fn validate_and_decrypt_response(
     let payload: Value =
         serde_json::from_slice(&plaintext).map_err(|_| LogConfigSecretError::InvalidPlaintext)?;
     validate_plaintext_binding(request, &response, &payload)?;
-    extract_blackbox_config(&payload)
+    crate::job_secrets::validate_deliveries(&payload["secrets"], &response["secretVersions"])?;
+    Ok(payload)
 }
 
 fn validate_secret_versions(value: &Value) -> Result<(), LogConfigSecretError> {

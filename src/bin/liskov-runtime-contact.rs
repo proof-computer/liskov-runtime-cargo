@@ -236,6 +236,35 @@ fn main() -> ExitCode {
             return ExitCode::from(status);
         }
     };
+    if let Err(error) = liskov_runtime_cargo::job_secrets::hydrate_customer_secrets(
+        &bootstrap,
+        &bridge,
+        &mut runtime_environment,
+    ) {
+        if let Some(reporter) = reporter.as_ref() {
+            let _ = reporter.report_failed(
+                &diagnostic_http,
+                DiagnosticFailure {
+                    stage: "runtime-secrets.http",
+                    method: "runtime_secrets",
+                    code: if matches!(
+                        error,
+                        liskov_runtime_cargo::LogConfigSecretError::FileInstallation
+                    ) {
+                        "runtime_secrets_file_installation"
+                    } else {
+                        "runtime_secrets_rejected"
+                    },
+                    rpc_code: None,
+                },
+            );
+        }
+        eprintln!(
+            "liskov-runtime-contact: required customer-secret delivery failed ({})",
+            error.code()
+        );
+        return ExitCode::from(70);
+    }
     // Provider logging is strictly best-effort. Resolve only the server-owned
     // Blackbox config before Runtime SSH starts, but never let Lockbox or
     // logging availability alter customer execution or access attachment state.

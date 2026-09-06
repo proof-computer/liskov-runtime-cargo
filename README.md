@@ -350,3 +350,18 @@ This is a provider-real compatibility test, not the Android release gate. It
 does not reproduce the processor app UID, SELinux policy, Android interfaces,
 or Acurast's private outbound-connect interceptor, and it does not prove
 customer-workload continuity through a sidecar failure.
+
+## Customer-secret installation
+
+Runtime-contact 0.10.39 consumes the optional signed-bootstrap v2
+`secrets.customerRequired` hint. It retrieves the exact job-bound customer
+secret group before starting the customer command, independently of logging.
+Required delivery or installation failure exits with code 70 and a redacted
+runtime-secret diagnostic. Older bootstrap responses keep their existing behavior.
+
+Environment values retain their exact strings. Absolute file destinations are
+installed as private 0600 files using directory descriptors, no-follow opens,
+staging and rollback. Environment changes follow successful file installation.
+Symlinks, traversal and reserved staging names are refused. Interrupted file
+replacements are recovered on the next start; release receipts alone do not
+prove process installation. Existing artifacts must be rebuilt to use this helper.
