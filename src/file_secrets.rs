@@ -77,9 +77,11 @@ fn rename(
     target: &CString,
     no_replace: bool,
 ) -> Result<(), FileSecretError> {
-    // SAFETY: both names and the owned directory fd remain live across the call.
+    // SAFETY: Linux renameat2 syscall arguments use live descriptors and C strings.
+    // The static musl bundled with Rust 1.85 has no renameat2 wrapper.
     let result = unsafe {
-        libc::renameat2(
+        libc::syscall(
+            libc::SYS_renameat2,
             parent.as_raw_fd(),
             source.as_ptr(),
             parent.as_raw_fd(),
