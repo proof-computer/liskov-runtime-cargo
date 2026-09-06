@@ -1231,6 +1231,7 @@ pub(crate) mod tests {
             processor_id: "processor".into(),
             runtime_instance_id: "runtime-instance".into(),
             slipway_url: "https://liskov.example".into(),
+            secrets: None,
             runtime_env: None,
             supervision: Some(supervision),
             logging: None,

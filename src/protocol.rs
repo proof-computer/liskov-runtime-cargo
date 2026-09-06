@@ -41,6 +41,15 @@ pub struct SignedRuntimeBootstrapRequest {
     pub signature: String,
 }
 
+/// Backward-compatible v2 customer-secret admission hint. Older servers omit
+/// it, and the legacy logging-only path remains unchanged.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeSecretsBootstrap {
+    #[serde(default)]
+    pub customer_required: Option<bool>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeBootstrapResponse {
@@ -56,6 +65,8 @@ pub struct RuntimeBootstrapResponse {
     pub slipway_url: String,
     #[serde(default)]
     pub runtime_env: Option<RuntimeEnvBootstrap>,
+    #[serde(default)]
+    pub secrets: Option<RuntimeSecretsBootstrap>,
     #[serde(default)]
     pub supervision: Option<Value>,
     #[serde(default)]
