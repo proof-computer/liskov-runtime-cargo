@@ -353,7 +353,7 @@ customer-workload continuity through a sidecar failure.
 
 ## Customer-secret installation
 
-Runtime-contact 0.10.39 consumes the optional signed-bootstrap v2
+Runtime-contact 0.10.40 consumes the optional signed-bootstrap v2
 `secrets.customerRequired` hint. It retrieves the exact job-bound customer
 secret group before starting the customer command, independently of logging.
 Required delivery or installation failure exits with code 70 and a redacted
