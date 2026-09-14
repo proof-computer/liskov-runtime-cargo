@@ -1,0 +1,47 @@
+{
+  "domain": "proof.liskov.processor-fact-catalog.v1",
+  "profile": "processor-coverage-network-v1",
+  "factKind": "bandwidth_sample",
+  "schemaVersion": 1,
+  "subject": "time_bound_observation",
+  "capture": "platform_coverage_authorized_only",
+  "persistence": "observation",
+  "consumption": [
+    "coverage_assessment",
+    "coverage_operator_readback"
+  ],
+  "currentProfile": false,
+  "retention": "frozen_coverage_profile.retention_ms",
+  "purpose": "Bounded operational connectivity and placement research; not an Internet-speed SLA",
+  "bounds": {
+    "sampleMs": 30000,
+    "downloadBytes": 111000000,
+    "uploadBytes": 11000000,
+    "udpDatagrams": 20,
+    "udpBytes": 64,
+    "signedEnvelopeBytes": 16384
+  },
+  "fields": [
+    "version",
+    "startedAtMs",
+    "durationMs",
+    "region",
+    "ipv4Egress",
+    "ipv6Egress",
+    "legs",
+    "udp",
+    "metrics",
+    "receipt",
+    "errors"
+  ],
+  "forbidden": [
+    "network_addresses",
+    "customer_values",
+    "permanent_device_identifiers"
+  ],
+  "provenance": [
+    "signed_coverage_envelope",
+    "server_minted_challenge",
+    "authenticated_prober_receipt_when_available"
+  ]
+}
