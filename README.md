@@ -365,3 +365,22 @@ staging and rollback. Environment changes follow successful file installation.
 Symlinks, traversal and reserved staging names are refused. Interrupted file
 replacements are recovered on the next start; release receipts alone do not
 prove process installation. Existing artifacts must be rebuilt to use this helper.
+
+## Authorized network coverage samples
+
+Coverage authorizations may opt the pinned native helper into `networkSample`
+version 1 using `networkProberUrl`. Only the compiled HTTPS prober origin is
+accepted. No authorization means no network sampling. The prober capability
+is opaque; the helper never receives its HMAC key.
+
+The complete sample has a 30-second cancellation deadline, decimal-MB transfer
+caps, no measurement retries and closed errors. UDP runs over IPv4 before bulk
+traffic; HTTPS tests both address families. Raw addresses are never serialized.
+The largest completed directional leg supplies throughput; sequence/timing
+records supply RTT, RFC3550 jitter and loss. A near-expiry authorization skips
+the sample to preserve the existing result-delivery budget. The coverage job
+window remains 120 seconds until live measurements support changing it.
+
+The signed block, shared vector and catalog match the `liskov-rs` contract owner.
+Existing envelopes omit the optional block and retain their canonical bytes.
+Refs BKLG-20260914-fglr; ADR-0139.

@@ -1,0 +1,169 @@
+{
+  "result": {
+    "domain": "proof.liskov.processor-coverage-result.v1",
+    "applicationId": "app-1",
+    "policyVersionId": "policy-version-5",
+    "policyDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "artifactDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "cycleId": "coverage-cycle-2026-08-13",
+    "target": {
+      "targetId": "acurast-js-source",
+      "provider": "acurast",
+      "runtime": "javascript",
+      "release": "source"
+    },
+    "deploymentId": "deployment-1",
+    "jobId": "job-7",
+    "processorId": "processor-acurast-1",
+    "probeVersion": "probe-v3",
+    "profileVersion": "profile-v2",
+    "sequence": 4,
+    "issuedAtMs": 1775000000000,
+    "expiresAtMs": 1775000060000,
+    "outcomes": [
+      {
+        "probeId": "runtime-bootstrap",
+        "status": "succeeded",
+        "region": "europe-west",
+        "startedAtMs": 1775000001000,
+        "completedAtMs": 1775000002250,
+        "durationMs": 1250,
+        "bytesSent": 384,
+        "bytesReceived": 2048,
+        "errors": []
+      },
+      {
+        "probeId": "provider-egress",
+        "status": "failed",
+        "region": "europe-west",
+        "startedAtMs": 1775000003000,
+        "completedAtMs": 1775000003500,
+        "durationMs": 500,
+        "bytesSent": 96,
+        "bytesReceived": 0,
+        "errors": [
+          {
+            "code": "coverage_target_unreachable",
+            "message": "The target refused the bounded coverage probe."
+          }
+        ]
+      },
+      {
+        "probeId": "bandwidth-download",
+        "status": "succeeded",
+        "region": "lhr",
+        "startedAtMs": 1775000004000,
+        "completedAtMs": 1775000007000,
+        "durationMs": 3000,
+        "bytesSent": 0,
+        "bytesReceived": 1000000,
+        "errors": []
+      },
+      {
+        "probeId": "bandwidth-upload",
+        "status": "succeeded",
+        "region": "lhr",
+        "startedAtMs": 1775000007000,
+        "completedAtMs": 1775000010000,
+        "durationMs": 3000,
+        "bytesSent": 1000000,
+        "bytesReceived": 0,
+        "errors": []
+      },
+      {
+        "probeId": "udp-path",
+        "status": "succeeded",
+        "region": "lhr",
+        "startedAtMs": 1775000001000,
+        "completedAtMs": 1775000004000,
+        "durationMs": 3000,
+        "bytesSent": 192,
+        "bytesReceived": 128,
+        "errors": []
+      }
+    ],
+    "normalizedMetricDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "challenge": "0x69cc59c069cc59fc0404040404040404374ee085704b22c29cc25cda3f38903d",
+    "replaySubject": "coverage:coverage-cycle-2026-08-13:job-7:4",
+    "networkSample": {
+      "version": 1,
+      "startedAtMs": 1775000001000,
+      "durationMs": 9000,
+      "region": "lhr",
+      "ipv4Egress": true,
+      "ipv6Egress": true,
+      "legs": [
+        {
+          "id": "download1m",
+          "status": "succeeded",
+          "startOffsetUs": 3000000,
+          "durationUs": 3000000,
+          "bytes": 1000000,
+          "error": null
+        },
+        {
+          "id": "upload1m",
+          "status": "succeeded",
+          "startOffsetUs": 6000000,
+          "durationUs": 3000000,
+          "bytes": 1000000,
+          "error": null
+        }
+      ],
+      "udp": {
+        "status": "succeeded",
+        "startOffsetUs": 0,
+        "durationUs": 3000000,
+        "sentUs": [
+          0,
+          100000,
+          200000
+        ],
+        "echoes": [
+          {
+            "sequence": 0,
+            "receivedUs": 20000
+          },
+          {
+            "sequence": 2,
+            "receivedUs": 225000
+          }
+        ],
+        "error": null
+      },
+      "metrics": {
+        "downloadKbps": 2666,
+        "uploadKbps": 2666,
+        "medianRttUs": 22500,
+        "p90RttUs": 25000,
+        "jitterUs": 312,
+        "lossBps": 3333
+      },
+      "receipt": {
+        "version": 1,
+        "challengeDigest": "sha256:e8ce0078d911f95927d4fc08a8421fbb4202900094f5a9eaaff8ddd3bfe3e577",
+        "expiresAtSec": 1775000060,
+        "region": "lhr",
+        "legs": [
+          {
+            "id": "download1m",
+            "bytes": 1000000,
+            "durationUs": 3000000,
+            "complete": true
+          },
+          {
+            "id": "upload1m",
+            "bytes": 1000000,
+            "durationUs": 3000000,
+            "complete": true
+          }
+        ],
+        "udpEchoes": 2,
+        "mac": "fa6c7f8068ea486ca6bd9cf3743fdb6358e152ad57e1634b45d4955586acc7c5"
+      },
+      "errors": []
+    }
+  },
+  "canonicalSigningPayload": "{\"applicationId\":\"app-1\",\"artifactDigest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"challenge\":\"0x69cc59c069cc59fc0404040404040404374ee085704b22c29cc25cda3f38903d\",\"cycleId\":\"coverage-cycle-2026-08-13\",\"deploymentId\":\"deployment-1\",\"domain\":\"proof.liskov.processor-coverage-result.v1\",\"expiresAtMs\":1775000060000,\"issuedAtMs\":1775000000000,\"jobId\":\"job-7\",\"networkSample\":{\"durationMs\":9000,\"errors\":[],\"ipv4Egress\":true,\"ipv6Egress\":true,\"legs\":[{\"bytes\":1000000,\"durationUs\":3000000,\"error\":null,\"id\":\"download1m\",\"startOffsetUs\":3000000,\"status\":\"succeeded\"},{\"bytes\":1000000,\"durationUs\":3000000,\"error\":null,\"id\":\"upload1m\",\"startOffsetUs\":6000000,\"status\":\"succeeded\"}],\"metrics\":{\"downloadKbps\":2666,\"jitterUs\":312,\"lossBps\":3333,\"medianRttUs\":22500,\"p90RttUs\":25000,\"uploadKbps\":2666},\"receipt\":{\"challengeDigest\":\"sha256:e8ce0078d911f95927d4fc08a8421fbb4202900094f5a9eaaff8ddd3bfe3e577\",\"expiresAtSec\":1775000060,\"legs\":[{\"bytes\":1000000,\"complete\":true,\"durationUs\":3000000,\"id\":\"download1m\"},{\"bytes\":1000000,\"complete\":true,\"durationUs\":3000000,\"id\":\"upload1m\"}],\"mac\":\"fa6c7f8068ea486ca6bd9cf3743fdb6358e152ad57e1634b45d4955586acc7c5\",\"region\":\"lhr\",\"udpEchoes\":2,\"version\":1},\"region\":\"lhr\",\"startedAtMs\":1775000001000,\"udp\":{\"durationUs\":3000000,\"echoes\":[{\"receivedUs\":20000,\"sequence\":0},{\"receivedUs\":225000,\"sequence\":2}],\"error\":null,\"sentUs\":[0,100000,200000],\"startOffsetUs\":0,\"status\":\"succeeded\"},\"version\":1},\"normalizedMetricDigest\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"outcomes\":[{\"bytesReceived\":2048,\"bytesSent\":384,\"completedAtMs\":1775000002250,\"durationMs\":1250,\"errors\":[],\"probeId\":\"runtime-bootstrap\",\"region\":\"europe-west\",\"startedAtMs\":1775000001000,\"status\":\"succeeded\"},{\"bytesReceived\":0,\"bytesSent\":96,\"completedAtMs\":1775000003500,\"durationMs\":500,\"errors\":[{\"code\":\"coverage_target_unreachable\",\"message\":\"The target refused the bounded coverage probe.\"}],\"probeId\":\"provider-egress\",\"region\":\"europe-west\",\"startedAtMs\":1775000003000,\"status\":\"failed\"},{\"bytesReceived\":1000000,\"bytesSent\":0,\"completedAtMs\":1775000007000,\"durationMs\":3000,\"errors\":[],\"probeId\":\"bandwidth-download\",\"region\":\"lhr\",\"startedAtMs\":1775000004000,\"status\":\"succeeded\"},{\"bytesReceived\":0,\"bytesSent\":1000000,\"completedAtMs\":1775000010000,\"durationMs\":3000,\"errors\":[],\"probeId\":\"bandwidth-upload\",\"region\":\"lhr\",\"startedAtMs\":1775000007000,\"status\":\"succeeded\"},{\"bytesReceived\":128,\"bytesSent\":192,\"completedAtMs\":1775000004000,\"durationMs\":3000,\"errors\":[],\"probeId\":\"udp-path\",\"region\":\"lhr\",\"startedAtMs\":1775000001000,\"status\":\"succeeded\"}],\"policyDigest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"policyVersionId\":\"policy-version-5\",\"probeVersion\":\"probe-v3\",\"processorId\":\"processor-acurast-1\",\"profileVersion\":\"profile-v2\",\"replaySubject\":\"coverage:coverage-cycle-2026-08-13:job-7:4\",\"sequence\":4,\"target\":{\"provider\":\"acurast\",\"release\":\"source\",\"runtime\":\"javascript\",\"targetId\":\"acurast-js-source\"}}",
+  "testOnlyProberKeyHex": "0707070707070707070707070707070707070707070707070707070707070707"
+}

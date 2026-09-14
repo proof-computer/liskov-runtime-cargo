@@ -63,6 +63,8 @@ pub struct CoverageResultV1 {
     pub issued_at_ms: u64,
     pub expires_at_ms: u64,
     pub outcomes: Vec<CoverageOutcome>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_sample: Option<crate::network_sample_contract::NetworkSampleV1>,
     pub normalized_metric_digest: String,
     pub challenge: String,
     pub replay_subject: String,
@@ -112,6 +114,8 @@ pub enum CoverageOutcomeStatus {
     Failed,
     TimedOut,
     Unsupported,
+    SkippedBudget,
+    Unreachable,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -145,6 +149,8 @@ struct CoverageFactAuthorization {
     challenge: String,
     replay_subject: String,
     submit_url: String,
+    #[serde(default)]
+    network_prober_url: Option<String>,
 }
 
 impl CoverageFactAuthorization {
@@ -219,7 +225,12 @@ pub fn take_coverage_authorization(
 ) -> Option<CoverageAuthorization> {
     let raw = bootstrap.fact_authorization.take()?;
     let authorization: CoverageFactAuthorization = serde_json::from_value(raw).ok()?;
-    if !authorization.structurally_valid() {
+    if !authorization.structurally_valid()
+        || authorization
+            .network_prober_url
+            .as_deref()
+            .is_some_and(|u| u != crate::network_sample_contract::NETWORK_PROBER_URL)
+    {
         return None;
     }
     // Sign only our own identity: every binding field the runtime knows
@@ -285,6 +296,7 @@ pub fn wall_clock_ms() -> Option<u64> {
 }
 
 pub struct CoverageProducerDependencies<'a> {
+    pub network: Option<&'a dyn crate::network_sample::NetworkSampler>,
     pub clock: &'a dyn FactClock,
     pub signer: &'a dyn FactSigner,
     pub delivery: &'a dyn ResultDelivery,
@@ -339,6 +351,7 @@ pub(crate) fn detached_coverage_task(
         let android = AndroidPropertyCollector::<SecurePropertyFileReader>::default();
         let execution = LinuxExecutionCollector;
         let dependencies = CoverageProducerDependencies {
+            network: Some(&crate::network_sample::SystemNetworkSampler),
             clock: &clock,
             signer: &signer,
             delivery: &delivery,
@@ -421,6 +434,22 @@ pub(crate) fn run_coverage_producer(
         hardware_digest = Some(digest);
     }
 
+    let network_sample = authorization.network_prober_url.as_deref().and_then(|url| {
+        let sampler = dependencies.network?;
+        let started = dependencies.clock.now_ms()?;
+        // Leave the existing two bounded delivery attempts outside the sample.
+        if authorization.expires_at_ms.saturating_sub(started) < 40_000 {
+            return Some(crate::network_sample::skipped_sample(started));
+        }
+        Some(sampler.sample(url, &authorization.challenge, started))
+    });
+    if let Some(sample) = &network_sample {
+        if sample.validate().is_err() {
+            return CoverageProducerOutcome::EnvelopeUnrepresentable;
+        }
+        outcomes.extend(crate::network_sample::coverage_outcomes(sample));
+    }
+
     let normalized_metric_digest = match hardware_digest {
         Some(digest) => digest,
         None => {
@@ -451,6 +480,7 @@ pub(crate) fn run_coverage_producer(
         issued_at_ms: authorization.issued_at_ms,
         expires_at_ms: authorization.expires_at_ms,
         outcomes,
+        network_sample,
         normalized_metric_digest,
         challenge: authorization.challenge.clone(),
         replay_subject: authorization.replay_subject.clone(),
@@ -818,6 +848,7 @@ mod tests {
             &coverage,
             observation(),
             &CoverageProducerDependencies {
+                network: None,
                 clock: &clock,
                 signer: &signer,
                 delivery: &delivery,
@@ -933,6 +964,7 @@ mod tests {
             &coverage,
             observation(),
             &CoverageProducerDependencies {
+                network: None,
                 clock: &clock,
                 signer: &signer,
                 delivery: &delivery,
@@ -972,6 +1004,7 @@ mod tests {
                 completed_at_ms: NOW - 4_000,
             },
             &CoverageProducerDependencies {
+                network: None,
                 clock: &clock,
                 signer: &signer,
                 delivery: &delivery,
@@ -1002,6 +1035,7 @@ mod tests {
             &coverage,
             observation(),
             &CoverageProducerDependencies {
+                network: None,
                 clock: &clock,
                 signer: &signer,
                 delivery: &delivery,
@@ -1029,6 +1063,7 @@ mod tests {
             &coverage,
             observation(),
             &CoverageProducerDependencies {
+                network: None,
                 clock: &clock,
                 signer: &signer,
                 delivery: &delivery,
@@ -1053,6 +1088,7 @@ mod tests {
             &coverage,
             observation(),
             &CoverageProducerDependencies {
+                network: None,
                 clock: &clock,
                 signer: &signer,
                 delivery: &delivery,
@@ -1076,6 +1112,7 @@ mod tests {
             &coverage,
             observation(),
             &CoverageProducerDependencies {
+                network: None,
                 clock: &clock,
                 signer: &signer,
                 delivery: &delivery,
@@ -1105,6 +1142,7 @@ mod tests {
             &coverage,
             observation(),
             &CoverageProducerDependencies {
+                network: None,
                 clock: &clock,
                 signer: &signer,
                 delivery: &delivery,
