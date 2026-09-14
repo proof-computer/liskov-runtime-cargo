@@ -155,7 +155,6 @@ impl CoverageFactAuthorization {
                 self.policy_version_id.as_str(),
                 self.cycle_id.as_str(),
                 self.deployment_id.as_str(),
-                self.job_id.as_str(),
                 self.processor_id.as_str(),
                 self.probe_version.as_str(),
                 self.profile_version.as_str(),
@@ -165,6 +164,13 @@ impl CoverageFactAuthorization {
             ]
             .iter()
             .all(|value| bounded_identifier(value, MAX_IDENTITY_BYTES))
+            // The job id is the runtime's own structured Acurast identity
+            // (`{"id":"166148","origin":{...}}`), not a bare identifier; it is
+            // bound by exact equality with the authenticated bootstrap below,
+            // so only its size is checked here. Job 166148 (2026-09-14) was
+            // the first mint ever delivered and this list dropped it silently.
+            && !self.job_id.is_empty()
+            && self.job_id.len() <= MAX_IDENTITY_BYTES
             && valid_sha256(&self.policy_digest)
             && valid_sha256(&self.artifact_digest)
             && self
@@ -738,6 +744,36 @@ mod tests {
         let mut missing = minted_block();
         missing.as_object_mut().unwrap().remove("replaySubject");
         assert!(taken(missing).is_none());
+    }
+
+    /// The production job id is the structured Acurast identity the runtime
+    /// authenticates with, not a bare identifier. The server mints exactly
+    /// that string back; the block must survive the structural gate on it.
+    #[test]
+    fn structured_acurast_job_id_is_accepted_when_it_matches_the_bootstrap() {
+        let job_id = r#"{"id":"166148","origin":{"kind":"Acurast","source":"969ae4c29c471ba60654f97baa39092071a491a5278c0ef02dbab47c3e780a70"}}"#;
+        let mut block = minted_block();
+        block["jobId"] = json!(job_id);
+        let mut response = bootstrap(Some(block.clone()));
+        response.job_id = job_id.to_owned();
+        let authorization =
+            take_coverage_authorization(&mut response).expect("structured job id binds");
+        assert_eq!(authorization.authorization.job_id, job_id);
+        assert!(response.fact_authorization.is_none());
+
+        // Still bound by equality: the same structured id on the block with a
+        // different one on the bootstrap never arms the producer.
+        let mut misbound = bootstrap(Some(block));
+        misbound.job_id = r#"{"id":"166149","origin":{"kind":"Acurast","source":"00"}}"#.into();
+        assert!(take_coverage_authorization(&mut misbound).is_none());
+
+        // And still bounded: an oversize job id is refused.
+        let mut oversize = minted_block();
+        let long = format!("{{\"id\":\"{}\"}}", "9".repeat(MAX_IDENTITY_BYTES));
+        oversize["jobId"] = json!(long);
+        let mut response = bootstrap(Some(oversize));
+        response.job_id = long;
+        assert!(take_coverage_authorization(&mut response).is_none());
     }
 
     #[test]
