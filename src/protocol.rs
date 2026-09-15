@@ -235,6 +235,278 @@ pub struct TailscaleRuntimeAccessBootstrap {
     // credential is ten owned strings.
     #[serde(default)]
     pub credential: Option<Box<TailscaleRuntimeAccessCredential>>,
+    /// Private HTTP endpoints to publish on this attachment's tailnet
+    /// (`BKLG-20260907-lg5y`). Defaulted, so a server that predates
+    /// publications is unaffected. This struct denies unknown fields, so a
+    /// server may send the key only to a helper at or above the publication
+    /// floor.
+    #[serde(default)]
+    pub publications: Vec<TailscaleEndpointPublication>,
+}
+
+/// Upper bound on endpoints one attachment publishes.
+pub const MAX_ENDPOINT_PUBLICATIONS: usize = 8;
+
+/// One private endpoint the helper publishes on the attachment's tailnet.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TailscaleEndpointPublication {
+    /// The compiled use site, `/ingress/{service}/{endpoint}/provider`.
+    pub use_site: String,
+    pub service_name: String,
+    pub local_port: u16,
+    #[serde(default)]
+    pub health: Option<EndpointHealth>,
+}
+
+/// Mirrors `CompiledNetworkHealth`. Local liveness and readiness are
+/// independent, and neither one is endpoint reachability.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EndpointHealth {
+    #[serde(default)]
+    pub live: Option<EndpointProbe>,
+    #[serde(default)]
+    pub ready: Option<EndpointProbe>,
+}
+
+/// Mirrors `CompiledNetworkProbe`'s wire shape exactly.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum EndpointProbe {
+    Http {
+        path: String,
+        #[serde(default)]
+        contains: Option<String>,
+    },
+    Tcp {
+        port: u16,
+    },
+    Exec {
+        argv: Vec<String>,
+    },
+}
+
+impl TailscaleEndpointPublication {
+    fn valid(&self) -> bool {
+        self.use_site.len() <= 512
+            && self.use_site.starts_with("/ingress/")
+            && self.use_site.ends_with("/provider")
+            && !self.service_name.is_empty()
+            && self.service_name.len() <= 63
+            && self
+                .service_name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+            && self.local_port > 0
+            && self.health.as_ref().is_none_or(EndpointHealth::valid)
+    }
+}
+
+impl EndpointHealth {
+    fn valid(&self) -> bool {
+        (self.live.is_some() || self.ready.is_some())
+            && [self.live.as_ref(), self.ready.as_ref()]
+                .into_iter()
+                .flatten()
+                .all(EndpointProbe::valid)
+    }
+}
+
+impl EndpointProbe {
+    fn valid(&self) -> bool {
+        match self {
+            Self::Http { path, contains } => {
+                path.starts_with('/')
+                    && path.len() <= 256
+                    && !path
+                        .bytes()
+                        .any(|byte| byte.is_ascii_control() || byte == b' ')
+                    && contains
+                        .as_ref()
+                        .is_none_or(|needle| !needle.is_empty() && needle.len() <= 256)
+            }
+            Self::Tcp { port } => *port > 0,
+            Self::Exec { argv } => {
+                !argv.is_empty()
+                    && argv.len() <= 32
+                    && argv.iter().all(|arg| !arg.is_empty() && arg.len() <= 1024)
+            }
+        }
+    }
+}
+
+fn publications_valid(publications: &[TailscaleEndpointPublication]) -> bool {
+    let mut use_sites = std::collections::BTreeSet::new();
+    let mut ports = std::collections::BTreeMap::new();
+    publications.len() <= MAX_ENDPOINT_PUBLICATIONS
+        && publications.iter().all(|publication| {
+            publication.valid()
+                && use_sites.insert(publication.use_site.as_str())
+                // Several endpoints of one service share its port; two services
+                // never do.
+                && *ports
+                    .entry(publication.local_port)
+                    .or_insert(publication.service_name.as_str())
+                    == publication.service_name.as_str()
+        })
+}
+
+#[cfg(test)]
+mod publication_tests {
+    use super::*;
+
+    fn access(publications: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "provider": {"kind": "tailscale"},
+            "attachmentId": "att-1",
+            "expectedTailnet": "example.com",
+            "setupDeadlineMs": 1_800_000_000_000_u64,
+            "fence": 3,
+            "artifact": {
+                "descriptorId": "descriptor-1",
+                "version": "1.98.10-liskov.1",
+                "url": "https://liskov.example/client.tgz",
+                "sha256": "1".repeat(64),
+                "byteSize": 10,
+            },
+            "publications": publications,
+        })
+    }
+
+    fn clickhouse() -> serde_json::Value {
+        serde_json::json!({
+            "useSite": "/ingress/http/private/provider",
+            "serviceName": "http",
+            "localPort": 8123,
+            "health": {
+                "live": {"kind": "http", "path": "/ping"},
+                "ready": {"kind": "http", "path": "/replicas_status", "contains": "Ok."},
+            },
+        })
+    }
+
+    fn parse(
+        value: serde_json::Value,
+    ) -> Result<TailscaleRuntimeAccessBootstrap, serde_json::Error> {
+        serde_json::from_value(value)
+    }
+
+    #[test]
+    fn the_compiled_probe_shapes_deserialize_into_a_valid_publication() {
+        let parsed = parse(access(serde_json::json!([clickhouse(), {
+            "useSite": "/ingress/native/private/provider",
+            "serviceName": "native",
+            "localPort": 9000,
+            "health": {"live": {"kind": "tcp", "port": 9000}},
+        }, {
+            "useSite": "/ingress/admin/private/provider",
+            "serviceName": "admin",
+            "localPort": 8124,
+            "health": {"ready": {"kind": "exec", "argv": ["/bin/true"]}},
+        }])))
+        .expect("wire shape");
+        assert!(parsed.valid());
+        assert_eq!(parsed.publications.len(), 3);
+        assert_eq!(
+            parsed.publications[0].health.as_ref().unwrap().ready,
+            Some(EndpointProbe::Http {
+                path: "/replicas_status".into(),
+                contains: Some("Ok.".into()),
+            })
+        );
+        assert_eq!(
+            parsed.publications[1].health.as_ref().unwrap().live,
+            Some(EndpointProbe::Tcp { port: 9000 })
+        );
+    }
+
+    #[test]
+    fn a_server_that_predates_publications_is_unaffected() {
+        let mut value = access(serde_json::json!([]));
+        value.as_object_mut().unwrap().remove("publications");
+        let parsed = parse(value).expect("absent publications default");
+        assert!(parsed.publications.is_empty());
+        assert!(parsed.valid());
+    }
+
+    #[test]
+    fn unknown_publication_and_probe_fields_are_refused() {
+        let mut extra = clickhouse();
+        extra["public"] = serde_json::json!(true);
+        assert!(parse(access(serde_json::json!([extra]))).is_err());
+
+        let mut unknown_kind = clickhouse();
+        unknown_kind["health"]["live"] = serde_json::json!({"kind": "grpc", "path": "/"});
+        assert!(parse(access(serde_json::json!([unknown_kind]))).is_err());
+
+        let mut probe_extra = clickhouse();
+        probe_extra["health"]["live"] = serde_json::json!({"kind": "tcp", "port": 1, "path": "/"});
+        assert!(parse(access(serde_json::json!([probe_extra]))).is_err());
+    }
+
+    #[test]
+    fn publications_outside_their_bounds_are_invalid() {
+        let invalid = |publications: serde_json::Value| {
+            !parse(access(publications)).expect("wire shape").valid()
+        };
+        let with = |key: &str, value: serde_json::Value| {
+            let mut publication = clickhouse();
+            publication[key] = value;
+            serde_json::json!([publication])
+        };
+        assert!(invalid(with(
+            "useSite",
+            serde_json::json!("/access/ssh/provider")
+        )));
+        assert!(invalid(with(
+            "useSite",
+            serde_json::json!("/ingress/http/private")
+        )));
+        assert!(invalid(with("localPort", serde_json::json!(0))));
+        assert!(invalid(with("serviceName", serde_json::json!(""))));
+        assert!(invalid(with("serviceName", serde_json::json!("has space"))));
+        assert!(invalid(with("health", serde_json::json!({}))));
+        assert!(invalid(with(
+            "health",
+            serde_json::json!({"live": {"kind": "http", "path": "ping"}})
+        )));
+        assert!(invalid(with(
+            "health",
+            serde_json::json!({"live": {"kind": "http", "path": "/", "contains": ""}})
+        )));
+        assert!(invalid(with(
+            "health",
+            serde_json::json!({"live": {"kind": "exec", "argv": []}})
+        )));
+        assert!(invalid(serde_json::json!([clickhouse(), clickhouse()])));
+
+        let mut other_service = clickhouse();
+        other_service["useSite"] = serde_json::json!("/ingress/other/private/provider");
+        other_service["serviceName"] = serde_json::json!("other");
+        assert!(invalid(serde_json::json!([clickhouse(), other_service])));
+
+        let mut same_service = clickhouse();
+        same_service["useSite"] = serde_json::json!("/ingress/http/second/provider");
+        assert!(!invalid(serde_json::json!([clickhouse(), same_service])));
+
+        let many = (0..=MAX_ENDPOINT_PUBLICATIONS)
+            .map(|index| {
+                let mut publication = clickhouse();
+                publication["useSite"] =
+                    serde_json::json!(format!("/ingress/s{index}/private/provider"));
+                publication["serviceName"] = serde_json::json!(format!("s{index}"));
+                publication["localPort"] = serde_json::json!(8000 + index);
+                publication
+            })
+            .collect::<Vec<_>>();
+        assert!(invalid(serde_json::Value::Array(many)));
+    }
 }
 
 impl TailscaleRuntimeAccessBootstrap {
@@ -267,6 +539,7 @@ impl TailscaleRuntimeAccessBootstrap {
                 .credential
                 .as_ref()
                 .is_none_or(|credential| credential.valid_for(self))
+            && publications_valid(&self.publications)
     }
 }
 

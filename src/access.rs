@@ -255,6 +255,11 @@ enum RuntimeSshCredentialV1 {
     ManagedV1Full(Box<ManagedRuntimeSshCredentialV2>),
 }
 
+mod endpoint;
+pub use endpoint::{
+    ENDPOINT_DEGRADED_STAGE, ENDPOINT_PUBLISHED_STAGE, ENDPOINT_READY_STAGE, EndpointEvent,
+};
+
 pub enum AccessSession {
     Tailscale(TailscaleAccessSession),
     Managed(managed::ManagedAccessSession),
@@ -270,6 +275,9 @@ pub struct TailscaleAccessSession {
     pub client_version: String,
     pub client_digest: String,
     degraded_reported: bool,
+    /// Private endpoints declared by the signed bootstrap
+    /// (`BKLG-20260907-lg5y`).
+    endpoints: Vec<endpoint::EndpointSlot>,
 }
 
 impl AccessSession {
@@ -348,6 +356,7 @@ impl TailscaleAccessSession {
     }
 
     fn stop(&mut self) -> Result<(), AccessError> {
+        self.reset_serve();
         self.daemon.stop()?;
         std::fs::remove_dir_all(&self.root)
             .map_err(|_| AccessError::new("access_cleanup_failed"))?;
@@ -1435,6 +1444,7 @@ fn setup_in_root(
         client_version: access.artifact.version.clone(),
         client_digest: format!("sha256:{}", access.artifact.sha256),
         degraded_reported: false,
+        endpoints: endpoint::declared(&access.publications),
     })
 }
 
@@ -2752,6 +2762,7 @@ mod tests {
                 byte_size: 10,
             },
             credential: None,
+            publications: Vec::new(),
         };
         let bootstrap = RuntimeBootstrapResponse {
             ok: true,
