@@ -299,6 +299,17 @@ pub fn supervise_with_environment_access_and_processor_facts(
             );
         }
     }
+    if let Some(session) = access_session.as_mut() {
+        // Publish before the workload starts. A failure degrades only the
+        // endpoint it names; the tunnel and the workload are unaffected.
+        report_endpoint_events(
+            session.publish_endpoints(),
+            &mut reporter
+                .as_mut()
+                .map(|reporter| reporter as &mut dyn RuntimeReporter),
+            runtime_ssh_logs.as_ref(),
+        );
+    }
     let result = supervise_with_reporter_and_environment(
         command,
         bootstrap,
@@ -346,6 +357,29 @@ fn log_access(
 ) {
     if let Some(logger) = logger {
         logger.lifecycle(event, code);
+    }
+}
+
+/// Report private-endpoint publication and readiness events on both the
+/// runtime-SSH log stream and the signed diagnostic (`BKLG-20260907-lg5y`).
+fn report_endpoint_events(
+    events: Vec<crate::access::EndpointEvent>,
+    reporter: &mut Option<&mut dyn RuntimeReporter>,
+    runtime_ssh_logs: Option<&RuntimeSshLogEmitter>,
+) {
+    for event in events {
+        log_access(runtime_ssh_logs, event.stage, event.failure_code);
+        report(
+            reporter,
+            event.stage,
+            if event.succeeded {
+                DiagnosticStatus::Succeeded
+            } else {
+                DiagnosticStatus::Failed
+            },
+            event.failure_code,
+            event.attrs,
+        );
     }
 }
 
@@ -439,6 +473,7 @@ fn supervise_with_reporter_and_environment(
 
     loop {
         if let Some(session) = access_session.as_deref_mut() {
+            report_endpoint_events(session.endpoint_changes(), &mut reporter, runtime_ssh_logs);
             if session.newly_crashed() {
                 log_access(
                     runtime_ssh_logs,
@@ -502,6 +537,7 @@ fn supervise_with_reporter_and_environment(
         let mut forced_cleanup = false;
         let status = loop {
             if let Some(session) = access_session.as_deref_mut() {
+                report_endpoint_events(session.endpoint_changes(), &mut reporter, runtime_ssh_logs);
                 if session.newly_crashed() {
                     log_access(
                         runtime_ssh_logs,
