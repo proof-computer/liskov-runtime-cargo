@@ -1,0 +1,34 @@
+{
+  "challenge": "0x69cc59c069cc59fc0404040404040404374ee085704b22c29cc25cda3f38903d",
+  "challengeDigest": "sha256:e8ce0078d911f95927d4fc08a8421fbb4202900094f5a9eaaff8ddd3bfe3e577",
+  "inboundReachability": {
+    "version": 1,
+    "startedAtMs": 1775000009000,
+    "durationMs": 2041,
+    "families": [
+      {
+        "version": 1,
+        "challengeDigest": "sha256:e8ce0078d911f95927d4fc08a8421fbb4202900094f5a9eaaff8ddd3bfe3e577",
+        "region": "lhr",
+        "family": "v4",
+        "verdict": "reachable",
+        "connectMs": 41,
+        "nonce": "3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a",
+        "signature": "0x5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c",
+        "mac": "117f1ff0dfedbbe4dd989e3759880d4a3df9ba5677543074aceb6ccf65106145"
+      },
+      {
+        "version": 1,
+        "challengeDigest": "sha256:e8ce0078d911f95927d4fc08a8421fbb4202900094f5a9eaaff8ddd3bfe3e577",
+        "region": "lhr",
+        "family": "v6",
+        "verdict": "connect_timeout",
+        "connectMs": 2000,
+        "nonce": "7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e",
+        "signature": null,
+        "mac": "fe86ac5cbc3e3b2f3e19ccd51d61ef7b5ef57f129c3626682432f17aeba9cef0"
+      }
+    ]
+  },
+  "testOnlyProberKeyHex": "0707070707070707070707070707070707070707070707070707070707070707"
+}

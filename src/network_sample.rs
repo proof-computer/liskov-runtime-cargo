@@ -1,11 +1,32 @@
 //! One deadline-bounded, authorized sample. All effects have an offline seam.
+use crate::inbound_reachability_contract::InboundReachabilityV1;
 use crate::network_sample_contract::*;
+use crate::processor_facts::FactSigner;
 use std::{future::Future, pin::Pin};
 mod transport;
 pub use transport::SystemNetworkSampler;
 type Pending<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
+
+/// One probe's network evidence. Inbound reachability is a separate versioned
+/// block rather than a field of the sample: it is prober-authenticated per
+/// family, while the sample is the device's own measurement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NetworkSampleOutput {
+    pub sample: NetworkSampleV1,
+    pub inbound: Option<InboundReachabilityV1>,
+}
+
 pub trait NetworkSampler: Send + Sync {
-    fn sample(&self, url: &str, challenge: &str, started_at_ms: u64) -> NetworkSampleV1;
+    /// The signer is needed because the device must prove, over the inbound
+    /// connection itself, that the listener the prober reached is this
+    /// processor.
+    fn sample(
+        &self,
+        url: &str,
+        challenge: &str,
+        started_at_ms: u64,
+        signer: &dyn FactSigner,
+    ) -> NetworkSampleOutput;
 }
 pub trait NetworkTransport {
     fn elapsed_us(&self) -> u64;
@@ -369,4 +390,66 @@ mod deadline_tests {
         assert_eq!(sample.duration_ms, 30000);
         sample.validate().unwrap();
     }
+}
+
+/// Summarize each prober verdict as a coverage outcome.
+///
+/// The server refuses any envelope whose summary disagrees with the signed
+/// block, so these are not a restatement for convenience: they are the same
+/// claim in the shape the coverage vocabulary already has, and they have to
+/// match exactly.
+pub fn inbound_outcomes(block: &InboundReachabilityV1) -> Vec<crate::coverage::CoverageOutcome> {
+    use crate::coverage::{CoverageOutcome, CoverageOutcomeStatus, CoverageProbeError};
+    use crate::inbound_reachability_contract::{
+        INBOUND_NONCE_BYTES, INBOUND_SIGNATURE_BYTES, InboundVerdict,
+    };
+    block
+        .families
+        .iter()
+        .map(|verdict| {
+            let reachable = verdict.verdict.is_reachable();
+            CoverageOutcome {
+                probe_id: match verdict.family {
+                    crate::inbound_reachability_contract::InboundFamily::V4 => {
+                        "inbound-reachability-v4".into()
+                    }
+                    crate::inbound_reachability_contract::InboundFamily::V6 => {
+                        "inbound-reachability-v6".into()
+                    }
+                },
+                status: match verdict.verdict {
+                    InboundVerdict::Reachable => CoverageOutcomeStatus::Succeeded,
+                    InboundVerdict::ConnectTimeout => CoverageOutcomeStatus::TimedOut,
+                    InboundVerdict::ConnectRefused
+                    | InboundVerdict::ConnectFailed
+                    | InboundVerdict::NoSignature => CoverageOutcomeStatus::Failed,
+                    // The prober had no route. Not a fact about this device.
+                    InboundVerdict::ProberNoEgress => CoverageOutcomeStatus::Unsupported,
+                },
+                region: verdict.region.clone(),
+                started_at_ms: block.started_at_ms,
+                completed_at_ms: block.started_at_ms.saturating_add(verdict.connect_ms),
+                duration_ms: verdict.connect_ms,
+                // Only the nonce and the signature ever crossed the connection.
+                bytes_sent: if reachable {
+                    INBOUND_SIGNATURE_BYTES as u64
+                } else {
+                    0
+                },
+                bytes_received: if reachable {
+                    INBOUND_NONCE_BYTES as u64
+                } else {
+                    0
+                },
+                errors: if reachable {
+                    vec![]
+                } else {
+                    vec![CoverageProbeError {
+                        code: verdict.verdict.code().into(),
+                        message: verdict.verdict.code().into(),
+                    }]
+                },
+            }
+        })
+        .collect()
 }

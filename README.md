@@ -381,6 +381,20 @@ records supply RTT, RFC3550 jitter and loss. A near-expiry authorization skips
 the sample to preserve the existing result-delivery budget. The coverage job
 window remains 120 seconds until live measurements support changing it.
 
+The same authorization also enables `inboundReachability` version 1: the helper
+binds one port in 20000-60000 across both families, asks the prober to dial it
+once per family, and signs the 32-byte nonce that arrives **over that inbound
+connection**. The signature is written back down the same socket, because a
+signature that did not travel the measured path proves nothing about it. The
+listener is closed when the check ends and there is no persistent port.
+
+The check has its own 4-second budget, separate from the sample's 30 seconds,
+so a slow link is never the reason its own reachability went unmeasured. Every
+wait is two seconds and nothing is retried: a firewalled processor is the normal
+outcome and costs what a reachable one costs. The helper carries the prober's
+signed verdict verbatim and never writes one; it cannot, and it never learns
+which address the prober dialled.
+
 The signed block, shared vector and catalog match the `liskov-rs` contract owner.
-Existing envelopes omit the optional block and retain their canonical bytes.
+Existing envelopes omit the optional blocks and retain their canonical bytes.
 Refs BKLG-20260914-fglr; ADR-0139.
