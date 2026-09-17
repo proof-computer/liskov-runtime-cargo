@@ -156,6 +156,14 @@ pub fn supervise_with_environment_access_and_processor_facts(
     processor_fact_authorization: Option<ProcessorFactAuthorization>,
     coverage_activation: Option<CoverageProducerActivation>,
 ) -> SupervisorExit {
+    // The reporter starts before the detached tasks are built, so the coverage
+    // producer can be handed an emit handle. Nothing is reported in between, so
+    // the sequence stream is unchanged by the ordering.
+    let http: Arc<dyn HttpClient> = Arc::new(UreqHttpClient::with_limits(
+        DIAGNOSTIC_HTTP_TIMEOUT,
+        MAX_DIAGNOSTIC_RESPONSE_BYTES,
+    ));
+    let mut reporter = AsyncDiagnosticReporter::spawn(bootstrap, bridge.clone(), http);
     let mut detached_fact_tasks = Vec::new();
     if let Some(run) = processor_fact_authorization.and_then(|authorization| {
         ProcessorFactBinding::from_bootstrap(bootstrap)
@@ -169,14 +177,13 @@ pub fn supervise_with_environment_access_and_processor_facts(
     if let Some(activation) = coverage_activation {
         detached_fact_tasks.push(DetachedFactTask {
             name: "coverage",
-            run: detached_coverage_task(activation, bridge.clone()),
+            run: detached_coverage_task(
+                activation,
+                bridge.clone(),
+                reporter.as_ref().and_then(AsyncDiagnosticReporter::handle),
+            ),
         });
     }
-    let http: Arc<dyn HttpClient> = Arc::new(UreqHttpClient::with_limits(
-        DIAGNOSTIC_HTTP_TIMEOUT,
-        MAX_DIAGNOSTIC_RESPONSE_BYTES,
-    ));
-    let mut reporter = AsyncDiagnosticReporter::spawn(bootstrap, bridge, http);
     let (mut logging, logging_attach_code) =
         LoggingController::from_environment(bootstrap, runtime_environment);
     report(

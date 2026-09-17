@@ -149,7 +149,7 @@ impl DiagnosticReporter {
 }
 
 #[derive(Debug)]
-enum DiagnosticWork {
+pub(crate) enum DiagnosticWork {
     Observation {
         stage: &'static str,
         status: DiagnosticStatus,
@@ -204,6 +204,14 @@ impl AsyncDiagnosticReporter {
         })
     }
 
+    /// A cloneable emit handle onto this reporter's queue, or `None` once the
+    /// reporter has shut down or never started.
+    pub fn handle(&self) -> Option<DiagnosticHandle> {
+        self.sender.as_ref().map(|sender| DiagnosticHandle {
+            sender: sender.clone(),
+        })
+    }
+
     pub fn report(
         &mut self,
         stage: &'static str,
@@ -223,6 +231,48 @@ impl AsyncDiagnosticReporter {
             Ok(()) | Err(TrySendError::Full(_)) => {}
             Err(TrySendError::Disconnected(_)) => self.sender = None,
         }
+    }
+}
+
+/// A cloneable emit handle for work that outlives the supervisor's exclusive
+/// borrow — today, the detached coverage producer, which runs on its own thread
+/// and must still report its outcome (`BKLG-20260915-01v6`).
+///
+/// The handle only enqueues. The worker thread remains the sole signing and
+/// sequence authority, so a second producer of observations cannot fork the
+/// per-runtime sequence.
+#[derive(Clone)]
+pub struct DiagnosticHandle {
+    sender: SyncSender<DiagnosticWork>,
+}
+
+impl DiagnosticHandle {
+    /// Enqueue one observation. Deliberately terminal-safe and silent: a full
+    /// queue drops, and so does a send after the reporter has shut its worker
+    /// down. A `&self` handle cannot clear the sender the way
+    /// [`AsyncDiagnosticReporter::report`] does, and no caller should branch on
+    /// whether post-contact evidence was collected.
+    pub fn report(
+        &self,
+        stage: &'static str,
+        status: DiagnosticStatus,
+        code: Option<&'static str>,
+        attrs: Value,
+    ) {
+        let _ = self.sender.try_send(DiagnosticWork::Observation {
+            stage,
+            status,
+            code,
+            attrs,
+        });
+    }
+
+    /// A handle paired with the receiving end, for tests that assert what a
+    /// detached worker reported without standing up a bootstrap and a bridge.
+    #[cfg(test)]
+    pub(crate) fn test_channel() -> (Self, std::sync::mpsc::Receiver<DiagnosticWork>) {
+        let (sender, receiver) = sync_channel(DIAGNOSTIC_QUEUE_CAPACITY);
+        (Self { sender }, receiver)
     }
 }
 
@@ -387,6 +437,83 @@ mod tests {
                 "attrs": {"processAttempt": 0, "restartCount": 0},
             })))
         );
+    }
+
+    #[test]
+    fn handle_observations_share_the_worker_sequence() {
+        // The worker is the sole sequence authority (diagnostics.rs doc), so a
+        // detached producer reporting through a handle must take the next
+        // ordinal rather than restarting its own stream at 0 — the server keys
+        // idempotency on runtime instance + sequence + stage.
+        let bridge: Arc<dyn Bridge> = Arc::new(FakeBridge::default());
+        let http = Arc::new(FakeHttp::default());
+        let mut reporter =
+            AsyncDiagnosticReporter::spawn(&bootstrap(), bridge, http.clone()).unwrap();
+        let handle = reporter.handle().unwrap();
+        reporter.report(
+            "runtime.cargo.process.started",
+            DiagnosticStatus::Started,
+            None,
+            json!({"processAttempt": 0, "restartCount": 0}),
+        );
+        handle.report(
+            "runtime.coverage.producer",
+            DiagnosticStatus::Failed,
+            Some("authorization_expired"),
+            Value::Null,
+        );
+        drop(reporter);
+        let bodies = http.bodies.lock().unwrap();
+        let delivered: Vec<Value> = bodies
+            .iter()
+            .map(|body| serde_json::from_slice(body).unwrap())
+            .collect();
+        assert_eq!(delivered.len(), 2, "{delivered:?}");
+        assert_eq!(delivered[0]["sequence"], 0);
+        assert_eq!(delivered[1]["sequence"], 1);
+        assert_eq!(delivered[1]["stage"], "runtime.coverage.producer");
+        assert_eq!(delivered[1]["code"], "authorization_expired");
+        assert_eq!(delivered[1]["status"], "failed");
+        // No body, and the component the server's closed taxonomy engages on.
+        assert_eq!(delivered[1]["attrs"], Value::Null);
+        assert_eq!(delivered[1]["message"], Value::Null);
+        assert_eq!(delivered[1]["component"], CARGO_SUPERVISOR_COMPONENT);
+        assert_eq!(
+            delivered[1]["runtimeInstanceId"],
+            delivered[0]["runtimeInstanceId"]
+        );
+    }
+
+    #[test]
+    fn a_handle_outliving_its_reporter_never_blocks_or_panics() {
+        // A cloned sender keeps the channel connected after the worker has
+        // broken its loop, so a late send succeeds into a queue nobody drains.
+        // That is the one cost of the handle, and it must stay silent and
+        // bounded: the detached producer can outlive the supervisor.
+        let bridge: Arc<dyn Bridge> = Arc::new(FakeBridge::default());
+        let http: Arc<dyn HttpClient> = Arc::new(FakeHttp::default());
+        let reporter = AsyncDiagnosticReporter::spawn(&bootstrap(), bridge, http).unwrap();
+        let handle = reporter.handle().unwrap();
+        drop(reporter);
+        let started = std::time::Instant::now();
+        for _ in 0..(DIAGNOSTIC_QUEUE_CAPACITY * 2) {
+            handle.report(
+                "runtime.coverage.producer",
+                DiagnosticStatus::Failed,
+                Some("delivery_failed"),
+                Value::Null,
+            );
+        }
+        assert!(started.elapsed() < Duration::from_millis(100));
+    }
+
+    #[test]
+    fn a_rejected_endpoint_yields_no_reporter_and_so_no_handle() {
+        let mut unusable = bootstrap();
+        unusable.slipway_url = "http://liskov.example".into();
+        let bridge: Arc<dyn Bridge> = Arc::new(FakeBridge::default());
+        let http: Arc<dyn HttpClient> = Arc::new(FakeHttp::default());
+        assert!(AsyncDiagnosticReporter::spawn(&unusable, bridge, http).is_none());
     }
 
     #[test]

@@ -20,7 +20,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::bridge::Bridge;
-use crate::diagnostics::canonical_json_bytes;
+use crate::diagnostics::{DiagnosticHandle, DiagnosticStatus, canonical_json_bytes};
 use crate::hardware::{collect_hardware_source_readings, hardware_metric_digest};
 use crate::processor_facts::{
     AndroidFactCollector, AndroidPropertyCollector, BridgeFactSigner, ExecutionFactCollector,
@@ -318,7 +318,14 @@ pub(crate) enum CoverageProducerOutcome {
 }
 
 impl CoverageProducerOutcome {
-    fn as_str(self) -> &'static str {
+    /// The static outcome code. Kept synchronized by hand with
+    /// `COVERAGE_PRODUCER_OUTCOME_CODES` in liskov-rs
+    /// (`slipway-executor-contracts/src/runtime_cargo_diagnostics.rs`) — this
+    /// helper cannot depend on that crate. A variant added here without its
+    /// code added there is refused at parse time as a 400 the device never
+    /// sees, and the probe goes back to being silent about why it delivered
+    /// nothing.
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Submitted => "submitted",
             Self::ClockUnavailable => "clock_unavailable",
@@ -329,7 +336,21 @@ impl CoverageProducerOutcome {
             Self::DeliveryFailed => "delivery_failed",
         }
     }
+
+    /// `submitted` is the only success. Every other outcome is a run that
+    /// stopped somewhere, and the server's taxonomy requires the status and the
+    /// code to agree.
+    pub(crate) fn diagnostic_status(self) -> DiagnosticStatus {
+        match self {
+            Self::Submitted => DiagnosticStatus::Succeeded,
+            _ => DiagnosticStatus::Failed,
+        }
+    }
 }
+
+/// The closed stage the producer's outcome is reported on. Admitted by the
+/// Cargo supervisor taxonomy in liskov-rs since `BKLG-20260915-01v6`.
+pub(crate) const COVERAGE_PRODUCER_STAGE: &str = "runtime.coverage.producer";
 
 /// One closed, bounded diagnostic line per producer run: a static outcome
 /// code only — never bodies, signatures, nonces, or identity.
@@ -342,9 +363,16 @@ fn coverage_producer_line(outcome: CoverageProducerOutcome) -> String {
     )
 }
 
+/// The producer's outcome reaches two places: the job's stderr, which is only
+/// visible when Blackbox logging happens to be attached, and — since
+/// `BKLG-20260915-01v6` — one signed diagnostic, which reaches the operator
+/// readback beside the probe's mint. `diagnostics` is `None` when the reporter
+/// never started, and delivery through it is best-effort like every other
+/// post-contact observation.
 pub(crate) fn detached_coverage_task(
     activation: CoverageProducerActivation,
     bridge: Arc<dyn Bridge>,
+    diagnostics: Option<DiagnosticHandle>,
 ) -> Box<dyn FnOnce() + Send> {
     Box::new(move || {
         let clock = SystemFactClock;
@@ -365,7 +393,17 @@ pub(crate) fn detached_coverage_task(
             activation.observation,
             &dependencies,
         );
+        // The stderr line first: it is the older contract and the only record
+        // that survives a process exit racing the reporter's shutdown.
         eprintln!("{}", coverage_producer_line(outcome));
+        if let Some(diagnostics) = diagnostics {
+            diagnostics.report(
+                COVERAGE_PRODUCER_STAGE,
+                outcome.diagnostic_status(),
+                Some(outcome.as_str()),
+                Value::Null,
+            );
+        }
     })
 }
 
@@ -1170,6 +1208,101 @@ mod tests {
         assert_eq!(delivery.attempts.lock().unwrap().len(), 1);
     }
 
+    struct RefusingBridge;
+
+    impl Bridge for RefusingBridge {
+        fn call(&self, _method: &str, _params: Value) -> Result<Value, crate::bridge::BridgeError> {
+            panic!("the producer must not reach the bridge once the authorization is invalid");
+        }
+    }
+
+    #[test]
+    fn every_outcome_reports_one_status_and_its_own_code() {
+        // The server's taxonomy requires the status and the code to agree:
+        // `submitted` is the only success, and a failure reported as succeeded
+        // would read on the operator readback as a delivered envelope.
+        for (outcome, status, code) in [
+            (
+                CoverageProducerOutcome::Submitted,
+                DiagnosticStatus::Succeeded,
+                "submitted",
+            ),
+            (
+                CoverageProducerOutcome::ClockUnavailable,
+                DiagnosticStatus::Failed,
+                "clock_unavailable",
+            ),
+            (
+                CoverageProducerOutcome::AuthorizationExpired,
+                DiagnosticStatus::Failed,
+                "authorization_expired",
+            ),
+            (
+                CoverageProducerOutcome::EnvelopeUnrepresentable,
+                DiagnosticStatus::Failed,
+                "envelope_unrepresentable",
+            ),
+            (
+                CoverageProducerOutcome::OversizeRefused,
+                DiagnosticStatus::Failed,
+                "oversize_refused",
+            ),
+            (
+                CoverageProducerOutcome::SigningFailed,
+                DiagnosticStatus::Failed,
+                "signing_failed",
+            ),
+            (
+                CoverageProducerOutcome::DeliveryFailed,
+                DiagnosticStatus::Failed,
+                "delivery_failed",
+            ),
+        ] {
+            assert_eq!(outcome.diagnostic_status(), status, "{code}");
+            assert_eq!(outcome.as_str(), code);
+        }
+    }
+
+    #[test]
+    fn the_detached_task_reports_its_outcome_once_and_says_nothing_else() {
+        // An authorization outside its window stops the producer before any
+        // signing or delivery, so this stays offline: the bridge panics if
+        // reached. What must survive is the outcome — the whole point of
+        // BKLG-20260915-01v6 is that a probe which delivers nothing still says
+        // why, on the server.
+        let (handle, received) = DiagnosticHandle::test_channel();
+        let activation = CoverageProducerActivation {
+            authorization: taken(javascript_block()).expect("valid block"),
+            observation: observation(),
+        };
+        detached_coverage_task(activation, Arc::new(RefusingBridge), Some(handle))();
+        let work = received.try_recv().expect("one observation");
+        let crate::diagnostics::DiagnosticWork::Observation {
+            stage,
+            status,
+            code,
+            attrs,
+        } = work
+        else {
+            panic!("expected an observation, got {work:?}");
+        };
+        assert_eq!(stage, COVERAGE_PRODUCER_STAGE);
+        assert_eq!(status, DiagnosticStatus::Failed);
+        assert_eq!(code, Some("authorization_expired"));
+        // No body, signature, nonce or identity — the taxonomy admits no attrs.
+        assert_eq!(attrs, Value::Null);
+        assert!(received.try_recv().is_err(), "exactly one per producer run");
+    }
+
+    #[test]
+    fn the_detached_task_runs_without_a_reporter() {
+        let activation = CoverageProducerActivation {
+            authorization: taken(javascript_block()).expect("valid block"),
+            observation: observation(),
+        };
+        detached_coverage_task(activation, Arc::new(RefusingBridge), None)();
+    }
+
     #[test]
     fn diagnostic_lines_are_closed_and_redacted() {
         for outcome in [
@@ -1188,6 +1321,13 @@ mod tests {
             ));
             for forbidden in ["0x", "challenge", "signature", "https://", "sha256"] {
                 assert!(!line.contains(forbidden), "{line} must not leak");
+                // The signed diagnostic carries the same code and nothing else,
+                // so the same redaction rule holds on that path.
+                assert!(
+                    !outcome.as_str().contains(forbidden),
+                    "{} must not leak",
+                    outcome.as_str()
+                );
             }
         }
     }
