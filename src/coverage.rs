@@ -65,6 +65,8 @@ pub struct CoverageResultV1 {
     pub outcomes: Vec<CoverageOutcome>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network_sample: Option<crate::network_sample_contract::NetworkSampleV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inbound_reachability: Option<crate::inbound_reachability_contract::InboundReachabilityV1>,
     pub normalized_metric_digest: String,
     pub challenge: String,
     pub replay_subject: String,
@@ -434,20 +436,33 @@ pub(crate) fn run_coverage_producer(
         hardware_digest = Some(digest);
     }
 
-    let network_sample = authorization.network_prober_url.as_deref().and_then(|url| {
+    let network = authorization.network_prober_url.as_deref().and_then(|url| {
         let sampler = dependencies.network?;
         let started = dependencies.clock.now_ms()?;
         // Leave the existing two bounded delivery attempts outside the sample.
         if authorization.expires_at_ms.saturating_sub(started) < 40_000 {
-            return Some(crate::network_sample::skipped_sample(started));
+            return Some(crate::network_sample::NetworkSampleOutput {
+                sample: crate::network_sample::skipped_sample(started),
+                inbound: None,
+            });
         }
-        Some(sampler.sample(url, &authorization.challenge, started))
+        Some(sampler.sample(url, &authorization.challenge, started, dependencies.signer))
     });
+    let (network_sample, inbound_reachability) = match network {
+        Some(output) => (Some(output.sample), output.inbound),
+        None => (None, None),
+    };
     if let Some(sample) = &network_sample {
         if sample.validate().is_err() {
             return CoverageProducerOutcome::EnvelopeUnrepresentable;
         }
         outcomes.extend(crate::network_sample::coverage_outcomes(sample));
+    }
+    if let Some(block) = &inbound_reachability {
+        if block.validate().is_err() {
+            return CoverageProducerOutcome::EnvelopeUnrepresentable;
+        }
+        outcomes.extend(crate::network_sample::inbound_outcomes(block));
     }
 
     let normalized_metric_digest = match hardware_digest {
@@ -481,6 +496,7 @@ pub(crate) fn run_coverage_producer(
         expires_at_ms: authorization.expires_at_ms,
         outcomes,
         network_sample,
+        inbound_reachability,
         normalized_metric_digest,
         challenge: authorization.challenge.clone(),
         replay_subject: authorization.replay_subject.clone(),

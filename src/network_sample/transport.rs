@@ -1,4 +1,5 @@
 use super::*;
+use crate::inbound_reachability_contract::*;
 use futures_util::stream;
 use hickory_resolver::TokioAsyncResolver;
 use reqwest::{Client, Response};
@@ -16,29 +17,41 @@ use tokio::{
 };
 pub struct SystemNetworkSampler;
 impl NetworkSampler for SystemNetworkSampler {
-    fn sample(&self, url: &str, challenge: &str, started_at_ms: u64) -> NetworkSampleV1 {
+    fn sample(
+        &self,
+        url: &str,
+        challenge: &str,
+        started_at_ms: u64,
+        signer: &dyn FactSigner,
+    ) -> NetworkSampleOutput {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build();
-        match runtime {
-            Ok(runtime) => runtime.block_on(collect_bounded(
-                &mut Live::new(url, challenge),
-                started_at_ms,
-            )),
-            Err(_) => NetworkSampleV1 {
-                version: 1,
-                started_at_ms,
-                duration_ms: 0,
-                region: "lhr".into(),
-                ipv4_egress: false,
-                ipv6_egress: false,
-                legs: vec![],
-                udp: skipped_udp(0),
-                metrics: NetworkMetrics::default(),
-                receipt: None,
-                errors: vec![NetworkError::ConnectFailed],
-            },
-        }
+        let Ok(runtime) = runtime else {
+            return NetworkSampleOutput {
+                sample: NetworkSampleV1 {
+                    version: 1,
+                    started_at_ms,
+                    duration_ms: 0,
+                    region: "lhr".into(),
+                    ipv4_egress: false,
+                    ipv6_egress: false,
+                    legs: vec![],
+                    udp: skipped_udp(0),
+                    metrics: NetworkMetrics::default(),
+                    receipt: None,
+                    errors: vec![NetworkError::ConnectFailed],
+                },
+                inbound: None,
+            };
+        };
+        let mut live = Live::new(url, challenge);
+        let sample = runtime.block_on(collect_bounded(&mut live, started_at_ms));
+        // Its own budget, deliberately. Sharing the sample's deadline would
+        // make a slow link the reason its own reachability went unmeasured,
+        // and a slow link is where the answer matters most.
+        let inbound = live.inbound_check(&runtime, signer, started_at_ms + sample.duration_ms);
+        NetworkSampleOutput { sample, inbound }
     }
 }
 struct Live {
@@ -47,6 +60,10 @@ struct Live {
     start: Instant,
     v4: Option<IpAddr>,
     client: Option<Client>,
+    /// Retained per family for the inbound check. The ladder keeps using the
+    /// single preferred client above.
+    c4: Option<Client>,
+    c6: Option<Client>,
 }
 impl Live {
     fn new(url: &str, challenge: &str) -> Self {
@@ -56,6 +73,8 @@ impl Live {
             start: Instant::now(),
             v4: None,
             client: None,
+            c4: None,
+            c6: None,
         }
     }
     fn clock(&self) -> u64 {
@@ -149,6 +168,8 @@ impl NetworkTransport for Live {
             };
             let (c4, c6) = tokio::join!(check(v4), check(v6));
             let flags = (c4.is_some(), c6.is_some());
+            self.c4 = c4.clone();
+            self.c6 = c6.clone();
             self.client = c4.or(c6);
             (
                 flags.0,
@@ -354,4 +375,94 @@ impl NetworkTransport for Live {
             .unwrap_or(Err(NetworkError::ReceiptUnavailable))
         })
     }
+}
+
+impl Live {
+    /// Open one high port, ask the prober to dial it once per family, and sign
+    /// whatever nonce arrives over each inbound connection.
+    ///
+    /// Blocking by construction: the listener threads call the Cargo bridge to
+    /// sign, and the prober holds each HTTP request open until its dial
+    /// finishes. Both must be in flight at once, so the listener gets threads
+    /// of its own and the requests keep the runtime.
+    fn inbound_check(
+        &self,
+        runtime: &tokio::runtime::Runtime,
+        signer: &dyn FactSigner,
+        started_at_ms: u64,
+    ) -> Option<InboundReachabilityV1> {
+        let families: Vec<(InboundFamily, Client)> = [
+            (InboundFamily::V4, self.c4.clone()),
+            (InboundFamily::V6, self.c6.clone()),
+        ]
+        .into_iter()
+        .filter_map(|(family, client)| client.map(|client| (family, client)))
+        .collect();
+        if families.is_empty() {
+            return None;
+        }
+        let listeners = crate::inbound_reachability::bind_listeners(random_port).ok()?;
+        let port = listeners.port;
+        let started = std::time::Instant::now();
+        let deadline = started + Duration::from_millis(INBOUND_BUDGET_MS);
+        let challenge = self.challenge.clone();
+        let verdicts = std::thread::scope(|scope| {
+            let serving = scope.spawn(|| listeners.serve(signer, deadline, families.len()));
+            // The requests run on the runtime while the listener threads wait;
+            // each returns only once the prober has finished dialling back.
+            let verdicts = runtime.block_on(async {
+                let requests = families.iter().map(|(_, client)| {
+                    let challenge = challenge.clone();
+                    async move {
+                        let response = timeout(
+                            Duration::from_millis(INBOUND_BUDGET_MS),
+                            client
+                                .post(format!("{NETWORK_PROBER_URL}/v1/inbound-check"))
+                                .query(&[("t", &challenge)])
+                                .header("content-type", "application/json")
+                                .body(format!("{{\"port\":{port}}}"))
+                                .send(),
+                        )
+                        .await
+                        .ok()?
+                        .ok()?;
+                        let bytes = bounded_json(response).await.ok()?;
+                        let verdict: InboundFamilyVerdict = serde_json::from_slice(&bytes).ok()?;
+                        verdict.validate().ok().map(|()| verdict)
+                    }
+                });
+                futures_util::future::join_all(requests).await
+            });
+            // The listener threads stop at the deadline on their own; joining
+            // here is what guarantees the port is closed before we return.
+            let _ = serving.join();
+            verdicts
+        });
+        let families: Vec<InboundFamilyVerdict> = verdicts
+            .into_iter()
+            .flatten()
+            // A verdict the prober signed for a family we did not ask over is
+            // not ours to carry.
+            .filter(|verdict| verdict.region == "lhr")
+            .collect();
+        let block = InboundReachabilityV1 {
+            version: 1,
+            started_at_ms,
+            duration_ms: (started.elapsed().as_millis() as u64).min(INBOUND_BUDGET_MS),
+            families,
+        };
+        // An unusable block is dropped rather than shipped: absence admits,
+        // and a malformed one would refuse the whole envelope.
+        block.validate().ok().map(|()| block)
+    }
+}
+
+/// A port the OS is likely to leave free, inside the admitted range.
+fn random_port() -> u16 {
+    let mut bytes = [0u8; 2];
+    if getrandom::fill(&mut bytes).is_err() {
+        return INBOUND_PORT_MIN;
+    }
+    let span = INBOUND_PORT_MAX - INBOUND_PORT_MIN;
+    INBOUND_PORT_MIN + (u16::from_be_bytes(bytes) % (span + 1))
 }

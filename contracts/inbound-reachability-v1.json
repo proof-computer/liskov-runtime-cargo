@@ -1,0 +1,54 @@
+{
+  "domain": "proof.liskov.processor-fact-catalog.v1",
+  "profile": "processor-coverage-inbound-v1",
+  "factKind": "inbound_reachability",
+  "schemaVersion": 1,
+  "subject": "time_bound_observation",
+  "capture": "platform_coverage_authorized_only",
+  "persistence": "observation",
+  "consumption": [
+    "coverage_operator_readback",
+    "processor_readiness_page"
+  ],
+  "currentProfile": false,
+  "retention": "frozen_coverage_profile.retention_ms",
+  "purpose": "Whether an inbound TCP connection from the Internet reaches a port the processor opened, per address family; the fleet fraction direct peering and connectivity guidance need",
+  "bounds": {
+    "budgetMs": 4000,
+    "connectTimeoutMs": 2000,
+    "readTimeoutMs": 2000,
+    "nonceBytes": 32,
+    "signatureBytes": 64,
+    "families": 2,
+    "portMin": 20000,
+    "portMax": 60000
+  },
+  "fields": [
+    "version",
+    "startedAtMs",
+    "durationMs",
+    "families"
+  ],
+  "familyFields": [
+    "version",
+    "challengeDigest",
+    "region",
+    "family",
+    "verdict",
+    "connectMs",
+    "nonce",
+    "signature",
+    "mac"
+  ],
+  "forbidden": [
+    "network_addresses",
+    "customer_values",
+    "permanent_device_identifiers"
+  ],
+  "provenance": [
+    "signed_coverage_envelope",
+    "server_minted_challenge",
+    "authenticated_prober_verdict_per_family",
+    "device_signature_over_prober_nonce"
+  ]
+}

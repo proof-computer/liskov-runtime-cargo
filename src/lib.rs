@@ -33,5 +33,7 @@ pub use supervisor::{
     supervise_with_environment_access_and_processor_facts, supervise_with_environment_and_access,
 };
 
+pub mod inbound_reachability;
+pub mod inbound_reachability_contract;
 pub mod network_sample;
 pub mod network_sample_contract;
