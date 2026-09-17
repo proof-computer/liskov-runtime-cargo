@@ -1,0 +1,112 @@
+{
+  "result": {
+    "domain": "proof.liskov.processor-fact-result.v1",
+    "authorizationId": "pfa_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "challenge": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "deploymentId": "deployment-166327",
+    "jobId": "{\"id\":\"166327\",\"origin\":{\"kind\":\"Acurast\"}}",
+    "processorId": "5C81qALgzdeYUseGhtWPexwufYY83NcrnTazpFMcTizhuBb2",
+    "runtimeInstanceId": "runtime-instance-9f2",
+    "profile": "cargo-baseline-v1",
+    "catalogDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "helperContractEpoch": 1,
+    "helperVersion": "0.10.42",
+    "helperDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "captureStartedAtMs": 1789402520000,
+    "captureCompletedAtMs": 1789402521500,
+    "facts": [
+      {
+        "kind": "cargo_android_corroboration.v1",
+        "value": {
+          "androidRelease": {
+            "status": "observed",
+            "value": "13"
+          },
+          "sdkLevel": {
+            "status": "observed",
+            "value": "33"
+          },
+          "securityPatch": {
+            "status": "observed",
+            "value": "2023-09-01"
+          },
+          "manufacturer": {
+            "status": "observed",
+            "value": "samsung"
+          },
+          "brand": {
+            "status": "not_present"
+          },
+          "model": {
+            "status": "observed",
+            "value": "SM-S135DL"
+          },
+          "productName": {
+            "status": "surface_hidden"
+          },
+          "device": {
+            "status": "observed",
+            "value": "a03su"
+          },
+          "boardPlatform": {
+            "status": "observed",
+            "value": "mt6765"
+          }
+        }
+      },
+      {
+        "kind": "cargo_execution_surface.v1",
+        "value": {
+          "architecture": {
+            "status": "observed",
+            "value": "aarch64"
+          },
+          "wordSizeBits": {
+            "status": "observed",
+            "value": 64
+          },
+          "pageSizeBytes": {
+            "status": "observed",
+            "value": 4096
+          },
+          "kernelAbi": {
+            "status": "observed",
+            "value": {
+              "major": 4,
+              "minor": 19
+            }
+          },
+          "noNewPrivs": {
+            "status": "observed",
+            "value": true
+          },
+          "seccomp": {
+            "status": "observed",
+            "value": "filter"
+          },
+          "effectiveCapabilities": {
+            "status": "observed",
+            "value": "none"
+          }
+        }
+      },
+      {
+        "kind": "cargo_control_egress.v1",
+        "value": {
+          "ipv4": {
+            "outcome": "success",
+            "resolutionDurationMs": 11,
+            "requestDurationMs": 42,
+            "statusClass": "2xx"
+          },
+          "ipv6": {
+            "outcome": "no_family_address",
+            "resolutionDurationMs": 11
+          }
+        }
+      }
+    ],
+    "factsDigest": "sha256:2efb58501fd067da949dd91b1fe64de12ea30bf4879969ffa7b46e64ae9d91ca"
+  },
+  "canonicalSigningPayload": "{\"authorizationId\":\"pfa_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"captureCompletedAtMs\":1789402521500,\"captureStartedAtMs\":1789402520000,\"catalogDigest\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"challenge\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"deploymentId\":\"deployment-166327\",\"domain\":\"proof.liskov.processor-fact-result.v1\",\"facts\":[{\"kind\":\"cargo_android_corroboration.v1\",\"value\":{\"androidRelease\":{\"status\":\"observed\",\"value\":\"13\"},\"boardPlatform\":{\"status\":\"observed\",\"value\":\"mt6765\"},\"brand\":{\"status\":\"not_present\"},\"device\":{\"status\":\"observed\",\"value\":\"a03su\"},\"manufacturer\":{\"status\":\"observed\",\"value\":\"samsung\"},\"model\":{\"status\":\"observed\",\"value\":\"SM-S135DL\"},\"productName\":{\"status\":\"surface_hidden\"},\"sdkLevel\":{\"status\":\"observed\",\"value\":\"33\"},\"securityPatch\":{\"status\":\"observed\",\"value\":\"2023-09-01\"}}},{\"kind\":\"cargo_execution_surface.v1\",\"value\":{\"architecture\":{\"status\":\"observed\",\"value\":\"aarch64\"},\"effectiveCapabilities\":{\"status\":\"observed\",\"value\":\"none\"},\"kernelAbi\":{\"status\":\"observed\",\"value\":{\"major\":4,\"minor\":19}},\"noNewPrivs\":{\"status\":\"observed\",\"value\":true},\"pageSizeBytes\":{\"status\":\"observed\",\"value\":4096},\"seccomp\":{\"status\":\"observed\",\"value\":\"filter\"},\"wordSizeBits\":{\"status\":\"observed\",\"value\":64}}},{\"kind\":\"cargo_control_egress.v1\",\"value\":{\"ipv4\":{\"outcome\":\"success\",\"requestDurationMs\":42,\"resolutionDurationMs\":11,\"statusClass\":\"2xx\"},\"ipv6\":{\"outcome\":\"no_family_address\",\"resolutionDurationMs\":11}}}],\"factsDigest\":\"sha256:2efb58501fd067da949dd91b1fe64de12ea30bf4879969ffa7b46e64ae9d91ca\",\"helperContractEpoch\":1,\"helperDigest\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"helperVersion\":\"0.10.42\",\"jobId\":\"{\\\"id\\\":\\\"166327\\\",\\\"origin\\\":{\\\"kind\\\":\\\"Acurast\\\"}}\",\"processorId\":\"5C81qALgzdeYUseGhtWPexwufYY83NcrnTazpFMcTizhuBb2\",\"profile\":\"cargo-baseline-v1\",\"runtimeInstanceId\":\"runtime-instance-9f2\"}"
+}

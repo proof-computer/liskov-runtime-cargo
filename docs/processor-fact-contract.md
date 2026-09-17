@@ -81,6 +81,16 @@ value, or inferred hardware name. The canonical signed body is capped at
 `POST /api/jobs/processor-facts` endpoint. Each attempt is capped at five
 seconds and a 4 KiB response. No retry starts after authorization expiry.
 
+`vectors/processor-fact-result-v1.json` pins the signature input. It holds one
+unsigned body and the exact canonical bytes that body signs, and the same file
+is checked into `liskov-rs` at
+`crates/slipway-executor-contracts/vectors/`. Each repository rebuilds the body
+from its own types and compares the canonical **string**, so either side
+drifting fails its own test. The vector carries no `signature`: the signature
+is not part of its own input. A device's egress fact is `{ipv4, ipv6}` and
+nothing else; the domain, profile, helper version and capture time around a
+stored reading are the server's to state, not the helper's.
+
 The detached worker starts immediately before the first customer-process
 spawn, after access setup, and is never restarted with the customer. Spawn,
 panic, collection, signing, timeout, and delivery failure are silent and cannot

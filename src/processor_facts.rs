@@ -2482,6 +2482,81 @@ mod tests {
         assert_eq!(signature_input.as_slice(), &[canonical_json_bytes(&signed)]);
     }
 
+    /// The three facts the shared vector carries, built from the closed
+    /// structs. Two Android fields are deliberately not `Observed`, so the
+    /// vector pins the value-less availability spelling as well.
+    fn shared_vector_facts() -> Vec<ProcessorFact> {
+        let mut android = crate::hardware::tests::fixture_android();
+        android.brand = Availability::NotPresent;
+        android.product_name = Availability::SurfaceHidden;
+        vec![
+            ProcessorFact::Android(android),
+            ProcessorFact::Execution(crate::hardware::tests::fixture_execution()),
+            ProcessorFact::Egress(ControlEgressFact {
+                ipv4: FamilyEgressObservation {
+                    outcome: EgressOutcome::Success,
+                    resolution_duration_ms: 11,
+                    request_duration_ms: Some(42),
+                    status_class: Some("2xx".into()),
+                },
+                ipv6: closed_egress(EgressOutcome::NoFamilyAddress, 11),
+            }),
+        ]
+    }
+
+    /// Cross-repo parity anchor: the unsigned body built from this crate's own
+    /// structs canonicalizes to exactly the bytes the `liskov-rs` admission
+    /// engine recomputes before it verifies a signature. The vector carries no
+    /// signature because the signature is excluded from its own input, and the
+    /// helper version is a literal so a release bump cannot move these bytes.
+    #[test]
+    fn matches_the_shared_processor_fact_result_vector() {
+        let vector: Value =
+            serde_json::from_str(include_str!("../vectors/processor-fact-result-v1.json"))
+                .expect("shared vector parses");
+        let facts = shared_vector_facts();
+        let facts_digest = format!(
+            "sha256:{}",
+            hex::encode(Sha256::digest(canonical_json_bytes(
+                &serde_json::to_value(&facts).unwrap()
+            )))
+        );
+        let authorization_id = format!("pfa_{}", "a".repeat(64));
+        let challenge = "b".repeat(64);
+        let catalog_digest = format!("sha256:{}", "c".repeat(64));
+        let helper_digest = format!("sha256:{}", "d".repeat(64));
+        let unsigned = UnsignedProcessorFactResult {
+            domain: PROCESSOR_FACT_RESULT_DOMAIN,
+            authorization_id: &authorization_id,
+            challenge: &challenge,
+            deployment_id: "deployment-166327",
+            job_id: r#"{"id":"166327","origin":{"kind":"Acurast"}}"#,
+            processor_id: "5C81qALgzdeYUseGhtWPexwufYY83NcrnTazpFMcTizhuBb2",
+            runtime_instance_id: "runtime-instance-9f2",
+            profile: CARGO_BASELINE_PROFILE,
+            catalog_digest: &catalog_digest,
+            helper_contract_epoch: HELPER_CONTRACT_EPOCH,
+            helper_version: "0.10.42",
+            helper_digest: &helper_digest,
+            capture_started_at_ms: 1_789_402_520_000,
+            capture_completed_at_ms: 1_789_402_521_500,
+            facts: &facts,
+            facts_digest: &facts_digest,
+        };
+        let unsigned_value = serde_json::to_value(&unsigned).unwrap();
+        assert_eq!(unsigned_value, vector["result"]);
+        assert!(vector["result"].get("signature").is_none());
+        assert_eq!(vector["result"]["factsDigest"], facts_digest);
+        // The string, not the `Value`: equality on `Value` ignores key order,
+        // and key order is exactly what a signature is sensitive to.
+        let canonical = canonical_json_bytes(&unsigned_value);
+        assert_eq!(
+            std::str::from_utf8(&canonical).unwrap(),
+            vector["canonicalSigningPayload"].as_str().unwrap(),
+        );
+        assert!(canonical.len() <= MAX_RESULT_BYTES);
+    }
+
     #[test]
     fn failed_delivery_is_not_retried_after_authorization_expiry() {
         let counters = Counters::default();
