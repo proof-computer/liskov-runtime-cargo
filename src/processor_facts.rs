@@ -2557,6 +2557,530 @@ mod tests {
         assert!(canonical.len() <= MAX_RESULT_BYTES);
     }
 
+    /// SHA-256 of the checked-in `cargo-baseline-v1` catalog bytes. Every
+    /// authorization must name exactly this digest, so a byte change to the
+    /// catalog is a coordinated producer/consumer recut, not a test update.
+    const CARGO_BASELINE_CATALOG_DIGEST: &str =
+        "sha256:3d66b4cba71a4ab57c197b80b523b2d172981bbf64ba62438ed9fdc0c5c5cb85";
+
+    /// Key sets a catalog field's value may carry: the availability envelope,
+    /// or one per-family egress observation. Anything else is a smuggled field.
+    const FIELD_ENVELOPES: [&[&str]; 2] = [
+        &["status", "value"],
+        &[
+            "outcome",
+            "requestDurationMs",
+            "resolutionDurationMs",
+            "statusClass",
+        ],
+    ];
+
+    fn baseline_catalog() -> Value {
+        serde_json::from_str(include_str!("../contracts/cargo-baseline-v1.json"))
+            .expect("catalog parses")
+    }
+
+    /// `(kind, admitted fields)` in catalog order.
+    fn catalog_admissions(catalog: &Value) -> Vec<(&str, BTreeSet<&str>)> {
+        catalog["facts"]
+            .as_array()
+            .expect("catalog facts")
+            .iter()
+            .map(|fact| {
+                let fields = fact["fields"].as_array().expect("catalog fields");
+                let admitted = fields
+                    .iter()
+                    .map(|field| field.as_str().expect("field name"))
+                    .collect::<BTreeSet<_>>();
+                assert_eq!(admitted.len(), fields.len(), "duplicate catalog field");
+                (fact["kind"].as_str().expect("catalog kind"), admitted)
+            })
+            .collect()
+    }
+
+    /// Every compiled kind. The match is exhaustive so a new variant does not
+    /// compile until it is listed here, where the catalog tests meet it.
+    fn every_fact_kind() -> [ProcessorFactKind; 3] {
+        [
+            ProcessorFactKind::AndroidCorroboration,
+            ProcessorFactKind::ExecutionSurface,
+            ProcessorFactKind::ControlEgress,
+        ]
+        .map(|kind| match kind {
+            ProcessorFactKind::AndroidCorroboration
+            | ProcessorFactKind::ExecutionSurface
+            | ProcessorFactKind::ControlEgress => kind,
+        })
+    }
+
+    /// Why `facts` is not exactly the catalog-admitted emission for `due`, or
+    /// `None` when it is: each due kind once, in catalog order, nothing else,
+    /// and each value carrying exactly the catalog's fields in a closed envelope.
+    fn catalog_violation(catalog: &Value, due: &BTreeSet<&str>, facts: &Value) -> Option<String> {
+        let admissions = catalog_admissions(catalog);
+        let expected = admissions
+            .iter()
+            .map(|(kind, _)| *kind)
+            .filter(|kind| due.contains(kind))
+            .collect::<Vec<_>>();
+        if expected.len() != due.len() {
+            return Some(format!("due kinds outside the catalog: {due:?}"));
+        }
+        let Some(facts) = facts.as_array() else {
+            return Some("facts is not an array".into());
+        };
+        let emitted = facts
+            .iter()
+            .map(|fact| fact["kind"].as_str().unwrap_or_default())
+            .collect::<Vec<_>>();
+        if emitted != expected {
+            return Some(format!("emitted {emitted:?}, admitted {expected:?}"));
+        }
+        for (fact, (kind, admitted)) in facts
+            .iter()
+            .zip(admissions.iter().filter(|(kind, _)| due.contains(kind)))
+        {
+            let envelope = fact
+                .as_object()
+                .map(|object| object.keys().map(String::as_str).collect::<BTreeSet<_>>());
+            if envelope != Some(BTreeSet::from(["kind", "value"])) {
+                return Some(format!("{kind} envelope is {envelope:?}"));
+            }
+            let Some(value) = fact["value"].as_object() else {
+                return Some(format!("{kind} value is not an object"));
+            };
+            let fields = value.keys().map(String::as_str).collect::<BTreeSet<_>>();
+            if &fields != admitted {
+                return Some(format!("{kind} carries {fields:?}, admitted {admitted:?}"));
+            }
+            for (field, observation) in value {
+                let keys = observation
+                    .as_object()
+                    .map(|object| object.keys().map(String::as_str).collect::<BTreeSet<_>>());
+                let closed = keys.as_ref().is_some_and(|keys| {
+                    FIELD_ENVELOPES
+                        .iter()
+                        .any(|envelope| keys.iter().all(|key| envelope.contains(key)))
+                });
+                if !closed {
+                    return Some(format!("{kind}.{field} carries {keys:?}"));
+                }
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn catalog_names_exactly_the_compiled_profile_epoch_digest_and_fact_kinds() {
+        let catalog = baseline_catalog();
+        assert_eq!(
+            catalog
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                "domain",
+                "facts",
+                "forbidden",
+                "helperContractEpoch",
+                "profile"
+            ]),
+        );
+        assert_eq!(catalog["domain"], "proof.liskov.processor-fact-catalog.v1");
+        assert_eq!(catalog["profile"], CARGO_BASELINE_PROFILE);
+        assert_eq!(catalog["helperContractEpoch"], HELPER_CONTRACT_EPOCH);
+        assert_eq!(compiled_catalog_digest(), CARGO_BASELINE_CATALOG_DIGEST);
+
+        for fact in catalog["facts"].as_array().unwrap() {
+            assert_eq!(
+                fact.as_object()
+                    .unwrap()
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<BTreeSet<_>>(),
+                BTreeSet::from(["capture", "fields", "kind"]),
+            );
+            assert_eq!(fact["capture"], "authorized_due_only");
+        }
+
+        // Every catalog kind is a compiled kind, every compiled kind is in the
+        // catalog, and catalog order is the kinds' own order.
+        let kinds = catalog_admissions(&catalog)
+            .into_iter()
+            .map(|(kind, _)| {
+                serde_json::from_value::<ProcessorFactKind>(json!(kind))
+                    .unwrap_or_else(|_| panic!("{kind} is not a compiled fact kind"))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(kinds, every_fact_kind());
+        assert!(kinds.is_sorted());
+    }
+
+    #[test]
+    fn worker_emits_exactly_the_catalog_admitted_set_for_every_due_subset() {
+        let catalog = baseline_catalog();
+        let kinds = catalog_admissions(&catalog)
+            .into_iter()
+            .map(|(kind, _)| kind)
+            .collect::<Vec<_>>();
+        for mask in 1..(1_usize << kinds.len()) {
+            let due = kinds
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| mask & (1 << index) != 0)
+                .map(|(_, kind)| *kind)
+                .collect::<Vec<_>>();
+            // Authorization array order must not reach the wire.
+            let reversed = due.iter().rev().copied().collect::<Vec<_>>();
+            for requested in [&due, &reversed] {
+                let counters = Counters::default();
+                let clock = FixedClock(NOW);
+                let hasher = CountingHasher {
+                    counters: &counters,
+                    digest: HELPER_DIGEST,
+                };
+                let android = CountingAndroid(&counters);
+                let execution = CountingExecution(&counters);
+                let egress = CountingEgress(&counters);
+                let signer = RecordingSigner {
+                    counters: &counters,
+                    inputs: Mutex::new(Vec::new()),
+                };
+                let delivery = RecordingDelivery::new([true]);
+                let dependencies = ProcessorFactWorkerDependencies {
+                    clock: &clock,
+                    executable_hasher: &hasher,
+                    android: &android,
+                    execution: &execution,
+                    egress: &egress,
+                    signer: &signer,
+                    delivery: &delivery,
+                };
+                run_processor_fact_worker(&authorization(requested), &binding(), &dependencies)
+                    .unwrap();
+
+                let calls = delivery.calls.lock().unwrap();
+                let body: Value = serde_json::from_slice(&calls[0].1).unwrap();
+                let due = due.iter().copied().collect::<BTreeSet<_>>();
+                assert_eq!(
+                    catalog_violation(&catalog, &due, &body["facts"]),
+                    None,
+                    "{requested:?}"
+                );
+                assert_eq!(body["profile"], catalog["profile"]);
+                assert_eq!(body["helperContractEpoch"], catalog["helperContractEpoch"]);
+                assert_eq!(body["catalogDigest"], CARGO_BASELINE_CATALOG_DIGEST);
+                for (kind, count) in [
+                    ("cargo_android_corroboration.v1", &counters.android),
+                    ("cargo_execution_surface.v1", &counters.execution),
+                    ("cargo_control_egress.v1", &counters.egress),
+                ] {
+                    assert_eq!(
+                        count.load(Ordering::SeqCst),
+                        usize::from(due.contains(kind))
+                    );
+                }
+            }
+        }
+    }
+
+    /// The vector's `catalogDigest` is a placeholder kept byte-identical with
+    /// `liskov-rs`; it pins canonical bytes, not this catalog, so it is checked
+    /// for shape only. The compiled digest is pinned above.
+    #[test]
+    fn shared_vector_carries_exactly_the_catalog_admitted_set_in_canonical_order() {
+        let catalog = baseline_catalog();
+        let vector: Value =
+            serde_json::from_str(include_str!("../vectors/processor-fact-result-v1.json"))
+                .expect("shared vector parses");
+        let result = &vector["result"];
+        assert_eq!(result["domain"], PROCESSOR_FACT_RESULT_DOMAIN);
+        assert_eq!(result["profile"], catalog["profile"]);
+        assert_eq!(
+            result["helperContractEpoch"],
+            catalog["helperContractEpoch"]
+        );
+        assert!(valid_sha256(result["catalogDigest"].as_str().unwrap()));
+
+        let every = catalog_admissions(&catalog)
+            .into_iter()
+            .map(|(kind, _)| kind)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(catalog_violation(&catalog, &every, &result["facts"]), None);
+        // Canonicalization sorts object keys, never the facts array.
+        let canonical: Value =
+            serde_json::from_str(vector["canonicalSigningPayload"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            catalog_violation(&catalog, &every, &canonical["facts"]),
+            None
+        );
+        assert_eq!(
+            serde_json::to_value(shared_vector_facts()).unwrap(),
+            result["facts"]
+        );
+    }
+
+    #[test]
+    fn catalog_parity_rejects_unknown_forbidden_reordered_and_undue_facts() {
+        let catalog = baseline_catalog();
+        let vector: Value =
+            serde_json::from_str(include_str!("../vectors/processor-fact-result-v1.json")).unwrap();
+        let facts = &vector["result"]["facts"];
+        let every = catalog_admissions(&catalog)
+            .into_iter()
+            .map(|(kind, _)| kind)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(catalog_violation(&catalog, &every, facts), None);
+
+        let mutate = |change: &dyn Fn(&mut Vec<Value>)| {
+            let mut changed = facts.as_array().unwrap().clone();
+            change(&mut changed);
+            Value::Array(changed)
+        };
+        for (case, candidate) in [
+            (
+                "unknown kind",
+                mutate(&|facts| facts.push(json!({"kind": "future_fact.v1", "value": {}}))),
+            ),
+            (
+                "forbidden field",
+                mutate(&|facts| facts[0]["value"]["serial"] = json!({"status": "not_present"})),
+            ),
+            (
+                "forbidden nested field",
+                mutate(&|facts| facts[2]["value"]["ipv4"]["ipAddress"] = json!("192.0.2.1")),
+            ),
+            (
+                "forbidden envelope field",
+                mutate(&|facts| facts[1]["origin"] = json!("customer")),
+            ),
+            (
+                "missing field",
+                mutate(&|facts| {
+                    facts[0]["value"].as_object_mut().unwrap().remove("brand");
+                }),
+            ),
+            ("reordered", mutate(&|facts| facts.swap(0, 1))),
+            (
+                "duplicate",
+                mutate(&|facts| {
+                    let first = facts[0].clone();
+                    facts.insert(1, first);
+                }),
+            ),
+            (
+                "due kind absent",
+                mutate(&|facts| {
+                    facts.remove(1);
+                }),
+            ),
+        ] {
+            assert!(
+                catalog_violation(&catalog, &every, &candidate).is_some(),
+                "{case} was accepted"
+            );
+        }
+
+        let execution_only = BTreeSet::from(["cargo_execution_surface.v1"]);
+        assert!(catalog_violation(&catalog, &execution_only, facts).is_some());
+        let unknown_due = BTreeSet::from(["cargo_execution_surface.v1", "future_fact.v1"]);
+        assert!(catalog_violation(&catalog, &unknown_due, facts).is_some());
+    }
+
+    #[derive(Default)]
+    struct NativeCounters {
+        property_reads: AtomicUsize,
+        linux_reads: AtomicUsize,
+        dns: AtomicUsize,
+        http: AtomicUsize,
+    }
+
+    struct CountingPropertyReader<'a> {
+        counters: &'a NativeCounters,
+        inner: FixturePropertyReader,
+    }
+
+    impl PropertyFileReader for CountingPropertyReader<'_> {
+        fn read(
+            &self,
+            path: &str,
+            budget: &mut PropertyReadBudget,
+        ) -> Result<Vec<u8>, FileReadFailure> {
+            self.counters.property_reads.fetch_add(1, Ordering::SeqCst);
+            self.inner.read(path, budget)
+        }
+    }
+
+    struct CountingLinux<'a>(&'a NativeCounters);
+
+    impl LinuxSystemReader for CountingLinux<'_> {
+        fn page_size(&self) -> Result<u64, LinuxReadFailure> {
+            self.0.linux_reads.fetch_add(1, Ordering::SeqCst);
+            Ok(4096)
+        }
+
+        fn kernel_release(&self) -> Result<String, LinuxReadFailure> {
+            self.0.linux_reads.fetch_add(1, Ordering::SeqCst);
+            Ok("4.19.191".into())
+        }
+
+        fn proc_status(&self) -> Result<String, LinuxReadFailure> {
+            self.0.linux_reads.fetch_add(1, Ordering::SeqCst);
+            Err(LinuxReadFailure::SurfaceHidden)
+        }
+    }
+
+    impl ExecutionFactCollector for CountingLinux<'_> {
+        fn collect(&self) -> ExecutionSurfaceFact {
+            collect_execution_surface(self)
+        }
+    }
+
+    struct CountingNetwork<'a>(&'a NativeCounters);
+
+    impl EgressResolver for CountingNetwork<'_> {
+        fn resolve(
+            &self,
+            _host: &str,
+            _port: u16,
+        ) -> Result<Vec<SocketAddr>, EgressResolutionFailure> {
+            self.0.dns.fetch_add(1, Ordering::SeqCst);
+            Ok(vec!["192.0.2.1:443".parse().unwrap()])
+        }
+    }
+
+    impl FamilyRequester for CountingNetwork<'_> {
+        fn request(&self, _endpoint: &str, _address: SocketAddr) -> FamilyRequestResult {
+            self.0.http.fetch_add(1, Ordering::SeqCst);
+            family_result(EgressOutcome::Success)
+        }
+    }
+
+    impl EgressFactCollector for CountingNetwork<'_> {
+        fn collect(&self, endpoint: &str) -> ControlEgressFact {
+            collect_control_egress(endpoint, self, self)
+        }
+    }
+
+    /// The real collectors over counted native seams, so a zero count means
+    /// no property file, kernel surface, DNS lookup or egress request was
+    /// touched — and the positive control proves the counts can move.
+    #[test]
+    fn missing_or_refused_authorization_performs_no_native_read_dns_signature_or_http() {
+        let expired = {
+            let mut value = authorization_value(&["cargo_execution_surface.v1"]);
+            value["issuedAtMs"] = json!(NOW - 300_000);
+            value["expiresAtMs"] = json!(NOW);
+            value
+        };
+        let wrong_catalog = {
+            let mut value = authorization_value(&["cargo_execution_surface.v1"]);
+            value["catalogDigest"] = json!(format!("sha256:{}", "bb".repeat(32)));
+            value
+        };
+        let all_kinds = [
+            "cargo_android_corroboration.v1",
+            "cargo_execution_surface.v1",
+            "cargo_control_egress.v1",
+        ];
+        let refused = [
+            None,
+            Some(authorization_value(&[])),
+            Some(authorization_value(&["future_fact.v1"])),
+            Some(authorization_value(&["cargo_serial.v1"])),
+            Some(authorization_value(&["cargo_network_addresses.v1"])),
+            Some(authorization_value(&["cargo_execution_surface.v2"])),
+            Some(authorization_value(&["cargo_execution_surface"])),
+            Some(authorization_value(&["CARGO_EXECUTION_SURFACE.V1"])),
+            Some(authorization_value(&[
+                "cargo_execution_surface.v1",
+                "future_fact.v1",
+            ])),
+            Some(authorization_value(&[
+                all_kinds[0],
+                all_kinds[1],
+                all_kinds[2],
+                all_kinds[0],
+            ])),
+            Some(expired),
+            Some(wrong_catalog),
+        ];
+
+        let run = |raw: Option<Value>| {
+            let native = NativeCounters::default();
+            let counters = Counters::default();
+            let clock = FixedClock(NOW);
+            let hasher = CountingHasher {
+                counters: &counters,
+                digest: HELPER_DIGEST,
+            };
+            let android = AndroidPropertyCollector {
+                reader: CountingPropertyReader {
+                    counters: &native,
+                    inner: samsung_reader(true),
+                },
+            };
+            let execution = CountingLinux(&native);
+            let egress = CountingNetwork(&native);
+            let signer = RecordingSigner {
+                counters: &counters,
+                inputs: Mutex::new(Vec::new()),
+            };
+            let delivery = RecordingDelivery::new([true]);
+            let dependencies = ProcessorFactWorkerDependencies {
+                clock: &clock,
+                executable_hasher: &hasher,
+                android: &android,
+                execution: &execution,
+                egress: &egress,
+                signer: &signer,
+                delivery: &delivery,
+            };
+            // The supervisor's own shape: only a parsed authorization runs.
+            let mut response = bootstrap(raw);
+            if let Some(authorization) = take_processor_fact_authorization(&mut response) {
+                let _ = run_processor_fact_worker(&authorization, &binding(), &dependencies);
+            }
+            let delivered = delivery.calls.lock().unwrap().clone();
+            (
+                [
+                    native.property_reads.load(Ordering::SeqCst),
+                    native.linux_reads.load(Ordering::SeqCst),
+                    native.dns.load(Ordering::SeqCst),
+                    native.http.load(Ordering::SeqCst),
+                    counters.hash.load(Ordering::SeqCst),
+                    counters.signing.load(Ordering::SeqCst),
+                ],
+                delivered,
+            )
+        };
+
+        for raw in refused {
+            let shown = format!("{raw:?}");
+            let (counts, delivered) = run(raw);
+            assert_eq!(counts, [0; 6], "{shown}");
+            assert!(delivered.is_empty(), "{shown}");
+        }
+
+        let (counts, delivered) = run(Some(authorization_value(&all_kinds)));
+        let [property_reads, linux_reads, dns, http, hash, signing] = counts;
+        assert!(property_reads > 0);
+        assert_eq!(linux_reads, 3);
+        assert_eq!((dns, http, hash, signing), (1, 1, 1, 1));
+        assert_eq!(delivered.len(), 1);
+        let body: Value = serde_json::from_slice(&delivered[0].1).unwrap();
+        assert_eq!(
+            catalog_violation(
+                &baseline_catalog(),
+                &BTreeSet::from(all_kinds),
+                &body["facts"]
+            ),
+            None
+        );
+    }
+
     #[test]
     fn failed_delivery_is_not_retried_after_authorization_expiry() {
         let counters = Counters::default();
