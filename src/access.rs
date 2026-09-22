@@ -1247,21 +1247,13 @@ fn setup_in_root(
     let up = timed_stage(client_logger.as_ref(), "up", || {
         run_bounded(
             &tailscale_path,
-            &[
-                OsString::from(format!("--socket={}", socket.display())),
-                OsString::from("up"),
-                OsString::from(format!("--auth-key={auth_argument}")),
-                OsString::from(format!("--hostname={hostname}")),
-                OsString::from("--ssh"),
-                OsString::from("--accept-dns=false"),
-                OsString::from("--accept-routes=false"),
-                OsString::from(format!(
-                    "--timeout={}s",
-                    TUNNEL_UP_TIMEOUT
-                        .saturating_sub(TUNNEL_UP_CLIENT_MARGIN)
-                        .as_secs()
-                )),
-            ],
+            &up_arguments(
+                &socket,
+                &auth_argument,
+                &hostname,
+                access.ssh_enabled,
+                TUNNEL_UP_TIMEOUT.saturating_sub(TUNNEL_UP_CLIENT_MARGIN),
+            ),
             subprocess_deadline(deadline, TUNNEL_UP_TIMEOUT)
                 .map_err(stage_error("access_deadline_exceeded"))?,
             client_logger.as_ref().map(|logger| (logger, auth_key)),
@@ -1699,6 +1691,33 @@ fn daemon_arguments(
         OsString::from("--state=mem:"),
         OsString::from(format!("--socket={}", socket.display())),
         OsString::from(format!("--statedir={}", state_dir.display())),
+    ]);
+    arguments
+}
+
+/// The `tailscale up` argument list. `--ssh` is present only when the signed
+/// bootstrap asks for Tailscale SSH (`BKLG-20260921-2dcw`); an endpoint-only
+/// attachment must not also be a root SSH server.
+fn up_arguments(
+    socket: &Path,
+    auth_argument: &str,
+    hostname: &str,
+    ssh_enabled: bool,
+    timeout: Duration,
+) -> Vec<OsString> {
+    let mut arguments = vec![
+        OsString::from(format!("--socket={}", socket.display())),
+        OsString::from("up"),
+        OsString::from(format!("--auth-key={auth_argument}")),
+        OsString::from(format!("--hostname={hostname}")),
+    ];
+    if ssh_enabled {
+        arguments.push(OsString::from("--ssh"));
+    }
+    arguments.extend([
+        OsString::from("--accept-dns=false"),
+        OsString::from("--accept-routes=false"),
+        OsString::from(format!("--timeout={}s", timeout.as_secs())),
     ]);
     arguments
 }
@@ -2221,6 +2240,35 @@ mod tests {
             });
         assert_eq!(exhausted.unwrap_err().code, "access_extract_layout");
         assert_eq!(calls.get(), 3);
+    }
+
+    #[test]
+    fn up_arguments_keep_the_current_list_and_drop_only_ssh_when_disabled() {
+        let socket = Path::new("/tmp/socket");
+        let timeout = TUNNEL_UP_TIMEOUT.saturating_sub(TUNNEL_UP_CLIENT_MARGIN);
+        let with_ssh = up_arguments(socket, "file:/tmp/auth", "node-1", true, timeout);
+        assert_eq!(
+            with_ssh,
+            [
+                "--socket=/tmp/socket",
+                "up",
+                "--auth-key=file:/tmp/auth",
+                "--hostname=node-1",
+                "--ssh",
+                "--accept-dns=false",
+                "--accept-routes=false",
+                "--timeout=210s",
+            ]
+            .map(OsString::from)
+        );
+        let without_ssh = up_arguments(socket, "file:/tmp/auth", "node-1", false, timeout);
+        let expected: Vec<OsString> = with_ssh
+            .iter()
+            .filter(|argument| argument.as_os_str() != "--ssh")
+            .cloned()
+            .collect();
+        assert_eq!(without_ssh, expected);
+        assert_eq!(without_ssh.len(), with_ssh.len() - 1);
     }
 
     #[test]
@@ -2763,6 +2811,7 @@ mod tests {
             },
             credential: None,
             publications: Vec::new(),
+            ssh_enabled: true,
         };
         let bootstrap = RuntimeBootstrapResponse {
             ok: true,

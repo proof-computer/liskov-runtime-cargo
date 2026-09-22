@@ -242,6 +242,16 @@ pub struct TailscaleRuntimeAccessBootstrap {
     /// floor.
     #[serde(default)]
     pub publications: Vec<TailscaleEndpointPublication>,
+    /// Whether the node also serves Tailscale SSH. Absent means `true`: every
+    /// server that predates this member wanted operator SSH on the attachment.
+    /// This struct denies unknown fields, so a server may send the key only to
+    /// a helper at or above 0.10.44 (`BKLG-20260921-2dcw`).
+    #[serde(default = "ssh_enabled_by_default")]
+    pub ssh_enabled: bool,
+}
+
+fn ssh_enabled_by_default() -> bool {
+    true
 }
 
 /// Upper bound on endpoints one attachment publishes.
@@ -433,6 +443,38 @@ mod publication_tests {
         let parsed = parse(value).expect("absent publications default");
         assert!(parsed.publications.is_empty());
         assert!(parsed.valid());
+    }
+
+    #[test]
+    fn a_server_that_predates_ssh_enabled_keeps_tailscale_ssh() {
+        let parsed = parse(access(serde_json::json!([]))).expect("absent sshEnabled default");
+        assert!(parsed.ssh_enabled);
+        assert!(parsed.valid());
+    }
+
+    #[test]
+    fn ssh_enabled_round_trips_both_values() {
+        for enabled in [false, true] {
+            let mut value = access(serde_json::json!([clickhouse()]));
+            value["sshEnabled"] = serde_json::json!(enabled);
+            let parsed = parse(value).expect("boolean sshEnabled");
+            assert_eq!(parsed.ssh_enabled, enabled);
+            assert!(parsed.valid());
+        }
+    }
+
+    #[test]
+    fn a_non_boolean_ssh_enabled_is_refused() {
+        for refused in [
+            serde_json::json!("false"),
+            serde_json::json!(0),
+            serde_json::json!(null),
+            serde_json::json!({}),
+        ] {
+            let mut value = access(serde_json::json!([]));
+            value["sshEnabled"] = refused;
+            assert!(parse(value).is_err());
+        }
     }
 
     #[test]
