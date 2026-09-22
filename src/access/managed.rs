@@ -27,7 +27,7 @@ use zeroize::{Zeroize, Zeroizing};
 
 use super::{
     AccessError, CompactManagedRuntimeSshCredentialProviderV2, MANAGED_CREDENTIAL_SCHEMA_V2,
-    ManagedRuntimeSshCredential, ManagedRuntimeSshCredentialProviderV2, private_root,
+    ManagedRuntimeSshCredential, ManagedRuntimeSshCredentialProviderV2, SidecarEvent, private_root,
     runtime_job_ids_match, terminate_child, unix_time_ms,
 };
 use crate::logging::RuntimeSshLogEmitter;
@@ -53,6 +53,31 @@ const DROPBEAR_ARGV0_NO_REEXEC: &str = "/liskov-dropbear-no-reexec";
 const DROPBEAR_FILENAME: &str = "liskov-dropbear";
 const DROPBEARKEY_FILENAME: &str = "liskov-dropbearkey";
 const MAX_TOOLCHAIN_BINARY_BYTES: u64 = 32 * 1024 * 1024;
+const DROPBEAR_START_CHECK: Duration = Duration::from_millis(150);
+/// A dead Dropbear is restarted at most this many times over the session's
+/// life, the helper's usual budget (`PROVIDER_FETCH_ATTEMPTS`,
+/// `BRING_UP_ATTEMPTS`). A death after that stays degraded.
+pub(super) const MAX_SIDECAR_RESPAWNS: u32 = 3;
+/// A respawn runs inline in the supervision loop, so its listener check is
+/// bounded like the endpoint probes rather than by the setup deadline.
+const RESPAWN_LISTENER_LIMIT: Duration = Duration::from_secs(2);
+
+/// Starts Dropbear again with the session's host key, authorized keys and pid
+/// file, and returns it only once it is listening.
+type SidecarRespawn = Box<dyn FnMut() -> Result<Child, AccessError> + Send>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SidecarState {
+    Running,
+    /// Dropbear exited and was reported; the next respawn is due at `retry_at`.
+    Down {
+        retry_at: Instant,
+    },
+    /// Reported and never respawned: the connector finished or the respawn
+    /// budget is spent.
+    Terminal,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConnectorAttemptError {
     ConfigurationFailed,
@@ -109,7 +134,10 @@ pub struct ManagedAccessSession {
     fence: u64,
     host_public_key: String,
     host_fingerprint: String,
-    degraded_reported: bool,
+    sidecar: SidecarState,
+    respawn: SidecarRespawn,
+    respawn_delay: fn(u32) -> Duration,
+    respawns_used: u32,
     stopped: bool,
 }
 
@@ -133,17 +161,78 @@ impl ManagedAccessSession {
         })
     }
 
-    pub(super) fn newly_crashed(&mut self) -> bool {
-        if self.degraded_reported {
-            return false;
+    pub(super) fn sidecar_event(&mut self) -> SidecarEvent {
+        self.sidecar_event_at(Instant::now())
+    }
+
+    /// Advance the sidecar state machine. Called on every supervision-loop
+    /// pass, so it never sleeps for the backoff: a respawn is only attempted
+    /// on the first pass after it falls due.
+    fn sidecar_event_at(&mut self, now: Instant) -> SidecarEvent {
+        if self.stopped {
+            return SidecarEvent::Unchanged;
         }
-        let dropbear_crashed = self.dropbear.try_wait().ok().flatten().is_some();
-        let connector_crashed = self.connector.is_finished();
-        if dropbear_crashed || connector_crashed {
-            self.degraded_reported = true;
-            true
+        match self.sidecar {
+            SidecarState::Terminal => SidecarEvent::Unchanged,
+            SidecarState::Running => {
+                // The connector reconnects on its own until the credential
+                // expires, so its thread finishing is final.
+                if self.connector.is_finished() {
+                    self.sidecar = SidecarState::Terminal;
+                    return SidecarEvent::Crashed;
+                }
+                if self.dropbear.try_wait().ok().flatten().is_none() {
+                    return SidecarEvent::Unchanged;
+                }
+                self.sidecar = self.next_respawn(now);
+                SidecarEvent::Crashed
+            }
+            SidecarState::Down { retry_at } => {
+                if self.connector.is_finished() {
+                    // Already reported degraded; nothing left to relay to.
+                    self.sidecar = SidecarState::Terminal;
+                    return SidecarEvent::Unchanged;
+                }
+                if now < retry_at {
+                    return SidecarEvent::Unchanged;
+                }
+                self.respawns_used += 1;
+                let started = Instant::now();
+                let result = (self.respawn)();
+                let elapsed = started.elapsed();
+                let elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
+                match result {
+                    Ok(dropbear) => {
+                        self.dropbear = dropbear;
+                        self.sidecar = SidecarState::Running;
+                        SidecarEvent::Recovered { elapsed_ms }
+                    }
+                    Err(error) => {
+                        self.sidecar = self.next_respawn(now + elapsed);
+                        if self.sidecar == SidecarState::Terminal {
+                            SidecarEvent::Exhausted {
+                                elapsed_ms,
+                                code: error.code,
+                            }
+                        } else {
+                            SidecarEvent::RespawnFailed {
+                                elapsed_ms,
+                                code: error.code,
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn next_respawn(&self, now: Instant) -> SidecarState {
+        if self.respawns_used < MAX_SIDECAR_RESPAWNS {
+            SidecarState::Down {
+                retry_at: now + (self.respawn_delay)(self.respawns_used),
+            }
         } else {
-            false
+            SidecarState::Terminal
         }
     }
 
@@ -159,28 +248,17 @@ impl ManagedAccessSession {
         connector_result.and(dropbear_result).and(remove_result)
     }
 
+    /// A session whose sidecar is `program`, respawned as the same program.
     #[cfg(test)]
     pub(crate) fn for_test(program: &str, args: &[&str]) -> Result<Self, AccessError> {
         let root = private_root("o8c9-session-test")?;
-        let mut command = Command::new(program);
-        command
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        // SAFETY: this pre-exec hook performs only async-signal-safe setpgid.
-        unsafe {
-            command.pre_exec(|| {
-                if libc::setpgid(0, 0) == 0 {
-                    Ok(())
-                } else {
-                    Err(std::io::Error::last_os_error())
-                }
-            });
-        }
-        let mut dropbear = command
-            .spawn()
-            .map_err(|_| AccessError::new("access_sidecar_spawn_failed"))?;
+        let mut dropbear = spawn_test_sidecar(program, args)?;
+        let respawn_program = program.to_string();
+        let respawn_args = args.iter().map(ToString::to_string).collect::<Vec<_>>();
+        let respawn: SidecarRespawn = Box::new(move || {
+            let args = respawn_args.iter().map(String::as_str).collect::<Vec<_>>();
+            spawn_test_sidecar(&respawn_program, &args)
+        });
         let cancel = Arc::new(AtomicBool::new(false));
         let worker_cancel = cancel.clone();
         let handle = match thread::Builder::new()
@@ -208,10 +286,49 @@ impl ManagedAccessSession {
             fence: 1,
             host_public_key: String::new(),
             host_fingerprint: String::new(),
-            degraded_reported: false,
+            sidecar: SidecarState::Running,
+            respawn,
+            respawn_delay: reconnect_delay,
+            respawns_used: 0,
             stopped: false,
         })
     }
+
+    /// Replace the respawn step, which in production re-verifies the toolchain
+    /// and starts the real Dropbear on the fixed port.
+    #[cfg(test)]
+    pub(crate) fn with_respawn(
+        mut self,
+        respawn: impl FnMut() -> Result<Child, AccessError> + Send + 'static,
+        respawn_delay: fn(u32) -> Duration,
+    ) -> Self {
+        self.respawn = Box::new(respawn);
+        self.respawn_delay = respawn_delay;
+        self
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn spawn_test_sidecar(program: &str, args: &[&str]) -> Result<Child, AccessError> {
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    // SAFETY: this pre-exec hook performs only async-signal-safe setpgid.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setpgid(0, 0) == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        });
+    }
+    command
+        .spawn()
+        .map_err(|_| AccessError::new("access_sidecar_spawn_failed"))
 }
 
 struct ConnectorWorker {
@@ -537,17 +654,7 @@ fn setup_in_root(
     let pid_file = root.join("dropbear.pid");
     let endpoint = connector_endpoint(&access.gateway_url, &access.tunnel_id)?;
     let mut dropbear = spawn_dropbear(dropbear, &host_key_path, &authorization_dir, &pid_file)?;
-    let start_check = Instant::now() + Duration::from_millis(150);
-    while Instant::now() < start_check {
-        if dropbear
-            .try_wait()
-            .map_err(|_| AccessError::new("access_sidecar_failed"))?
-            .is_some()
-        {
-            return Err(AccessError::new("access_sidecar_failed"));
-        }
-        thread::sleep(POLL_INTERVAL);
-    }
+    check_dropbear_started(&mut dropbear)?;
     if let Err(error) = verify_dropbear_listener(deadline) {
         let _ = terminate_child(&mut dropbear);
         return Err(error);
@@ -557,6 +664,12 @@ fn setup_in_root(
     // again. Preserve both ordered events: dropping a full-channel registration
     // would turn a successful retry back into a false setup timeout.
     let (registered_sender, registered_receiver) = mpsc::channel();
+    let respawn = dropbear_respawner(
+        credential.toolchain,
+        host_key_path,
+        authorization_dir,
+        pid_file,
+    );
     let mut connector = match spawn_connector(
         endpoint,
         credential.connector_token,
@@ -585,9 +698,60 @@ fn setup_in_root(
         fence: access.fence,
         host_public_key,
         host_fingerprint,
-        degraded_reported: false,
+        sidecar: SidecarState::Running,
+        respawn,
+        respawn_delay: reconnect_delay,
+        respawns_used: 0,
         stopped: false,
     })
+}
+
+/// The production respawn step: the same toolchain check, arguments and
+/// start checks as setup, reusing the session's host key and authorized keys
+/// so the host key pinned at `ready` still matches.
+fn dropbear_respawner(
+    toolchain: ManagedRuntimeAccessToolchain,
+    host_key_path: PathBuf,
+    authorization_dir: PathBuf,
+    pid_file: PathBuf,
+) -> SidecarRespawn {
+    Box::new(move || {
+        let verified = verify_fixed_toolchain(
+            &toolchain.runtime_contact_sha256,
+            &toolchain.dropbear_sha256,
+            &toolchain.dropbearkey_sha256,
+        )
+        .map_err(|_| AccessError::new("access_sidecar_spawn_failed"))?;
+        let mut dropbear = spawn_dropbear(
+            &verified.dropbear,
+            &host_key_path,
+            &authorization_dir,
+            &pid_file,
+        )?;
+        let started = check_dropbear_started(&mut dropbear)
+            .and_then(|()| verify_dropbear_listener(Instant::now() + RESPAWN_LISTENER_LIMIT));
+        if let Err(error) = started {
+            let _ = terminate_child(&mut dropbear);
+            return Err(error);
+        }
+        Ok(dropbear)
+    })
+}
+
+/// Dropbear exits at once on a bad key, a bad argument or a taken port.
+fn check_dropbear_started(dropbear: &mut Child) -> Result<(), AccessError> {
+    let start_check = Instant::now() + DROPBEAR_START_CHECK;
+    while Instant::now() < start_check {
+        if dropbear
+            .try_wait()
+            .map_err(|_| AccessError::new("access_sidecar_failed"))?
+            .is_some()
+        {
+            return Err(AccessError::new("access_sidecar_failed"));
+        }
+        thread::sleep(POLL_INTERVAL);
+    }
+    Ok(())
 }
 
 fn wait_for_connector_registration(
@@ -1870,5 +2034,205 @@ mod tests {
         assert!(session.connector.is_finished());
         assert!(!root.exists());
         session.stop().unwrap();
+    }
+
+    /// Poll until the sidecar's death is observed.
+    fn await_sidecar_event(session: &mut ManagedAccessSession) -> SidecarEvent {
+        for _ in 0..400 {
+            match session.sidecar_event_at(Instant::now()) {
+                SidecarEvent::Unchanged => thread::sleep(Duration::from_millis(5)),
+                event => return event,
+            }
+        }
+        panic!("the sidecar never exited");
+    }
+
+    fn counted_respawn(
+        program: &'static str,
+        args: &'static [&'static str],
+    ) -> (
+        Arc<std::sync::atomic::AtomicU32>,
+        impl FnMut() -> Result<Child, AccessError> + Send + 'static,
+    ) {
+        let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let counter = calls.clone();
+        (calls, move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+            spawn_test_sidecar(program, args)
+        })
+    }
+
+    #[test]
+    fn a_dead_sidecar_is_respawned_with_the_same_host_key_and_binding() {
+        let _lock = crate::supervisor::tests::PROCESS_TEST_LOCK.lock().unwrap();
+        let (calls, respawn) = counted_respawn("/bin/sleep", &["30"]);
+        let mut session = ManagedAccessSession::for_test("/bin/true", &[])
+            .unwrap()
+            .with_respawn(respawn, reconnect_delay);
+        let host_key_path = session.root.join("dropbear-ed25519-host-key");
+        write_private(&host_key_path, b"host-key-bytes").unwrap();
+        session.host_public_key = "ssh-ed25519 AAAAtest".into();
+        session.host_fingerprint = "SHA256:test".into();
+        let ready_before = session.ready_attrs();
+
+        assert_eq!(await_sidecar_event(&mut session), SidecarEvent::Crashed);
+        let died_at = Instant::now();
+        // Backoff is a schedule, not a sleep: nothing happens before it is due.
+        assert_eq!(session.sidecar_event_at(died_at), SidecarEvent::Unchanged);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(matches!(
+            session.sidecar_event_at(died_at + Duration::from_secs(600)),
+            SidecarEvent::Recovered { .. }
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(session.dropbear.try_wait().unwrap().is_none());
+        assert_eq!(
+            session.sidecar_event_at(died_at + Duration::from_secs(600)),
+            SidecarEvent::Unchanged
+        );
+        assert_eq!(std::fs::read(&host_key_path).unwrap(), b"host-key-bytes");
+        assert_eq!(session.ready_attrs(), ready_before);
+        assert_eq!(session.ready_attrs()["fence"], 1);
+        assert_eq!(session.ready_attrs()["attachmentId"], "att-test");
+        session.stop().unwrap();
+    }
+
+    #[test]
+    fn a_sidecar_that_always_dies_is_tried_three_times_then_exhausted() {
+        let _lock = crate::supervisor::tests::PROCESS_TEST_LOCK.lock().unwrap();
+        let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let counter = calls.clone();
+        let mut session = ManagedAccessSession::for_test("/bin/true", &[])
+            .unwrap()
+            .with_respawn(
+                move || {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    Err(AccessError::new("access_sidecar_failed"))
+                },
+                reconnect_delay,
+            );
+        assert_eq!(await_sidecar_event(&mut session), SidecarEvent::Crashed);
+        let later = Instant::now() + Duration::from_secs(600);
+        assert!(matches!(
+            session.sidecar_event_at(later),
+            SidecarEvent::RespawnFailed {
+                code: "access_sidecar_failed",
+                ..
+            }
+        ));
+        assert!(matches!(
+            session.sidecar_event_at(later + Duration::from_secs(600)),
+            SidecarEvent::RespawnFailed { .. }
+        ));
+        assert!(matches!(
+            session.sidecar_event_at(later + Duration::from_secs(1200)),
+            SidecarEvent::Exhausted {
+                code: "access_sidecar_failed",
+                ..
+            }
+        ));
+        for step in 2..6 {
+            assert_eq!(
+                session.sidecar_event_at(later + Duration::from_secs(600 * step)),
+                SidecarEvent::Unchanged
+            );
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), MAX_SIDECAR_RESPAWNS);
+        session.stop().unwrap();
+    }
+
+    #[test]
+    fn the_budget_spans_the_session_so_a_fourth_death_stays_degraded() {
+        let _lock = crate::supervisor::tests::PROCESS_TEST_LOCK.lock().unwrap();
+        let (calls, respawn) = counted_respawn("/bin/true", &[]);
+        let mut session = ManagedAccessSession::for_test("/bin/true", &[])
+            .unwrap()
+            .with_respawn(respawn, reconnect_delay);
+        for _ in 0..MAX_SIDECAR_RESPAWNS {
+            assert_eq!(await_sidecar_event(&mut session), SidecarEvent::Crashed);
+            assert!(matches!(
+                session.sidecar_event_at(Instant::now() + Duration::from_secs(600)),
+                SidecarEvent::Recovered { .. }
+            ));
+        }
+        assert_eq!(await_sidecar_event(&mut session), SidecarEvent::Crashed);
+        thread::sleep(Duration::from_millis(50));
+        assert_eq!(
+            session.sidecar_event_at(Instant::now() + Duration::from_secs(3600)),
+            SidecarEvent::Unchanged
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), MAX_SIDECAR_RESPAWNS);
+        session.stop().unwrap();
+    }
+
+    #[test]
+    fn stop_after_a_death_respawns_nothing() {
+        let _lock = crate::supervisor::tests::PROCESS_TEST_LOCK.lock().unwrap();
+        let (calls, respawn) = counted_respawn("/bin/sleep", &["30"]);
+        let mut session = ManagedAccessSession::for_test("/bin/true", &[])
+            .unwrap()
+            .with_respawn(respawn, |_| Duration::ZERO);
+        assert_eq!(await_sidecar_event(&mut session), SidecarEvent::Crashed);
+        session.stop().unwrap();
+        assert_eq!(
+            session.sidecar_event_at(Instant::now() + Duration::from_secs(600)),
+            SidecarEvent::Unchanged
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_finished_connector_is_terminal_and_never_respawned() {
+        let _lock = crate::supervisor::tests::PROCESS_TEST_LOCK.lock().unwrap();
+        let (calls, respawn) = counted_respawn("/bin/sleep", &["30"]);
+        let mut session = ManagedAccessSession::for_test("/bin/sleep", &["30"])
+            .unwrap()
+            .with_respawn(respawn, |_| Duration::ZERO);
+        session.connector.cancel.store(true, Ordering::Release);
+        assert_eq!(await_sidecar_event(&mut session), SidecarEvent::Crashed);
+        terminate_child(&mut session.dropbear).unwrap();
+        for _ in 0..5 {
+            assert_eq!(
+                session.sidecar_event_at(Instant::now() + Duration::from_secs(600)),
+                SidecarEvent::Unchanged
+            );
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        session.stop().unwrap();
+    }
+
+    #[test]
+    fn a_connector_that_finishes_while_the_sidecar_is_down_ends_the_respawns() {
+        let _lock = crate::supervisor::tests::PROCESS_TEST_LOCK.lock().unwrap();
+        let (calls, respawn) = counted_respawn("/bin/sleep", &["30"]);
+        let mut session = ManagedAccessSession::for_test("/bin/true", &[])
+            .unwrap()
+            .with_respawn(respawn, reconnect_delay);
+        assert_eq!(await_sidecar_event(&mut session), SidecarEvent::Crashed);
+        session.connector.stop().unwrap();
+        assert_eq!(
+            session.sidecar_event_at(Instant::now() + Duration::from_secs(600)),
+            SidecarEvent::Unchanged
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        session.stop().unwrap();
+    }
+
+    #[test]
+    fn the_production_respawn_re_verifies_the_toolchain_before_spawning() {
+        let root = private_root("u6xv-respawner-test").unwrap();
+        let mut respawn = dropbear_respawner(
+            ManagedRuntimeAccessToolchain {
+                runtime_contact_sha256: "0".repeat(64),
+                dropbear_sha256: "0".repeat(64),
+                dropbearkey_sha256: "0".repeat(64),
+            },
+            root.join("dropbear-ed25519-host-key"),
+            root.join("authorization"),
+            root.join("dropbear.pid"),
+        );
+        assert_eq!(respawn().unwrap_err().code, "access_sidecar_spawn_failed");
+        assert!(!root.join("dropbear.pid").exists());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

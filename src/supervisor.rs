@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
-use crate::access::{AccessSession, setup_runtime_access_supervised};
+use crate::access::{AccessSession, SidecarEvent, setup_runtime_access_supervised};
 use crate::bridge::Bridge;
 use crate::coverage::{CoverageProducerActivation, detached_coverage_task};
 use crate::diagnostics::{
@@ -247,15 +247,12 @@ pub fn supervise_with_environment_access_and_processor_facts(
         }
     };
     if let Some(session) = access_session.as_ref() {
-        log_access(runtime_ssh_logs.as_ref(), "runtime.access.ready", None);
-        report(
+        report_access_ready(
+            session,
             &mut reporter
                 .as_mut()
                 .map(|reporter| reporter as &mut dyn RuntimeReporter),
-            "runtime.access.ready",
-            DiagnosticStatus::Succeeded,
-            None,
-            session.ready_attrs(),
+            runtime_ssh_logs.as_ref(),
         );
     } else if !access_setup_failed {
         if let Some(attrs) = access_binding {
@@ -341,6 +338,65 @@ fn log_access(
 ) {
     if let Some(logger) = logger {
         logger.lifecycle(event, code);
+    }
+}
+
+/// Report that access is usable, on both the runtime-SSH log stream and the
+/// signed diagnostic: once after setup, and again after each sidecar respawn at
+/// the same attachment and fence.
+fn report_access_ready(
+    session: &AccessSession,
+    reporter: &mut Option<&mut dyn RuntimeReporter>,
+    runtime_ssh_logs: Option<&RuntimeSshLogEmitter>,
+) {
+    log_access(runtime_ssh_logs, "runtime.access.ready", None);
+    report(
+        reporter,
+        "runtime.access.ready",
+        DiagnosticStatus::Succeeded,
+        None,
+        session.ready_attrs(),
+    );
+}
+
+/// A death is reported degraded; each respawn attempt is one stage record on
+/// the runtime-SSH log stream; a respawn that listens again is reported ready.
+fn report_sidecar_event(
+    session: &mut AccessSession,
+    reporter: &mut Option<&mut dyn RuntimeReporter>,
+    runtime_ssh_logs: Option<&RuntimeSshLogEmitter>,
+) {
+    let log_respawn = |elapsed_ms, outcome, code| {
+        if let Some(logger) = runtime_ssh_logs {
+            logger.stage("sidecar_respawn", elapsed_ms, outcome, code);
+        }
+    };
+    match session.sidecar_event() {
+        SidecarEvent::Unchanged => {}
+        SidecarEvent::Crashed => {
+            log_access(
+                runtime_ssh_logs,
+                "runtime.access.crashed",
+                Some("access_sidecar_failed"),
+            );
+            report(
+                reporter,
+                "runtime.access.degraded",
+                DiagnosticStatus::Failed,
+                Some("access_sidecar_failed"),
+                session.binding_attrs(),
+            );
+        }
+        SidecarEvent::RespawnFailed { elapsed_ms, code } => {
+            log_respawn(elapsed_ms, "retry", Some(code));
+        }
+        SidecarEvent::Exhausted { elapsed_ms, code } => {
+            log_respawn(elapsed_ms, "failed", Some(code));
+        }
+        SidecarEvent::Recovered { elapsed_ms } => {
+            log_respawn(elapsed_ms, "ok", None);
+            report_access_ready(session, reporter, runtime_ssh_logs);
+        }
     }
 }
 
@@ -458,20 +514,7 @@ fn supervise_with_reporter_and_environment(
     loop {
         if let Some(session) = access_session.as_deref_mut() {
             report_endpoint_events(session.endpoint_changes(), &mut reporter, runtime_ssh_logs);
-            if session.newly_crashed() {
-                log_access(
-                    runtime_ssh_logs,
-                    "runtime.access.crashed",
-                    Some("access_sidecar_failed"),
-                );
-                report(
-                    &mut reporter,
-                    "runtime.access.degraded",
-                    DiagnosticStatus::Failed,
-                    Some("access_sidecar_failed"),
-                    session.binding_attrs(),
-                );
-            }
+            report_sidecar_event(session, &mut reporter, runtime_ssh_logs);
         }
         if let Some(signal) = take_signal() {
             return SupervisorExit::Signal(signal);
@@ -522,20 +565,7 @@ fn supervise_with_reporter_and_environment(
         let status = loop {
             if let Some(session) = access_session.as_deref_mut() {
                 report_endpoint_events(session.endpoint_changes(), &mut reporter, runtime_ssh_logs);
-                if session.newly_crashed() {
-                    log_access(
-                        runtime_ssh_logs,
-                        "runtime.access.crashed",
-                        Some("access_sidecar_failed"),
-                    );
-                    report(
-                        &mut reporter,
-                        "runtime.access.degraded",
-                        DiagnosticStatus::Failed,
-                        Some("access_sidecar_failed"),
-                        session.binding_attrs(),
-                    );
-                }
+                report_sidecar_event(session, &mut reporter, runtime_ssh_logs);
             }
             if let Some(signal) = take_signal() {
                 if forwarded_signal.is_none() {
@@ -1815,6 +1845,94 @@ pub(crate) mod tests {
             ),
             SupervisorExit::Code(19)
         );
+    }
+
+    fn supervise_access_for_one_second(
+        session: &mut crate::access::AccessSession,
+        recorder: &mut RecordingReporter,
+    ) -> Vec<(
+        &'static str,
+        DiagnosticStatus,
+        Option<&'static str>,
+        serde_json::Value,
+    )> {
+        let never = bootstrap(json!({
+            "mode": "never",
+            "serverTimeMs": 1,
+            "scheduleEndMs": 60_001,
+        }));
+        assert_eq!(
+            supervise_with_reporter_and_environment(
+                &["/bin/sh".into(), "-c".into(), "sleep 1; exit 0".into()],
+                &never,
+                Duration::ZERO,
+                &BTreeMap::new(),
+                Some(recorder),
+                Some(session),
+                None,
+                None,
+                Vec::new(),
+            ),
+            SupervisorExit::Code(0)
+        );
+        recorder
+            .records
+            .iter()
+            .filter(|(stage, ..)| stage.starts_with("runtime.access."))
+            .cloned()
+            .collect()
+    }
+
+    #[test]
+    fn a_respawned_sidecar_reports_ready_again_at_the_same_fence() {
+        let _lock = PROCESS_TEST_LOCK.lock().unwrap();
+        let mut session =
+            crate::access::AccessSession::managed_for_test_with_respawn("/bin/true", &[], || {
+                crate::access::spawn_test_sidecar("/bin/sleep", &["30"])
+            })
+            .expect("test managed session");
+        let mut recorder = RecordingReporter::default();
+        let access = supervise_access_for_one_second(&mut session, &mut recorder);
+        session.stop().unwrap();
+
+        let stages: Vec<_> = access.iter().map(|(stage, ..)| *stage).collect();
+        assert_eq!(stages, ["runtime.access.degraded", "runtime.access.ready"]);
+        let (_, status, code, degraded) = &access[0];
+        assert_eq!(*status, DiagnosticStatus::Failed);
+        assert_eq!(*code, Some("access_sidecar_failed"));
+        let (_, status, code, ready) = &access[1];
+        assert_eq!(*status, DiagnosticStatus::Succeeded);
+        assert_eq!(*code, None);
+        assert_eq!(ready["attachmentId"], degraded["attachmentId"]);
+        assert_eq!(ready["fence"], degraded["fence"]);
+        assert_eq!(ready["attachmentId"], "att-test");
+        assert_eq!(ready["fence"], 1);
+        assert_eq!(*ready, session.ready_attrs());
+    }
+
+    #[test]
+    fn an_exhausted_sidecar_stays_degraded_without_a_second_ready() {
+        let _lock = PROCESS_TEST_LOCK.lock().unwrap();
+        let attempts = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let counter = attempts.clone();
+        let mut session = crate::access::AccessSession::managed_for_test_with_respawn(
+            "/bin/true",
+            &[],
+            move || {
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Err(crate::access::AccessError {
+                    code: "access_sidecar_failed",
+                })
+            },
+        )
+        .expect("test managed session");
+        let mut recorder = RecordingReporter::default();
+        let access = supervise_access_for_one_second(&mut session, &mut recorder);
+        session.stop().unwrap();
+
+        let stages: Vec<_> = access.iter().map(|(stage, ..)| *stage).collect();
+        assert_eq!(stages, ["runtime.access.degraded"]);
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 3);
     }
 
     #[derive(Default)]
