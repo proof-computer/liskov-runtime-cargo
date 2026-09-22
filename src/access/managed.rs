@@ -39,6 +39,11 @@ use crate::protocol::{
 const SETUP_LIMIT: Duration = Duration::from_secs(180);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+/// Once a credential has been admitted, a later `401` most likely means the
+/// attachment was revoked, stopped or fence-superseded. The blind gateway cannot
+/// say so, and a control-plane hiccup looks the same, so back off to this
+/// ceiling rather than stop.
+const REFUSED_AFTER_ADMISSION_CEILING: Duration = Duration::from_secs(300);
 const MAX_COMMAND_OUTPUT: usize = 64 * 1024;
 const MAX_FRAME_BYTES: usize = 64 * 1024;
 const MAX_DIRECTION_BYTES: u64 = 1024 * 1024 * 1024;
@@ -958,14 +963,21 @@ fn connector_driver<Now, Connect, Wait, Report>(
     Report: FnMut(u64, &'static str, Option<&'static str>, Option<u16>),
 {
     let mut attempt = 0_u32;
+    // `Ok`, `RelayFailed` and `ProtocolFailed` each got past the WebSocket
+    // upgrade, which the gateway grants only once the control plane admitted
+    // the credential.
+    let mut admitted_once = false;
+    let mut refusal_streak = 0_u32;
     while !cancel.load(Ordering::Acquire) && now_ms().is_some_and(|now_ms| now_ms < expires_at_ms) {
         let started = Instant::now();
+        let mut refused = false;
         match connect_once(registered.as_ref()) {
             Ok(()) => {
                 let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
                 report(elapsed_ms, "ok", None, None);
                 registered = None;
                 attempt = 0;
+                admitted_once = true;
             }
             Err(ConnectorAttemptError::Cancelled) => {
                 let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -976,6 +988,13 @@ fn connector_driver<Now, Connect, Wait, Report>(
                 if let Some(registered) = registered.as_ref() {
                     let _ = registered.send(ConnectorRegistrationEvent::Failed(error));
                 }
+                if matches!(
+                    error,
+                    ConnectorAttemptError::RelayFailed | ConnectorAttemptError::ProtocolFailed
+                ) {
+                    admitted_once = true;
+                }
+                refused = error == ConnectorAttemptError::HttpRefused(401);
                 attempt = attempt.saturating_add(1);
                 let can_retry = !cancel.load(Ordering::Acquire)
                     && now_ms().is_some_and(|now_ms| now_ms < expires_at_ms);
@@ -991,7 +1010,17 @@ fn connector_driver<Now, Connect, Wait, Report>(
                 }
             }
         }
-        if wait(reconnect_delay(attempt)) {
+        refusal_streak = if refused {
+            refusal_streak.saturating_add(1)
+        } else {
+            0
+        };
+        let delay = if admitted_once && refused {
+            refused_after_admission_delay(refusal_streak)
+        } else {
+            reconnect_delay(attempt)
+        };
+        if wait(delay) {
             break;
         }
     }
@@ -1155,6 +1184,22 @@ where
 fn reconnect_delay(attempt: u32) -> Duration {
     let exponent = attempt.min(5);
     let base_ms = 250_u64.saturating_mul(1_u64 << exponent).min(8_000);
+    let mut jitter = [0_u8; 2];
+    let jitter_ms = if getrandom::fill(&mut jitter).is_ok() {
+        u64::from(u16::from_le_bytes(jitter)) % 251
+    } else {
+        0
+    };
+    Duration::from_millis(base_ms.saturating_add(jitter_ms))
+}
+
+/// The wait after the `refusal_streak`-th consecutive `401` once the credential
+/// has been admitted: 8 s doubling to [`REFUSED_AFTER_ADMISSION_CEILING`], plus
+/// the same 0–250 ms jitter as [`reconnect_delay`].
+fn refused_after_admission_delay(refusal_streak: u32) -> Duration {
+    let exponent = refusal_streak.saturating_sub(1).min(6);
+    let ceiling_ms = u64::try_from(REFUSED_AFTER_ADMISSION_CEILING.as_millis()).unwrap_or(u64::MAX);
+    let base_ms = 8_000_u64.saturating_mul(1_u64 << exponent).min(ceiling_ms);
     let mut jitter = [0_u8; 2];
     let jitter_ms = if getrandom::fill(&mut jitter).is_ok() {
         u64::from(u16::from_le_bytes(jitter)) % 251
@@ -1655,6 +1700,92 @@ mod tests {
                 .is_ok(),
             "a typed failed attempt must not hide a later successful retry"
         );
+    }
+
+    /// Drives `connector_driver` through `script` and returns the delay it
+    /// waited after each attempt. The last wait sets the cancel flag.
+    fn connector_delays(script: &[Result<(), ConnectorAttemptError>]) -> Vec<Duration> {
+        let cancel = AtomicBool::new(false);
+        let remaining = std::cell::RefCell::new(
+            script
+                .iter()
+                .copied()
+                .collect::<std::collections::VecDeque<_>>(),
+        );
+        let delays = std::cell::RefCell::new(Vec::new());
+        connector_driver(
+            || Some(1_000),
+            |_| {
+                remaining
+                    .borrow_mut()
+                    .pop_front()
+                    .expect("the driver attempts no more than the script")
+            },
+            |delay| {
+                delays.borrow_mut().push(delay);
+                if remaining.borrow().is_empty() {
+                    cancel.store(true, Ordering::Release);
+                }
+                cancel.load(Ordering::Acquire)
+            },
+            |_, _, _, _| {},
+            &cancel,
+            5_000,
+            None,
+        );
+        assert!(remaining.borrow().is_empty(), "the driver stopped early");
+        let delays = delays.into_inner();
+        assert_eq!(delays.len(), script.len());
+        delays
+    }
+
+    #[test]
+    fn connector_backs_off_to_the_ceiling_when_refused_after_admission() {
+        let mut script = vec![Ok(())];
+        script.extend([Err(ConnectorAttemptError::HttpRefused(401)); 10]);
+        let delays = connector_delays(&script);
+        let after_refusals = &delays[1..];
+        // Whole seconds strip the sub-second jitter, which alone could make a
+        // ceiling-length wait shorter than the one before it.
+        let seconds = after_refusals
+            .iter()
+            .map(|delay| delay.as_millis() / 1_000)
+            .collect::<Vec<_>>();
+        assert_eq!(seconds, [8, 16, 32, 64, 128, 256, 300, 300, 300, 300]);
+        assert!(seconds.windows(2).all(|pair| pair[0] <= pair[1]));
+        for delay in &after_refusals[6..] {
+            assert!(delay.as_millis() >= 300_000, "{delay:?}");
+            assert!(delay.as_millis() <= 300_250, "{delay:?}");
+        }
+    }
+
+    #[test]
+    fn connector_keeps_the_setup_schedule_when_refused_before_any_admission() {
+        let delays = connector_delays(&[Err(ConnectorAttemptError::HttpRefused(401)); 10]);
+        for delay in delays {
+            assert!(delay.as_millis() <= 8_250, "{delay:?}");
+        }
+    }
+
+    #[test]
+    fn connector_keeps_the_short_schedule_when_unavailable_after_admission() {
+        let mut script = vec![Ok(())];
+        script.extend([Err(ConnectorAttemptError::HttpRefused(503)); 10]);
+        for delay in connector_delays(&script) {
+            assert!(delay.as_millis() <= 8_250, "{delay:?}");
+        }
+    }
+
+    #[test]
+    fn connector_refusal_streak_resets_on_a_later_admission() {
+        let mut script = vec![Ok(())];
+        script.extend([Err(ConnectorAttemptError::HttpRefused(401)); 4]);
+        script.push(Err(ConnectorAttemptError::RelayFailed));
+        script.push(Err(ConnectorAttemptError::HttpRefused(401)));
+        let delays = connector_delays(&script);
+        assert!(delays[4].as_millis() >= 64_000, "{:?}", delays[4]);
+        let last = *delays.last().unwrap();
+        assert!(last.as_millis() <= 8_250, "{last:?}");
     }
 
     #[test]
