@@ -2,6 +2,9 @@
 
 mod managed;
 
+#[cfg(test)]
+pub(crate) use managed::spawn_test_sidecar;
+
 use std::ffi::OsString;
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
@@ -265,6 +268,29 @@ pub enum AccessSession {
     Managed(managed::ManagedAccessSession),
 }
 
+/// What changed in an access sidecar since the supervisor last asked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SidecarEvent {
+    Unchanged,
+    /// The sidecar or connector died; reported once per death.
+    Crashed,
+    /// A managed Dropbear respawn failed and another is scheduled.
+    RespawnFailed {
+        elapsed_ms: u64,
+        code: &'static str,
+    },
+    /// A managed Dropbear respawn is listening again at the same attachment,
+    /// fence and host key.
+    Recovered {
+        elapsed_ms: u64,
+    },
+    /// The last respawn the budget allows failed; access stays degraded.
+    Exhausted {
+        elapsed_ms: u64,
+        code: &'static str,
+    },
+}
+
 pub struct TailscaleAccessSession {
     daemon: DaemonProcess,
     root: PathBuf,
@@ -288,6 +314,20 @@ impl AccessSession {
         )?))
     }
 
+    /// A managed session whose sidecar is `program` and whose respawns call
+    /// `respawn` with no backoff.
+    #[cfg(test)]
+    pub(crate) fn managed_for_test_with_respawn(
+        program: &str,
+        args: &[&str],
+        respawn: impl FnMut() -> Result<std::process::Child, AccessError> + Send + 'static,
+    ) -> Result<Self, AccessError> {
+        Ok(Self::Managed(
+            managed::ManagedAccessSession::for_test(program, args)?
+                .with_respawn(respawn, |_| Duration::ZERO),
+        ))
+    }
+
     pub fn binding_attrs(&self) -> serde_json::Value {
         match self {
             Self::Tailscale(session) => session.binding_attrs(),
@@ -302,10 +342,18 @@ impl AccessSession {
         }
     }
 
-    pub fn newly_crashed(&mut self) -> bool {
+    /// Tailscale deaths are terminal; a managed Dropbear death is respawned
+    /// within its budget.
+    pub fn sidecar_event(&mut self) -> SidecarEvent {
         match self {
-            Self::Tailscale(session) => session.newly_crashed(),
-            Self::Managed(session) => session.newly_crashed(),
+            Self::Tailscale(session) => {
+                if session.newly_crashed() {
+                    SidecarEvent::Crashed
+                } else {
+                    SidecarEvent::Unchanged
+                }
+            }
+            Self::Managed(session) => session.sidecar_event(),
         }
     }
 
