@@ -606,38 +606,7 @@ fn supervise_with_reporter_and_environment(
                 }
             }
             if Instant::now() >= next_health {
-                report(
-                    &mut reporter,
-                    "runtime.health",
-                    DiagnosticStatus::Info,
-                    None,
-                    json!({
-                        "processAttempt": process_attempt,
-                        "restartCount": restart_count,
-                        "accessSetupArm": ACCESS_SETUP_ARM.load(Ordering::Acquire),
-                        "pid": std::process::id(),
-                    }),
-                );
-                // Accepted diagnostics are not queryable and their attrs are
-                // not logged server-side, so the arm marker also travels on the
-                // runtime-ssh log stream — the only surface an operator can
-                // read back. Doubly diagnostic in the r14 windows: the arm
-                // value answers fork-vs-return, and whether this record
-                // DELIVERS while customer output flows answers whether the
-                // runtime-ssh delivery path itself dies after the burst. The
-                // pid rides the elapsed field (documented abuse: `stage` has no
-                // attrs channel, and a fresh record shape would need a server
-                // deploy to be admitted).
-                if let Some(logger) = runtime_ssh_logs {
-                    let arm: &'static str = match ACCESS_SETUP_ARM.load(Ordering::Acquire) {
-                        0 => "unreached",
-                        1 => "pending",
-                        2 => "ok_session",
-                        3 => "ok_none",
-                        _ => "err",
-                    };
-                    logger.stage("arm_state", u64::from(std::process::id()), arm, None);
-                }
+                report_health_beat(&mut reporter, process_attempt, restart_count);
                 next_health = Instant::now() + HEALTH_CADENCE;
             }
             thread::sleep(POLL_INTERVAL);
@@ -846,6 +815,25 @@ fn report(
     if let Some(reporter) = reporter.as_deref_mut() {
         reporter.report(stage, status, code, attrs);
     }
+}
+
+fn report_health_beat(
+    reporter: &mut Option<&mut dyn RuntimeReporter>,
+    process_attempt: u64,
+    restart_count: u64,
+) {
+    report(
+        reporter,
+        "runtime.health",
+        DiagnosticStatus::Info,
+        None,
+        json!({
+            "processAttempt": process_attempt,
+            "restartCount": restart_count,
+            "accessSetupArm": ACCESS_SETUP_ARM.load(Ordering::Acquire),
+            "pid": std::process::id(),
+        }),
+    );
 }
 
 fn report_attempt_failure(
@@ -1852,6 +1840,50 @@ pub(crate) mod tests {
             ),
             SupervisorExit::Code(19)
         );
+    }
+
+    #[derive(Default)]
+    struct RecordingReporter {
+        records: Vec<(
+            &'static str,
+            DiagnosticStatus,
+            Option<&'static str>,
+            serde_json::Value,
+        )>,
+    }
+
+    impl RuntimeReporter for RecordingReporter {
+        fn report(
+            &mut self,
+            stage: &'static str,
+            status: DiagnosticStatus,
+            code: Option<&'static str>,
+            attrs: serde_json::Value,
+        ) {
+            self.records.push((stage, status, code, attrs));
+        }
+    }
+
+    #[test]
+    fn health_beat_is_exactly_one_runtime_health_diagnostic() {
+        let mut recorder = RecordingReporter::default();
+        report_health_beat(&mut Some(&mut recorder as &mut dyn RuntimeReporter), 3, 2);
+        assert_eq!(recorder.records.len(), 1);
+        let (stage, status, code, attrs) = &recorder.records[0];
+        assert_eq!(*stage, "runtime.health");
+        assert_eq!(*status, DiagnosticStatus::Info);
+        assert_eq!(*code, None);
+        let attrs = attrs.as_object().unwrap();
+        let mut keys: Vec<&str> = attrs.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            ["accessSetupArm", "pid", "processAttempt", "restartCount"]
+        );
+        assert_eq!(attrs["processAttempt"], 3);
+        assert_eq!(attrs["restartCount"], 2);
+        assert_eq!(attrs["pid"], std::process::id());
+        assert!(attrs["accessSetupArm"].as_u64().is_some_and(|arm| arm <= 4));
     }
 
     #[test]
