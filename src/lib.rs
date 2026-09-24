@@ -4,6 +4,7 @@ pub mod access;
 pub mod bridge;
 pub mod contact;
 pub mod coverage;
+pub mod customer_environment;
 pub mod diagnostics;
 pub mod env_names;
 pub mod file_secrets;

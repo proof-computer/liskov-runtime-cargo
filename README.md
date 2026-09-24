@@ -166,6 +166,21 @@ the captured customer environment. Runtime values cannot reintroduce those
 protected names. The Lockbox bootstrap value is not one of them: it is
 fetch metadata rather than a secret, so it stays deliverable and visible.
 
+The customer command inherits the processor's Android process environment,
+and four of those names are repaired before startup. They are repaired only
+when the value would be invalid inside the Debian rootfs. `TMPDIR` is kept if
+it names a directory the guest can write to, and otherwise becomes `/tmp`,
+which is created `1777` if missing. `LD_PRELOAD` is kept only while every
+object it names by path exists as a file in the guest. The loader fails the
+whole list, so one missing object removes the variable. `PATH` defaults to
+`/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin` when it is unset
+or empty, and `HOME` defaults to `/root` when unset. The repair runs on the
+inherited values before the signed runtime environment is merged. A signed
+value for any of these names therefore outranks both the inherited value and
+the default, and is never itself repaired. No other inherited name is touched.
+When anything was repaired, one `runtime.environment.normalized` supervisor
+diagnostic names each changed variable and the reason, never a value.
+
 For bounded release canaries whose Shell host does not retain stderr,
 `--diagnostic-exit-codes` replaces status `70`/`75` with a non-secret stage
 code. This flag is an internal canary interface, not a customer compatibility
