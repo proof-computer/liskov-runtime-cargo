@@ -15,6 +15,9 @@ use sha2::{Digest, Sha256};
 use crate::access::{AccessSession, SidecarEvent, setup_runtime_access_supervised};
 use crate::bridge::Bridge;
 use crate::coverage::{CoverageProducerActivation, detached_coverage_task};
+use crate::customer_environment::{
+    GuestFilesystem, Normalization, ProcessFilesystem, normalize_customer_environment,
+};
 use crate::diagnostics::{
     AsyncDiagnosticReporter, DIAGNOSTIC_HTTP_TIMEOUT, DiagnosticStatus,
     MAX_DIAGNOSTIC_RESPONSE_BYTES,
@@ -506,7 +509,8 @@ fn supervise_with_reporter_and_environment(
         bootstrap_elapsed,
         Instant::now(),
     );
-    let environment = sanitized_environment(runtime_environment);
+    let (environment, normalized) = sanitized_environment(runtime_environment);
+    report_environment_normalized(&mut reporter, &normalized);
     let mut process_attempt = 0_u64;
     let mut restart_count = 0_u64;
     let mut consecutive_failures = 0_u32;
@@ -964,11 +968,52 @@ fn spawn_customer(
 
 fn sanitized_environment(
     runtime_environment: &BTreeMap<String, String>,
-) -> Vec<(OsString, OsString)> {
-    merge_runtime_environment(
-        sanitize_environment_values(std::env::vars_os()),
-        runtime_environment,
+) -> (Vec<(OsString, OsString)>, Vec<Normalization>) {
+    customer_environment(std::env::vars_os(), runtime_environment, &ProcessFilesystem)
+}
+
+/// Inherited values, less the protected names, repaired for the guest, then
+/// overlaid by the signed runtime environment. The repair sees only the
+/// inherited set, so a signed value outranks both the inherited value and the
+/// guest default (`BKLG-20260924-gxb7`).
+fn customer_environment(
+    inherited: impl IntoIterator<Item = (OsString, OsString)>,
+    runtime_environment: &BTreeMap<String, String>,
+    guest: &dyn GuestFilesystem,
+) -> (Vec<(OsString, OsString)>, Vec<Normalization>) {
+    let (inherited, normalized) = normalize_customer_environment(
+        sanitize_environment_values(inherited),
+        |name| runtime_environment.contains_key(name),
+        guest,
+    );
+    (
+        merge_runtime_environment(inherited, runtime_environment),
+        normalized,
     )
+}
+
+/// One startup record naming each inherited variable the helper repaired and
+/// why; nothing when the processor's environment was already guest-valid.
+/// Values are never reported.
+fn report_environment_normalized(
+    reporter: &mut Option<&mut dyn RuntimeReporter>,
+    normalized: &[Normalization],
+) {
+    if normalized.is_empty() {
+        return;
+    }
+    report(
+        reporter,
+        "runtime.environment.normalized",
+        DiagnosticStatus::Info,
+        None,
+        json!({
+            "normalized": normalized
+                .iter()
+                .map(|change| json!({"name": change.name, "reason": change.reason.as_str()}))
+                .collect::<Vec<_>>(),
+        }),
+    );
 }
 
 fn merge_runtime_environment(
@@ -1491,6 +1536,97 @@ pub(crate) mod tests {
             environment
                 .iter()
                 .any(|(name, value)| name == "VISIBLE" && value == "yes")
+        );
+    }
+
+    #[test]
+    fn signed_tmpdir_outranks_the_inherited_value_and_the_guest_default() {
+        let missing = "/data/user/0/liskov-runtime-cargo-test-processor/cache";
+        let inherited = || {
+            [
+                (OsString::from("TMPDIR"), OsString::from(missing)),
+                ("PATH".into(), "/usr/bin:/bin".into()),
+                ("HOME".into(), "/root".into()),
+            ]
+        };
+
+        let (environment, normalized) =
+            customer_environment(inherited(), &BTreeMap::new(), &ProcessFilesystem);
+        assert_eq!(
+            environment
+                .iter()
+                .find(|(name, _)| name == "TMPDIR")
+                .map(|(_, value)| value),
+            Some(&OsString::from("/tmp"))
+        );
+        assert_eq!(normalized.len(), 1);
+
+        let signed = BTreeMap::from([("TMPDIR".to_string(), "/signed/tmp".to_string())]);
+        let (environment, normalized) =
+            customer_environment(inherited(), &signed, &ProcessFilesystem);
+        let tmpdirs: Vec<_> = environment
+            .iter()
+            .filter(|(name, _)| name == "TMPDIR")
+            .map(|(_, value)| value)
+            .collect();
+        assert_eq!(tmpdirs, [&OsString::from("/signed/tmp")]);
+        assert!(normalized.is_empty(), "a signed name is not normalized");
+    }
+
+    #[test]
+    fn guest_normalization_never_restores_a_protected_name() {
+        let (environment, _) = customer_environment(
+            [(
+                OsString::from(crate::env_names::BOOTSTRAP_ENV),
+                OsString::from("secret"),
+            )],
+            &BTreeMap::new(),
+            &ProcessFilesystem,
+        );
+        assert!(
+            !environment
+                .iter()
+                .any(|(name, _)| name == crate::env_names::BOOTSTRAP_ENV)
+        );
+        assert!(environment.iter().any(|(name, _)| name == "PATH"));
+        assert!(environment.iter().any(|(name, _)| name == "HOME"));
+    }
+
+    #[test]
+    fn environment_normalization_is_one_event_naming_each_change_and_never_a_value() {
+        use crate::customer_environment::{HOME, NormalizationReason, TMPDIR};
+        let mut recorder = RecordingReporter::default();
+        report_environment_normalized(
+            &mut Some(&mut recorder as &mut dyn RuntimeReporter),
+            &[
+                Normalization {
+                    name: TMPDIR,
+                    reason: NormalizationReason::DirectoryMissing,
+                },
+                Normalization {
+                    name: HOME,
+                    reason: NormalizationReason::Unset,
+                },
+            ],
+        );
+        assert_eq!(recorder.records.len(), 1);
+        let (stage, status, code, attrs) = &recorder.records[0];
+        assert_eq!(*stage, "runtime.environment.normalized");
+        assert_eq!(*status, DiagnosticStatus::Info);
+        assert_eq!(*code, None);
+        assert_eq!(
+            *attrs,
+            json!({"normalized": [
+                {"name": "TMPDIR", "reason": "directory_missing"},
+                {"name": "HOME", "reason": "unset"},
+            ]})
+        );
+
+        let mut recorder = RecordingReporter::default();
+        report_environment_normalized(&mut Some(&mut recorder as &mut dyn RuntimeReporter), &[]);
+        assert!(
+            recorder.records.is_empty(),
+            "nothing changed, nothing reported"
         );
     }
 
