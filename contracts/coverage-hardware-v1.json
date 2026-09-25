@@ -1,0 +1,171 @@
+{
+  "domain": "proof.liskov.processor-fact-catalog.v1",
+  "helperContractEpoch": 1,
+  "profile": "coverage-hardware-v1",
+  "owner": "liskov-rs slipway-executor-contracts",
+  "decision": "ADR-0079 probe and heartbeat amendment, 2026-09-23; Q-20260923-z2uc",
+  "purpose": "Know which device a platform coverage probe actually ran on and which of its reads succeeded, and let a later parser be re-derived from the retained reading without another sweep.",
+  "notPurpose": [
+    "current-profile capacity column",
+    "customer filter or customer-visible fact",
+    "placement minimum or ranking input",
+    "copy of the on-chain benchmark pools",
+    "retail model inference"
+  ],
+  "allowedConsumers": [
+    "processor-fact operator readback (liskov_ops processor-fact-readback)",
+    "per-processor coverage hardware readback in slipway-processor-registry"
+  ],
+  "origin": "platform_coverage only, assigned by the server from the canonical PlatformCoverage bootstrap binding; the helper neither receives nor reports it",
+  "capture": {
+    "trigger": "a single-use coverage-hardware-v1 grant in the authenticated bootstrap response",
+    "grant": "exactly one due kind, coverage_hardware_raw.v1; never combined with cargo-baseline-v1 kinds",
+    "helper": "only a helper version/digest pair the server configuration names explicitly",
+    "killSwitch": "LISKOV_PROCESSOR_FACT_AUTHORIZATION_JSON coverageHardware.enabled; absent means off"
+  },
+  "facts": [
+    {
+      "kind": "coverage_hardware_raw.v1",
+      "capture": "authorized_due_only",
+      "fields": [
+        "kernel",
+        "identity",
+        "cgroupControllers",
+        "cpuPolicies",
+        "caches",
+        "meminfo",
+        "soc",
+        "gpu",
+        "guestRoot",
+        "filesystems",
+        "thermalZones"
+      ]
+    }
+  ],
+  "reading": {
+    "shape": "{\"status\":\"observed\",\"value\":V} or {\"status\":S} with S one of not_present, permission_denied, surface_hidden, unsupported, parse_error; a non-observed reading carries no value",
+    "missing": "not_present: the file or node does not exist",
+    "denied": "permission_denied: it exists and the read was refused; never folded into not_present",
+    "zero": "0 is an observed value and never means unknown",
+    "empty": "an observed list may be empty; an unreadable list is a status, not an empty list",
+    "strings": "no string anywhere in the reading may contain a slash or a Java package name (three or more dot-separated segments that each start with a lowercase letter)"
+  },
+  "groups": {
+    "kernel": {
+      "fields": ["release", "architecture"],
+      "release": "reading of uname release; printable ASCII, 1..=128 bytes",
+      "architecture": "reading of uname machine; [a-z0-9_], 1..=32 bytes"
+    },
+    "identity": {
+      "fields": ["guestUid", "kernelUid", "capabilityClass"],
+      "guestUid": "reading of the uid the guest reports (id -u); safe integer",
+      "kernelUid": "reading of the real uid in /proc/self/status; safe integer",
+      "capabilityClass": "reading of CapEff: none or nonzero; the bitset itself is not kept"
+    },
+    "cgroupControllers": "reading of the controller names in /proc/self/cgroup whose line was readable; at most 16 distinct tokens [a-z][a-z0-9_]{0,31}; a v2 hierarchy is unified; paths are never kept",
+    "cpuPolicies": {
+      "list": "reading of /sys/devices/system/cpu/cpufreq/policyN; at most 16 entries, distinct policy numbers",
+      "fields": [
+        "policy",
+        "relatedCpus",
+        "midr",
+        "minKhz",
+        "maxKhz",
+        "availableKhz",
+        "capacity",
+        "governor",
+        "driver"
+      ],
+      "policy": "the N of policyN; integer 0..=1024, always present",
+      "relatedCpus": "reading of related_cpus in range-list form (0-5,7); at most 64 bytes",
+      "midr": "reading of midr_el1 for the policy's first cpu; 0x followed by 8..=16 lowercase hex",
+      "minKhz": "reading of cpuinfo_min_freq; safe integer",
+      "maxKhz": "reading of cpuinfo_max_freq; safe integer",
+      "availableKhz": "reading of scaling_available_frequencies; at most 32 safe integers",
+      "capacity": "reading of cpu_capacity for the policy's first cpu; safe integer",
+      "governor": "reading of scaling_governor; [a-z0-9_-], 1..=32 bytes",
+      "driver": "reading of scaling_driver; [a-z0-9_-], 1..=32 bytes"
+    },
+    "caches": {
+      "list": "reading of /sys/devices/system/cpu/cpuN/cache/indexM, deduplicated; at most 64 entries, distinct (level, type, sharedCpuList)",
+      "fields": ["level", "type", "sharedCpuList", "sizeBytes"],
+      "level": "integer 1..=4, always present",
+      "type": "data, instruction or unified, always present",
+      "sharedCpuList": "range-list form, always present; at most 64 bytes",
+      "sizeBytes": "reading of size converted to bytes; a status when the file was unreadable"
+    },
+    "meminfo": {
+      "fields": [
+        "memTotalKb",
+        "memFreeKb",
+        "memAvailableKb",
+        "buffersKb",
+        "cachedKb",
+        "swapCachedKb",
+        "swapTotalKb",
+        "swapFreeKb",
+        "dirtyKb",
+        "anonPagesKb",
+        "mappedKb",
+        "shmemKb",
+        "slabKb",
+        "kernelStackKb",
+        "shadowCallStackKb",
+        "pageTablesKb",
+        "cmaTotalKb",
+        "cmaFreeKb",
+        "commitLimitKb",
+        "committedAsKb"
+      ],
+      "values": "reading per /proc/meminfo line in kB; a line the kernel does not print is not_present; no other line is kept"
+    },
+    "soc": {
+      "fields": ["family", "socId"],
+      "family": "reading of /sys/devices/soc0/family; printable ASCII, 1..=64 bytes",
+      "socId": "reading of /sys/devices/soc0/soc_id; [A-Za-z0-9._-], 1..=32 bytes"
+    },
+    "gpu": {
+      "fields": ["model", "maxClockHz"],
+      "model": "reading of /sys/class/kgsl/kgsl-3d0/gpu_model; [A-Za-z0-9 ._+-], 1..=64 bytes",
+      "maxClockHz": "reading of /sys/class/kgsl/kgsl-3d0/max_gpuclk; safe integer"
+    },
+    "guestRoot": {
+      "fields": ["totalBytes", "usedBytes", "availableBytes"],
+      "values": "readings of statvfs on the guest root, in bytes; the phone volume the guest sits on, not a job quota"
+    },
+    "filesystems": {
+      "fields": ["guestRoot", "data"],
+      "entry": "reading of {type, inlinecrypt, discard} for the guest root and for /data; type is [a-z0-9_], 1..=16 bytes, a fuse subtype reported as fuse; the flags are booleans",
+      "notKept": "the mount source, the mount point list and every other mount option"
+    },
+    "thermalZones": {
+      "list": "reading of /sys/class/thermal/thermal_zoneN in index order; at most 128 entries",
+      "fields": ["type", "temp"],
+      "type": "[A-Za-z0-9_.-], 1..=48 bytes, always present",
+      "temp": "{\"status\":\"observed\",\"value\":integer} with |value| <= 2147483647, or {\"status\":\"unread\"} when the read returned nothing or failed"
+    }
+  },
+  "bounds": {
+    "resultBytes": 16384,
+    "grantLifetimeMs": 300000,
+    "unknownKeys": "any key not named here refuses the whole result; nothing is dropped",
+    "envelope": "the server adds domain, profile, helperVersion and collectedAtMs; the device sends only the groups"
+  },
+  "retention": {
+    "store": "one processor observation of kind coverage_hardware_raw, source class signed_cargo_helper, profile coverage-hardware-v1",
+    "sourceExpiryMs": 2592000000,
+    "afterExpiry": "the observation id, clocks and payload digest remain; readers report the payload as expired and never return it",
+    "refresh": "due again when no retained reading was captured within the signed Cargo basis-age budget (72 h); baseline facts never make it fresh"
+  },
+  "withdrawal": "Disable coverageHardware or remove every helper pin to stop new grants at once; retained readings expire on their own clock. Withdraw the kind through a catalog amendment when no allowed consumer uses it, or on any finding that a field identifies a person, household or application other than the probe.",
+  "forbidden": [
+    "serial, IMEI, second IMEI, MEID, ICCID and SIM identifiers",
+    "Android ID and advertising id",
+    "MAC, SSID, BSSID, neighbor or socket peers, local addresses",
+    "soc0 serial_number, ro.serialno and attestation serial fields",
+    "the mount table and any mount source",
+    "customer environment, arguments and key material",
+    "unrestricted proc or sysfs dumps",
+    "a guessed retail model or codename"
+  ]
+}

@@ -1,18 +1,25 @@
 //! The processor-fact grant: the raw `processorFacts` bootstrap block, parsed
 //! closed and checked against the one profile it names.
+//!
+//! Two profiles share this envelope and never a grant (Q-20260923-z2uc):
+//! `cargo-baseline-v1` admits a non-empty subset of its three kinds, and
+//! `coverage-hardware-v1` admits exactly `coverage_hardware_raw.v1`, alone. A
+//! grant that names a kind of the other profile is not either profile's grant,
+//! so it parses to nothing and nothing is read.
 
 use std::collections::BTreeSet;
 
 use serde::Deserialize;
 
 use super::{
-    AUTHORIZATION_FUTURE_TOLERANCE_MS, CARGO_BASELINE_PROFILE, HELPER_CONTRACT_EPOCH,
-    MAX_AUTHORIZATION_LIFETIME_MS, PROCESSOR_FACT_AUTHORIZATION_DOMAIN, bounded_identifier,
-    valid_hex, valid_sha256,
+    AUTHORIZATION_FUTURE_TOLERANCE_MS, CARGO_BASELINE_PROFILE, COVERAGE_HARDWARE_PROFILE,
+    HELPER_CONTRACT_EPOCH, MAX_AUTHORIZATION_LIFETIME_MS, PROCESSOR_FACT_AUTHORIZATION_DOMAIN,
+    bounded_identifier, valid_hex, valid_sha256,
 };
 use crate::protocol::RuntimeBootstrapResponse;
 
-/// The three catalog-admitted fact dimensions. No generic fact name or value
+/// Every catalog-admitted fact dimension, each owned by exactly one profile, in
+/// canonical catalog order within its profile. No generic fact name or value
 /// map exists, so forbidden properties cannot become serializable by accident.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
 pub enum ProcessorFactKind {
@@ -22,6 +29,30 @@ pub enum ProcessorFactKind {
     ExecutionSurface,
     #[serde(rename = "cargo_control_egress.v1")]
     ControlEgress,
+    #[serde(rename = "coverage_hardware_raw.v1")]
+    CoverageHardwareRaw,
+}
+
+impl ProcessorFactKind {
+    /// The one profile whose catalog admits this kind.
+    pub const fn profile(self) -> &'static str {
+        match self {
+            Self::AndroidCorroboration | Self::ExecutionSurface | Self::ControlEgress => {
+                CARGO_BASELINE_PROFILE
+            }
+            Self::CoverageHardwareRaw => COVERAGE_HARDWARE_PROFILE,
+        }
+    }
+}
+
+/// How many due kinds a grant of `profile` may name, or `None` for a profile
+/// this helper does not know.
+fn admitted_kind_count(profile: &str) -> Option<std::ops::RangeInclusive<usize>> {
+    match profile {
+        CARGO_BASELINE_PROFILE => Some(1..=3),
+        COVERAGE_HARDWARE_PROFILE => Some(1..=1),
+        _ => None,
+    }
 }
 
 #[derive(Clone, Deserialize)]
@@ -62,7 +93,12 @@ impl ProcessorFactAuthorization {
                 .expires_at_ms
                 .checked_sub(self.issued_at_ms)
                 .is_some_and(|lifetime| lifetime <= MAX_AUTHORIZATION_LIFETIME_MS)
-            && self.profile == CARGO_BASELINE_PROFILE
+            && admitted_kind_count(&self.profile)
+                .is_some_and(|count| count.contains(&self.due_fact_kinds.len()))
+            && self
+                .due_fact_kinds
+                .iter()
+                .all(|kind| kind.profile() == self.profile)
             && valid_sha256(&self.catalog_digest)
             && self.helper_contract_epoch == HELPER_CONTRACT_EPOCH
             && !self.expected_helper_version.is_empty()
@@ -72,7 +108,6 @@ impl ProcessorFactAuthorization {
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'+'))
             && valid_sha256(&self.expected_helper_digest)
-            && (1..=3).contains(&self.due_fact_kinds.len())
             && self.due_fact_kinds.iter().collect::<BTreeSet<_>>().len()
                 == self.due_fact_kinds.len()
     }

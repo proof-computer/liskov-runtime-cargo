@@ -28,6 +28,10 @@ pub const PROCESSOR_FACT_AUTHORIZATION_DOMAIN: &str =
     "proof.liskov.processor-fact-authorization.v1";
 pub const PROCESSOR_FACT_RESULT_DOMAIN: &str = "proof.liskov.processor-fact-result.v1";
 pub const CARGO_BASELINE_PROFILE: &str = "cargo-baseline-v1";
+/// The coverage-only raw hardware profile (BKLG-20260923-9bhd; ADR-0079 probe
+/// amendment; Q-20260923-z2uc). Its catalog is a byte copy of the one
+/// `liskov-rs` owns at `slipway-executor-contracts/contracts/`.
+pub const COVERAGE_HARDWARE_PROFILE: &str = "coverage-hardware-v1";
 pub const HELPER_CONTRACT_EPOCH: u64 = 1;
 pub const MAX_AUTHORIZATION_LIFETIME_MS: u64 = 5 * 60 * 1000;
 pub const AUTHORIZATION_FUTURE_TOLERANCE_MS: u64 = 60 * 1000;
@@ -76,9 +80,14 @@ const ANDROID_PROPERTIES: [(&str, AndroidField); 9] = [
 ];
 
 mod authorization;
+mod coverage_hardware;
 
 pub use authorization::{
     ProcessorFactAuthorization, ProcessorFactKind, take_processor_fact_authorization,
+};
+pub use coverage_hardware::{
+    CoverageHardwareCollector, CoverageHardwareRawFact, HardwareSource, StatvfsReading,
+    SystemCoverageHardwareCollector, SystemHardwareSource,
 };
 
 #[derive(Clone)]
@@ -400,6 +409,8 @@ enum ProcessorFact {
     Execution(ExecutionSurfaceFact),
     #[serde(rename = "cargo_control_egress.v1")]
     Egress(ControlEgressFact),
+    #[serde(rename = "coverage_hardware_raw.v1")]
+    CoverageHardwareRaw(CoverageHardwareRawFact),
 }
 
 #[derive(Serialize)]
@@ -429,10 +440,12 @@ pub struct ProcessorFactWorkerDependencies<'a> {
     pub android: &'a dyn AndroidFactCollector,
     pub execution: &'a dyn ExecutionFactCollector,
     pub egress: &'a dyn EgressFactCollector,
+    pub coverage_hardware: &'a dyn CoverageHardwareCollector,
     pub signer: &'a dyn FactSigner,
     pub delivery: &'a dyn ResultDelivery,
 }
 
+/// `cargo-baseline-v1`: SHA-256 over the exact checked-in catalog bytes.
 pub fn compiled_catalog_digest() -> String {
     format!(
         "sha256:{}",
@@ -440,6 +453,27 @@ pub fn compiled_catalog_digest() -> String {
             "../contracts/cargo-baseline-v1.json"
         )))
     )
+}
+
+/// `coverage-hardware-v1`: SHA-256 over the exact bytes copied from
+/// `liskov-rs`, which is also the `catalogDigest` its grants name.
+pub fn compiled_coverage_hardware_catalog_digest() -> String {
+    format!(
+        "sha256:{}",
+        hex::encode(Sha256::digest(include_bytes!(
+            "../contracts/coverage-hardware-v1.json"
+        )))
+    )
+}
+
+/// The catalog a grant of `profile` must name. The grant parser admits no
+/// other profile, so `None` never reaches a read.
+fn compiled_catalog_digest_for(profile: &str) -> Option<String> {
+    match profile {
+        CARGO_BASELINE_PROFILE => Some(compiled_catalog_digest()),
+        COVERAGE_HARDWARE_PROFILE => Some(compiled_coverage_hardware_catalog_digest()),
+        _ => None,
+    }
 }
 
 pub(crate) fn detached_processor_fact_task(
@@ -453,6 +487,7 @@ pub(crate) fn detached_processor_fact_task(
         let android = AndroidPropertyCollector::<SecurePropertyFileReader>::default();
         let execution = LinuxExecutionCollector;
         let egress = SystemEgressCollector;
+        let coverage_hardware = SystemCoverageHardwareCollector;
         let signer = BridgeFactSigner { bridge };
         let delivery = HttpsResultDelivery;
         let dependencies = ProcessorFactWorkerDependencies {
@@ -461,6 +496,7 @@ pub(crate) fn detached_processor_fact_task(
             android: &android,
             execution: &execution,
             egress: &egress,
+            coverage_hardware: &coverage_hardware,
             signer: &signer,
             delivery: &delivery,
         };
@@ -476,7 +512,8 @@ pub(crate) fn run_processor_fact_worker(
     let now_ms = dependencies.clock.now_ms().ok_or(())?;
     if !authorization.valid_at(now_ms)
         || authorization.expected_helper_version != env!("CARGO_PKG_VERSION")
-        || authorization.catalog_digest != compiled_catalog_digest()
+        || compiled_catalog_digest_for(&authorization.profile).as_ref()
+            != Some(&authorization.catalog_digest)
     {
         return Err(());
     }
@@ -507,6 +544,13 @@ pub(crate) fn run_processor_fact_worker(
             dependencies.egress.collect(&binding.egress_url),
         ));
     }
+    // Only a coverage-hardware-v1 grant can name this kind, and it names
+    // nothing else, so the raw reading never rides beside a baseline fact.
+    if due.contains(&ProcessorFactKind::CoverageHardwareRaw) {
+        facts.push(ProcessorFact::CoverageHardwareRaw(
+            dependencies.coverage_hardware.collect(),
+        ));
+    }
     let capture_completed_at_ms = dependencies.clock.now_ms().ok_or(())?;
     let facts_value = serde_json::to_value(&facts).map_err(|_| ())?;
     let facts_digest = format!(
@@ -532,6 +576,18 @@ pub(crate) fn run_processor_fact_worker(
         facts_digest: &facts_digest,
     };
     let unsigned_value = serde_json::to_value(&unsigned).map_err(|_| ())?;
+    // A body that cannot fit once signed is never signed: the bridge
+    // signature is exactly `0x` and 128 hex digits, so its size is known now.
+    let mut sized = unsigned_value.clone();
+    if let Value::Object(ref mut object) = sized {
+        object.insert(
+            "signature".to_owned(),
+            Value::String(format!("0x{}", "0".repeat(128))),
+        );
+    }
+    if canonical_json_bytes(&sized).len() > MAX_RESULT_BYTES {
+        return Err(());
+    }
     let signature_input = canonical_json_bytes(&unsigned_value);
     let signature = dependencies
         .signer
@@ -1912,8 +1968,11 @@ fn read_area_u32(bytes: &[u8], offset: usize) -> u32 {
 }
 
 /// AArch64 CI/PRoot entrypoint. It exercises observed, hidden, denied, and
-/// malformed property surfaces entirely from in-memory fixtures and performs
-/// no resolution, HTTP, bridge, or filesystem operation.
+/// malformed property surfaces entirely from in-memory fixtures, then takes
+/// one live `coverage_hardware_raw.v1` reading through the real source so
+/// PRoot's path translation, `statvfs` and `stat` answer the raw collector. It
+/// performs no resolution, HTTP or bridge operation, and the reading goes
+/// nowhere.
 #[cfg(feature = "fact-probe")]
 pub fn run_fact_probe_self_test() -> bool {
     const CONTEXT: &str = "u:object_r:build_prop:s0";
@@ -1958,7 +2017,16 @@ pub fn run_fact_probe_self_test() -> bool {
         collect_android_properties(&malformed).model,
         Availability::Unsupported
     );
-    observed_ok && hidden_ok && denied_ok && malformed_ok
+    let raw = serde_json::to_value(coverage_hardware::collect_coverage_hardware(
+        &SystemHardwareSource,
+    ))
+    .unwrap_or_default();
+    let observed = |reading: &Value| reading["status"] == "observed";
+    let raw_ok = observed(&raw["kernel"]["architecture"])
+        && observed(&raw["identity"]["guestUid"])
+        && observed(&raw["meminfo"]["memTotalKb"])
+        && observed(&raw["guestRoot"]["totalBytes"]);
+    observed_ok && hidden_ok && denied_ok && malformed_ok && raw_ok
 }
 
 #[cfg(all(test, not(feature = "fact-probe")))]

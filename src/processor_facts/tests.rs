@@ -63,6 +63,7 @@ struct Counters {
     android: AtomicUsize,
     execution: AtomicUsize,
     egress: AtomicUsize,
+    coverage_hardware: AtomicUsize,
     signing: AtomicUsize,
 }
 
@@ -165,6 +166,16 @@ impl EgressFactCollector for CountingEgress<'_> {
     }
 }
 
+/// Every baseline test runs with this: a baseline grant that reached the raw
+/// collector would panic the worker and fail the test.
+struct UnreachableCoverageHardware;
+
+impl CoverageHardwareCollector for UnreachableCoverageHardware {
+    fn collect(&self) -> CoverageHardwareRawFact {
+        panic!("a cargo-baseline-v1 grant read raw coverage hardware")
+    }
+}
+
 struct RecordingSigner<'a> {
     counters: &'a Counters,
     inputs: Mutex<Vec<Vec<u8>>>,
@@ -249,6 +260,7 @@ fn absent_authorization_performs_no_hash_fact_signing_or_delivery_work() {
             android: &android,
             execution: &execution,
             egress: &egress,
+            coverage_hardware: &UnreachableCoverageHardware,
             signer: &signer,
             delivery: &delivery,
         };
@@ -315,6 +327,7 @@ fn expired_wrong_version_catalog_and_executable_digest_read_no_facts() {
         android: &android,
         execution: &execution,
         egress: &egress,
+        coverage_hardware: &UnreachableCoverageHardware,
         signer: &signer,
         delivery: &delivery,
     };
@@ -366,6 +379,7 @@ fn only_due_dimensions_are_collected_and_ordered_by_catalog() {
         android: &android,
         execution: &execution,
         egress: &egress,
+        coverage_hardware: &UnreachableCoverageHardware,
         signer: &signer,
         delivery: &delivery,
     };
@@ -403,6 +417,7 @@ fn result_signature_digest_bound_and_retry_bytes_are_canonical_and_identical() {
         android: &android,
         execution: &execution,
         egress: &egress,
+        coverage_hardware: &UnreachableCoverageHardware,
         signer: &signer,
         delivery: &delivery,
     };
@@ -551,8 +566,9 @@ fn catalog_admissions(catalog: &Value) -> Vec<(&str, BTreeSet<&str>)> {
         .collect()
 }
 
-/// Every compiled kind. The match is exhaustive so a new variant does not
-/// compile until it is listed here, where the catalog tests meet it.
+/// Every compiled `cargo-baseline-v1` kind. The match is exhaustive so a new
+/// variant does not compile until it is placed here, where the catalog tests
+/// meet it; the raw kind belongs to `coverage-hardware-v1` and its own catalog.
 fn every_fact_kind() -> [ProcessorFactKind; 3] {
     [
         ProcessorFactKind::AndroidCorroboration,
@@ -562,7 +578,11 @@ fn every_fact_kind() -> [ProcessorFactKind; 3] {
     .map(|kind| match kind {
         ProcessorFactKind::AndroidCorroboration
         | ProcessorFactKind::ExecutionSurface
-        | ProcessorFactKind::ControlEgress => kind,
+        | ProcessorFactKind::ControlEgress => {
+            assert_eq!(kind.profile(), CARGO_BASELINE_PROFILE);
+            kind
+        }
+        ProcessorFactKind::CoverageHardwareRaw => unreachable!("not a baseline kind"),
     })
 }
 
@@ -708,6 +728,7 @@ fn worker_emits_exactly_the_catalog_admitted_set_for_every_due_subset() {
                 android: &android,
                 execution: &execution,
                 egress: &egress,
+                coverage_hardware: &UnreachableCoverageHardware,
                 signer: &signer,
                 delivery: &delivery,
             };
@@ -984,6 +1005,7 @@ fn missing_or_refused_authorization_performs_no_native_read_dns_signature_or_htt
             android: &android,
             execution: &execution,
             egress: &egress,
+            coverage_hardware: &UnreachableCoverageHardware,
             signer: &signer,
             delivery: &delivery,
         };
@@ -1056,6 +1078,7 @@ fn failed_delivery_is_not_retried_after_authorization_expiry() {
         android: &android,
         execution: &execution,
         egress: &egress,
+        coverage_hardware: &UnreachableCoverageHardware,
         signer: &signer,
         delivery: &delivery,
     };
@@ -1445,4 +1468,273 @@ fn future_clock_tolerance_and_five_minute_lifetime_are_strict() {
     too_long["expiresAtMs"] = json!(NOW + MAX_AUTHORIZATION_LIFETIME_MS + 1);
     let mut response = bootstrap(Some(too_long));
     assert!(take_processor_fact_authorization(&mut response).is_none());
+}
+
+fn coverage_authorization_value() -> Value {
+    let mut value = authorization_value(&["coverage_hardware_raw.v1"]);
+    value["profile"] = json!(COVERAGE_HARDWARE_PROFILE);
+    value["catalogDigest"] = json!(compiled_coverage_hardware_catalog_digest());
+    value
+}
+
+fn coverage_authorization() -> ProcessorFactAuthorization {
+    serde_json::from_value(coverage_authorization_value()).unwrap()
+}
+
+struct CountingCoverageHardware<'a> {
+    counters: &'a Counters,
+    reading: fn() -> CoverageHardwareRawFact,
+}
+
+impl CoverageHardwareCollector for CountingCoverageHardware<'_> {
+    fn collect(&self) -> CoverageHardwareRawFact {
+        self.counters
+            .coverage_hardware
+            .fetch_add(1, Ordering::SeqCst);
+        (self.reading)()
+    }
+}
+
+fn motorola_reading() -> CoverageHardwareRawFact {
+    coverage_hardware::collect_coverage_hardware(&coverage_hardware::tests::motorola())
+}
+
+/// Run `authorization` with counting collectors whose raw reading is
+/// `reading`, and return the delivery record.
+fn run_with_counters(
+    authorization: &ProcessorFactAuthorization,
+    counters: &Counters,
+    reading: fn() -> CoverageHardwareRawFact,
+    responses: &[bool],
+) -> (Result<(), ()>, RecordingDelivery, Vec<Vec<u8>>) {
+    let clock = FixedClock(NOW);
+    let hasher = CountingHasher {
+        counters,
+        digest: HELPER_DIGEST,
+    };
+    let android = CountingAndroid(counters);
+    let execution = CountingExecution(counters);
+    let egress = CountingEgress(counters);
+    let coverage_hardware = CountingCoverageHardware { counters, reading };
+    let signer = RecordingSigner {
+        counters,
+        inputs: Mutex::new(Vec::new()),
+    };
+    let delivery = RecordingDelivery::new(responses.iter().copied());
+    let dependencies = ProcessorFactWorkerDependencies {
+        clock: &clock,
+        executable_hasher: &hasher,
+        android: &android,
+        execution: &execution,
+        egress: &egress,
+        coverage_hardware: &coverage_hardware,
+        signer: &signer,
+        delivery: &delivery,
+    };
+    let result = run_processor_fact_worker(authorization, &binding(), &dependencies);
+    let inputs = signer.inputs.into_inner().unwrap();
+    (result, delivery, inputs)
+}
+
+#[test]
+fn a_coverage_hardware_grant_reads_only_the_raw_document_and_signs_it_once() {
+    let mut response = bootstrap(Some(coverage_authorization_value()));
+    let authorization = take_processor_fact_authorization(&mut response).unwrap();
+    let counters = Counters::default();
+    let (result, delivery, inputs) =
+        run_with_counters(&authorization, &counters, motorola_reading, &[false, false]);
+    result.unwrap();
+
+    assert_eq!(counters.coverage_hardware.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.android.load(Ordering::SeqCst), 0);
+    assert_eq!(counters.execution.load(Ordering::SeqCst), 0);
+    assert_eq!(counters.egress.load(Ordering::SeqCst), 0);
+    assert_eq!(counters.signing.load(Ordering::SeqCst), 1);
+
+    // Two refused attempts carry byte-identical bodies under one signature.
+    let calls = delivery.calls.lock().unwrap();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0], calls[1]);
+    assert_eq!(
+        calls[0].0,
+        "https://liskov.example/api/jobs/processor-facts"
+    );
+    assert!(calls[0].1.len() <= MAX_RESULT_BYTES);
+    let mut signed: Value = serde_json::from_slice(&calls[0].1).unwrap();
+    assert_eq!(signed["profile"], COVERAGE_HARDWARE_PROFILE);
+    assert_eq!(
+        signed["catalogDigest"],
+        compiled_coverage_hardware_catalog_digest()
+    );
+    assert!(signed.get("origin").is_none());
+    let payload: Value =
+        serde_json::from_str(include_str!("../../vectors/processor-hardware-raw-v1.json")).unwrap();
+    assert_eq!(
+        signed["facts"],
+        json!([{"kind": "coverage_hardware_raw.v1", "value": payload}])
+    );
+    signed.as_object_mut().unwrap().remove("signature");
+    assert_eq!(inputs, [canonical_json_bytes(&signed)]);
+}
+
+#[test]
+fn a_baseline_grant_never_reads_raw_hardware() {
+    let counters = Counters::default();
+    let (result, delivery, _) = run_with_counters(
+        &authorization(&[
+            "cargo_android_corroboration.v1",
+            "cargo_execution_surface.v1",
+            "cargo_control_egress.v1",
+        ]),
+        &counters,
+        motorola_reading,
+        &[true],
+    );
+    result.unwrap();
+    assert_eq!(counters.coverage_hardware.load(Ordering::SeqCst), 0);
+    assert_eq!(counters.android.load(Ordering::SeqCst), 1);
+    let calls = delivery.calls.lock().unwrap();
+    let body: Value = serde_json::from_slice(&calls[0].1).unwrap();
+    assert_eq!(body["profile"], CARGO_BASELINE_PROFILE);
+    assert!(
+        body["facts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|fact| fact["kind"] != "coverage_hardware_raw.v1")
+    );
+}
+
+#[test]
+fn mixed_profiles_and_kinds_are_no_grant_at_all() {
+    let raw_in_baseline = authorization_value(&["coverage_hardware_raw.v1"]);
+    let raw_beside_baseline =
+        authorization_value(&["cargo_execution_surface.v1", "coverage_hardware_raw.v1"]);
+    let mut baseline_in_raw = coverage_authorization_value();
+    baseline_in_raw["dueFactKinds"] = json!(["cargo_execution_surface.v1"]);
+    let mut raw_twice = coverage_authorization_value();
+    raw_twice["dueFactKinds"] = json!(["coverage_hardware_raw.v1", "coverage_hardware_raw.v1"]);
+    let mut raw_with_baseline = coverage_authorization_value();
+    raw_with_baseline["dueFactKinds"] =
+        json!(["coverage_hardware_raw.v1", "cargo_android_corroboration.v1"]);
+    let mut raw_empty = coverage_authorization_value();
+    raw_empty["dueFactKinds"] = json!([]);
+    let mut unknown_profile = coverage_authorization_value();
+    unknown_profile["profile"] = json!("coverage-hardware-v2");
+
+    for raw in [
+        raw_in_baseline,
+        raw_beside_baseline,
+        baseline_in_raw,
+        raw_twice,
+        raw_with_baseline,
+        raw_empty,
+        unknown_profile,
+    ] {
+        let mut response = bootstrap(Some(raw.clone()));
+        assert!(
+            take_processor_fact_authorization(&mut response).is_none(),
+            "{raw}"
+        );
+        // Even handed straight to the worker, nothing is hashed or read.
+        let Ok(parsed) = serde_json::from_value::<ProcessorFactAuthorization>(raw) else {
+            continue;
+        };
+        let counters = Counters::default();
+        let (result, delivery, _) =
+            run_with_counters(&parsed, &counters, motorola_reading, &[true]);
+        assert!(result.is_err());
+        assert_eq!(counters.hash.load(Ordering::SeqCst), 0);
+        assert_eq!(counters.coverage_hardware.load(Ordering::SeqCst), 0);
+        assert_eq!(counters.execution.load(Ordering::SeqCst), 0);
+        assert!(delivery.calls.lock().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn wrong_catalog_helper_or_expired_raw_grants_read_nothing() {
+    let wrong_catalog = {
+        let mut grant = coverage_authorization();
+        grant.catalog_digest = compiled_catalog_digest();
+        grant
+    };
+    let baseline_with_raw_catalog = {
+        let mut grant = authorization(&["cargo_execution_surface.v1"]);
+        grant.catalog_digest = compiled_coverage_hardware_catalog_digest();
+        grant
+    };
+    let wrong_version = {
+        let mut grant = coverage_authorization();
+        grant.expected_helper_version = "0.0.0".into();
+        grant
+    };
+    let expired = {
+        let mut grant = coverage_authorization();
+        grant.issued_at_ms = NOW - 300_000;
+        grant.expires_at_ms = NOW;
+        grant
+    };
+    for grant in [
+        wrong_catalog,
+        baseline_with_raw_catalog,
+        wrong_version,
+        expired,
+    ] {
+        let counters = Counters::default();
+        let (result, delivery, _) = run_with_counters(&grant, &counters, motorola_reading, &[true]);
+        assert!(result.is_err());
+        assert_eq!(counters.hash.load(Ordering::SeqCst), 0);
+        assert_eq!(counters.coverage_hardware.load(Ordering::SeqCst), 0);
+        assert_eq!(counters.execution.load(Ordering::SeqCst), 0);
+        assert_eq!(counters.signing.load(Ordering::SeqCst), 0);
+        assert!(delivery.calls.lock().unwrap().is_empty());
+    }
+
+    // A helper whose own digest is not the pinned one hashes itself once and
+    // reads nothing.
+    let mut wrong_helper = coverage_authorization();
+    wrong_helper.expected_helper_digest = format!("sha256:{}", "cc".repeat(32));
+    let counters = Counters::default();
+    let (result, delivery, _) =
+        run_with_counters(&wrong_helper, &counters, motorola_reading, &[true]);
+    assert!(result.is_err());
+    assert_eq!(counters.hash.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.coverage_hardware.load(Ordering::SeqCst), 0);
+    assert_eq!(counters.signing.load(Ordering::SeqCst), 0);
+    assert!(delivery.calls.lock().unwrap().is_empty());
+}
+
+#[test]
+fn an_oversized_raw_reading_is_never_signed_or_sent() {
+    let counters = Counters::default();
+    let (result, delivery, inputs) = run_with_counters(
+        &coverage_authorization(),
+        &counters,
+        coverage_hardware::tests::oversized_reading,
+        &[true],
+    );
+    assert!(result.is_err());
+    assert_eq!(counters.coverage_hardware.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.signing.load(Ordering::SeqCst), 0);
+    assert!(inputs.is_empty());
+    assert!(delivery.calls.lock().unwrap().is_empty());
+}
+
+#[test]
+fn an_adr_0072_coverage_grant_alone_never_authorizes_raw_capture() {
+    // The raw grant in the coverage slot is not a processor-fact grant.
+    let mut response = bootstrap(None);
+    response.fact_authorization = Some(coverage_authorization_value());
+    assert!(take_processor_fact_authorization(&mut response).is_none());
+    assert!(response.fact_authorization.is_some());
+
+    // Beside a baseline grant it changes nothing about what that grant reads.
+    let mut response = bootstrap(Some(authorization_value(&["cargo_execution_surface.v1"])));
+    response.fact_authorization = Some(coverage_authorization_value());
+    let authorization = take_processor_fact_authorization(&mut response).unwrap();
+    let counters = Counters::default();
+    let (result, _, _) = run_with_counters(&authorization, &counters, motorola_reading, &[true]);
+    result.unwrap();
+    assert_eq!(counters.execution.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.coverage_hardware.load(Ordering::SeqCst), 0);
 }

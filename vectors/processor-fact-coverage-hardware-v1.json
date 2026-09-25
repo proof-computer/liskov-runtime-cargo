@@ -1,0 +1,1146 @@
+{
+  "result": {
+    "domain": "proof.liskov.processor-fact-result.v1",
+    "authorizationId": "pfa_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "challenge": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+    "deploymentId": "deployment-174098",
+    "jobId": "{\"id\":\"174098\",\"origin\":{\"kind\":\"Acurast\"}}",
+    "processorId": "5C81qALgzdeYUseGhtWPexwufYY83NcrnTazpFMcTizhuBb2",
+    "runtimeInstanceId": "runtime-instance-174098",
+    "profile": "coverage-hardware-v1",
+    "catalogDigest": "sha256:f39caf2456a8d4cbca429f06c5b69d014c47dc76cdcbb0c94bd508a04b89ccb5",
+    "helperContractEpoch": 1,
+    "helperVersion": "0.11.0",
+    "helperDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "captureStartedAtMs": 1790165966000,
+    "captureCompletedAtMs": 1790165967500,
+    "facts": [
+      {
+        "kind": "coverage_hardware_raw.v1",
+        "value": {
+          "kernel": {
+            "release": {
+              "status": "observed",
+              "value": "5.4.295-moto-gc9355f04a895"
+            },
+            "architecture": {
+              "status": "observed",
+              "value": "aarch64"
+            }
+          },
+          "identity": {
+            "guestUid": {
+              "status": "observed",
+              "value": 0
+            },
+            "kernelUid": {
+              "status": "observed",
+              "value": 10437
+            },
+            "capabilityClass": {
+              "status": "observed",
+              "value": "none"
+            }
+          },
+          "cgroupControllers": {
+            "status": "observed",
+            "value": [
+              "memory",
+              "cpuset",
+              "cpu",
+              "blkio",
+              "unified"
+            ]
+          },
+          "cpuPolicies": {
+            "status": "observed",
+            "value": [
+              {
+                "policy": 0,
+                "relatedCpus": {
+                  "status": "observed",
+                  "value": "0-5"
+                },
+                "midr": {
+                  "status": "observed",
+                  "value": "0x412fd050"
+                },
+                "minKhz": {
+                  "status": "observed",
+                  "value": 300000
+                },
+                "maxKhz": {
+                  "status": "observed",
+                  "value": 1804800
+                },
+                "availableKhz": {
+                  "status": "observed",
+                  "value": [
+                    300000,
+                    576000,
+                    691200,
+                    940800,
+                    1113600,
+                    1324800,
+                    1516800,
+                    1651200,
+                    1708800,
+                    1804800
+                  ]
+                },
+                "capacity": {
+                  "status": "observed",
+                  "value": 481
+                },
+                "governor": {
+                  "status": "observed",
+                  "value": "schedutil"
+                },
+                "driver": {
+                  "status": "observed",
+                  "value": "qcom-cpufreq-hw"
+                }
+              },
+              {
+                "policy": 6,
+                "relatedCpus": {
+                  "status": "observed",
+                  "value": "6-7"
+                },
+                "midr": {
+                  "status": "observed",
+                  "value": "0x411fd411"
+                },
+                "minKhz": {
+                  "status": "observed",
+                  "value": 691200
+                },
+                "maxKhz": {
+                  "status": "observed",
+                  "value": 2016000
+                },
+                "availableKhz": {
+                  "status": "observed",
+                  "value": [
+                    691200,
+                    940800,
+                    1228800,
+                    1401600,
+                    1516800,
+                    1651200,
+                    1804800,
+                    1900800,
+                    2016000
+                  ]
+                },
+                "capacity": {
+                  "status": "observed",
+                  "value": 1024
+                },
+                "governor": {
+                  "status": "observed",
+                  "value": "schedutil"
+                },
+                "driver": {
+                  "status": "observed",
+                  "value": "qcom-cpufreq-hw"
+                }
+              }
+            ]
+          },
+          "caches": {
+            "status": "observed",
+            "value": [
+              {
+                "level": 1,
+                "type": "data",
+                "sharedCpuList": "0",
+                "sizeBytes": {
+                  "status": "permission_denied"
+                }
+              },
+              {
+                "level": 1,
+                "type": "instruction",
+                "sharedCpuList": "0",
+                "sizeBytes": {
+                  "status": "permission_denied"
+                }
+              },
+              {
+                "level": 2,
+                "type": "unified",
+                "sharedCpuList": "0",
+                "sizeBytes": {
+                  "status": "permission_denied"
+                }
+              },
+              {
+                "level": 1,
+                "type": "data",
+                "sharedCpuList": "1",
+                "sizeBytes": {
+                  "status": "permission_denied"
+                }
+              },
+              {
+                "level": 1,
+                "type": "instruction",
+                "sharedCpuList": "1",
+                "sizeBytes": {
+                  "status": "permission_denied"
+                }
+              },
+              {
+                "level": 2,
+                "type": "unified",
+                "sharedCpuList": "1",
+                "sizeBytes": {
+                  "status": "permission_denied"
+                }
+              },
+              {
+                "level": 1,
+                "type": "data",
+                "sharedCpuList": "2",
+                "sizeBytes": {
+                  "status": "permission_denied"
+                }
+              },
+              {
+                "level": 1,
+                "type": "instruction",
+                "sharedCpuList": "2",
+                "sizeBytes": {
+                  "status": "permission_denied"
+                }
+              },
+              {
+                "level": 2,
+                "type": "unified",
+                "sharedCpuList": "2",
+                "sizeBytes": {
+                  "status": "permission_denied"
+                }
+              },
+              {
+                "level": 1,
+                "type": "data",
+                "sharedCpuList": "3",
+                "sizeBytes": {
+                  "status": "permission_denied"
+                }
+              },
+              {
+                "level": 1,
+                "type": "instruction",
+                "sharedCpuList": "3",
+                "sizeBytes": {
+                  "status": "permission_denied"
+                }
+              },
+              {
+                "level": 2,
+                "type": "unified",
+                "sharedCpuList": "3",
+                "sizeBytes": {
+                  "status": "permission_denied"
+                }
+              },
+              {
+                "level": 1,
+                "type": "data",
+                "sharedCpuList": "4",
+                "sizeBytes": {
+                  "status": "permission_denied"
+                }
+              },
+              {
+                "level": 1,
+                "type": "instruction",
+                "sharedCpuList": "4",
+                "sizeBytes": {
+                  "status": "permission_denied"
+                }
+              },
+              {
+                "level": 2,
+                "type": "unified",
+                "sharedCpuList": "4",
+                "sizeBytes": {
+                  "status": "permission_denied"
+                }
+              },
+              {
+                "level": 1,
+                "type": "data",
+                "sharedCpuList": "5",
+                "sizeBytes": {
+                  "status": "permission_denied"
+                }
+              },
+              {
+                "level": 1,
+                "type": "instruction",
+                "sharedCpuList": "5",
+                "sizeBytes": {
+                  "status": "permission_denied"
+                }
+              },
+              {
+                "level": 2,
+                "type": "unified",
+                "sharedCpuList": "5",
+                "sizeBytes": {
+                  "status": "permission_denied"
+                }
+              },
+              {
+                "level": 1,
+                "type": "data",
+                "sharedCpuList": "6",
+                "sizeBytes": {
+                  "status": "permission_denied"
+                }
+              },
+              {
+                "level": 1,
+                "type": "instruction",
+                "sharedCpuList": "6",
+                "sizeBytes": {
+                  "status": "permission_denied"
+                }
+              },
+              {
+                "level": 2,
+                "type": "unified",
+                "sharedCpuList": "6",
+                "sizeBytes": {
+                  "status": "permission_denied"
+                }
+              },
+              {
+                "level": 1,
+                "type": "data",
+                "sharedCpuList": "7",
+                "sizeBytes": {
+                  "status": "permission_denied"
+                }
+              },
+              {
+                "level": 1,
+                "type": "instruction",
+                "sharedCpuList": "7",
+                "sizeBytes": {
+                  "status": "permission_denied"
+                }
+              },
+              {
+                "level": 2,
+                "type": "unified",
+                "sharedCpuList": "7",
+                "sizeBytes": {
+                  "status": "permission_denied"
+                }
+              },
+              {
+                "level": 3,
+                "type": "unified",
+                "sharedCpuList": "0-7",
+                "sizeBytes": {
+                  "status": "permission_denied"
+                }
+              }
+            ]
+          },
+          "meminfo": {
+            "memTotalKb": {
+              "status": "observed",
+              "value": 3555756
+            },
+            "memFreeKb": {
+              "status": "observed",
+              "value": 70384
+            },
+            "memAvailableKb": {
+              "status": "observed",
+              "value": 726224
+            },
+            "buffersKb": {
+              "status": "observed",
+              "value": 1828
+            },
+            "cachedKb": {
+              "status": "observed",
+              "value": 765828
+            },
+            "swapCachedKb": {
+              "status": "observed",
+              "value": 42572
+            },
+            "swapTotalKb": {
+              "status": "observed",
+              "value": 2666812
+            },
+            "swapFreeKb": {
+              "status": "observed",
+              "value": 1045924
+            },
+            "dirtyKb": {
+              "status": "observed",
+              "value": 2772
+            },
+            "anonPagesKb": {
+              "status": "observed",
+              "value": 1596928
+            },
+            "mappedKb": {
+              "status": "observed",
+              "value": 494360
+            },
+            "shmemKb": {
+              "status": "observed",
+              "value": 47408
+            },
+            "slabKb": {
+              "status": "observed",
+              "value": 337616
+            },
+            "kernelStackKb": {
+              "status": "observed",
+              "value": 60332
+            },
+            "shadowCallStackKb": {
+              "status": "observed",
+              "value": 15100
+            },
+            "pageTablesKb": {
+              "status": "observed",
+              "value": 84756
+            },
+            "cmaTotalKb": {
+              "status": "observed",
+              "value": 241664
+            },
+            "cmaFreeKb": {
+              "status": "observed",
+              "value": 0
+            },
+            "commitLimitKb": {
+              "status": "observed",
+              "value": 4444688
+            },
+            "committedAsKb": {
+              "status": "observed",
+              "value": 73129456
+            }
+          },
+          "soc": {
+            "family": {
+              "status": "observed",
+              "value": "Snapdragon"
+            },
+            "socId": {
+              "status": "observed",
+              "value": "578"
+            }
+          },
+          "gpu": {
+            "model": {
+              "status": "observed",
+              "value": "Adreno619v2"
+            },
+            "maxClockHz": {
+              "status": "observed",
+              "value": 700000000
+            }
+          },
+          "guestRoot": {
+            "totalBytes": {
+              "status": "observed",
+              "value": 118581342208
+            },
+            "usedBytes": {
+              "status": "observed",
+              "value": 7344947200
+            },
+            "availableBytes": {
+              "status": "observed",
+              "value": 111102177280
+            }
+          },
+          "filesystems": {
+            "guestRoot": {
+              "status": "observed",
+              "value": {
+                "type": "f2fs",
+                "inlinecrypt": true,
+                "discard": true
+              }
+            },
+            "data": {
+              "status": "observed",
+              "value": {
+                "type": "f2fs",
+                "inlinecrypt": true,
+                "discard": true
+              }
+            }
+          },
+          "thermalZones": {
+            "status": "observed",
+            "value": [
+              {
+                "type": "modem-mmw-pa1-step",
+                "temp": {
+                  "status": "unread"
+                }
+              },
+              {
+                "type": "modem-mmw-pa2-step",
+                "temp": {
+                  "status": "unread"
+                }
+              },
+              {
+                "type": "modem-mmw-pa3-step",
+                "temp": {
+                  "status": "unread"
+                }
+              },
+              {
+                "type": "modem-lte-sub6-pa1",
+                "temp": {
+                  "status": "observed",
+                  "value": 27000
+                }
+              },
+              {
+                "type": "modem-lte-sub6-pa2",
+                "temp": {
+                  "status": "observed",
+                  "value": 27000
+                }
+              },
+              {
+                "type": "modem-mmw0-usr",
+                "temp": {
+                  "status": "observed",
+                  "value": 27000
+                }
+              },
+              {
+                "type": "modem-mmw1-usr",
+                "temp": {
+                  "status": "observed",
+                  "value": 27000
+                }
+              },
+              {
+                "type": "modem-mmw2-usr",
+                "temp": {
+                  "status": "observed",
+                  "value": 27000
+                }
+              },
+              {
+                "type": "modem-mmw3-usr",
+                "temp": {
+                  "status": "observed",
+                  "value": 27000
+                }
+              },
+              {
+                "type": "modem-skin-usr",
+                "temp": {
+                  "status": "observed",
+                  "value": 27000
+                }
+              },
+              {
+                "type": "modem-0-usr",
+                "temp": {
+                  "status": "observed",
+                  "value": 27000
+                }
+              },
+              {
+                "type": "modem-1-usr",
+                "temp": {
+                  "status": "observed",
+                  "value": 27000
+                }
+              },
+              {
+                "type": "modem-streamer-usr",
+                "temp": {
+                  "status": "observed",
+                  "value": 27000
+                }
+              },
+              {
+                "type": "modem-mmw0-mod-usr",
+                "temp": {
+                  "status": "observed",
+                  "value": 27000
+                }
+              },
+              {
+                "type": "modem-mmw1-mod-usr",
+                "temp": {
+                  "status": "observed",
+                  "value": 27000
+                }
+              },
+              {
+                "type": "modem-mmw2-mod-usr",
+                "temp": {
+                  "status": "observed",
+                  "value": 27000
+                }
+              },
+              {
+                "type": "modem-mmw3-mod-usr",
+                "temp": {
+                  "status": "observed",
+                  "value": 27000
+                }
+              },
+              {
+                "type": "beamer-n-therm-usr",
+                "temp": {
+                  "status": "observed",
+                  "value": 27000
+                }
+              },
+              {
+                "type": "beamer-e-therm-usr",
+                "temp": {
+                  "status": "observed",
+                  "value": 27000
+                }
+              },
+              {
+                "type": "beamer-w-therm-usr",
+                "temp": {
+                  "status": "observed",
+                  "value": 27000
+                }
+              },
+              {
+                "type": "modem-mmw-pa1-usr",
+                "temp": {
+                  "status": "unread"
+                }
+              },
+              {
+                "type": "modem-mmw-pa2-usr",
+                "temp": {
+                  "status": "unread"
+                }
+              },
+              {
+                "type": "modem-mmw-pa3-usr",
+                "temp": {
+                  "status": "unread"
+                }
+              },
+              {
+                "type": "mdm-core0-step",
+                "temp": {
+                  "status": "observed",
+                  "value": 34800
+                }
+              },
+              {
+                "type": "mdm-core1-step",
+                "temp": {
+                  "status": "observed",
+                  "value": 35600
+                }
+              },
+              {
+                "type": "mdm-vec-step",
+                "temp": {
+                  "status": "observed",
+                  "value": 36300
+                }
+              },
+              {
+                "type": "mdm-scl-step",
+                "temp": {
+                  "status": "observed",
+                  "value": 36300
+                }
+              },
+              {
+                "type": "mapss-0-usr",
+                "temp": {
+                  "status": "observed",
+                  "value": 36800
+                }
+              },
+              {
+                "type": "cpu-0-0-usr",
+                "temp": {
+                  "status": "observed",
+                  "value": 39100
+                }
+              },
+              {
+                "type": "cpu-0-1-usr",
+                "temp": {
+                  "status": "observed",
+                  "value": 38700
+                }
+              },
+              {
+                "type": "cpu-0-2-usr",
+                "temp": {
+                  "status": "observed",
+                  "value": 38000
+                }
+              },
+              {
+                "type": "cpu-0-3-usr",
+                "temp": {
+                  "status": "observed",
+                  "value": 38400
+                }
+              },
+              {
+                "type": "cpu-0-4-usr",
+                "temp": {
+                  "status": "observed",
+                  "value": 38000
+                }
+              },
+              {
+                "type": "cpu-0-5-usr",
+                "temp": {
+                  "status": "observed",
+                  "value": 38700
+                }
+              },
+              {
+                "type": "cpuss-0-usr",
+                "temp": {
+                  "status": "observed",
+                  "value": 41100
+                }
+              },
+              {
+                "type": "cpuss-1-usr",
+                "temp": {
+                  "status": "observed",
+                  "value": 39500
+                }
+              },
+              {
+                "type": "cpu-1-0-usr",
+                "temp": {
+                  "status": "observed",
+                  "value": 42600
+                }
+              },
+              {
+                "type": "cpu-1-1-usr",
+                "temp": {
+                  "status": "observed",
+                  "value": 41100
+                }
+              },
+              {
+                "type": "cpu-1-2-usr",
+                "temp": {
+                  "status": "observed",
+                  "value": 42200
+                }
+              },
+              {
+                "type": "cpu-1-3-usr",
+                "temp": {
+                  "status": "observed",
+                  "value": 40700
+                }
+              },
+              {
+                "type": "gpuss-0-usr",
+                "temp": {
+                  "status": "observed",
+                  "value": 36800
+                }
+              },
+              {
+                "type": "gpuss-1-usr",
+                "temp": {
+                  "status": "observed",
+                  "value": 36400
+                }
+              },
+              {
+                "type": "mapss-1-usr",
+                "temp": {
+                  "status": "observed",
+                  "value": 36700
+                }
+              },
+              {
+                "type": "cwlan-usr",
+                "temp": {
+                  "status": "observed",
+                  "value": 38600
+                }
+              },
+              {
+                "type": "audio-usr",
+                "temp": {
+                  "status": "observed",
+                  "value": 37900
+                }
+              },
+              {
+                "type": "ddr-usr",
+                "temp": {
+                  "status": "observed",
+                  "value": 36700
+                }
+              },
+              {
+                "type": "q6-hvx-usr",
+                "temp": {
+                  "status": "observed",
+                  "value": 37100
+                }
+              },
+              {
+                "type": "camera-usr",
+                "temp": {
+                  "status": "observed",
+                  "value": 36300
+                }
+              },
+              {
+                "type": "mdm-core0-usr",
+                "temp": {
+                  "status": "observed",
+                  "value": 34800
+                }
+              },
+              {
+                "type": "mdm-core1-usr",
+                "temp": {
+                  "status": "observed",
+                  "value": 35200
+                }
+              },
+              {
+                "type": "mdm-vec-usr",
+                "temp": {
+                  "status": "observed",
+                  "value": 36700
+                }
+              },
+              {
+                "type": "msm-scl-usr",
+                "temp": {
+                  "status": "observed",
+                  "value": 36300
+                }
+              },
+              {
+                "type": "video-usr",
+                "temp": {
+                  "status": "observed",
+                  "value": 36300
+                }
+              },
+              {
+                "type": "cpu-0-0-step",
+                "temp": {
+                  "status": "observed",
+                  "value": 39100
+                }
+              },
+              {
+                "type": "cpu-0-1-step",
+                "temp": {
+                  "status": "observed",
+                  "value": 39100
+                }
+              },
+              {
+                "type": "cpu-0-2-step",
+                "temp": {
+                  "status": "observed",
+                  "value": 38400
+                }
+              },
+              {
+                "type": "cpu-0-3-step",
+                "temp": {
+                  "status": "observed",
+                  "value": 39100
+                }
+              },
+              {
+                "type": "cpu-0-4-step",
+                "temp": {
+                  "status": "observed",
+                  "value": 39100
+                }
+              },
+              {
+                "type": "cpu-0-5-step",
+                "temp": {
+                  "status": "observed",
+                  "value": 39500
+                }
+              },
+              {
+                "type": "cpu-1-0-step",
+                "temp": {
+                  "status": "observed",
+                  "value": 41800
+                }
+              },
+              {
+                "type": "cpu-1-1-step",
+                "temp": {
+                  "status": "observed",
+                  "value": 40300
+                }
+              },
+              {
+                "type": "cpu-1-2-step",
+                "temp": {
+                  "status": "observed",
+                  "value": 42200
+                }
+              },
+              {
+                "type": "cpu-1-3-step",
+                "temp": {
+                  "status": "observed",
+                  "value": 40300
+                }
+              },
+              {
+                "type": "gpuss-max-step",
+                "temp": {
+                  "status": "observed",
+                  "value": 36400
+                }
+              },
+              {
+                "type": "q6-hvx-step",
+                "temp": {
+                  "status": "observed",
+                  "value": 36700
+                }
+              },
+              {
+                "type": "zeroc-0-step",
+                "temp": {
+                  "status": "observed",
+                  "value": 0
+                }
+              },
+              {
+                "type": "zeroc-1-step",
+                "temp": {
+                  "status": "observed",
+                  "value": 0
+                }
+              },
+              {
+                "type": "pm7250b_tz",
+                "temp": {
+                  "status": "observed",
+                  "value": 30677
+                }
+              },
+              {
+                "type": "pm7250b-ibat-lvl0",
+                "temp": {
+                  "status": "observed",
+                  "value": -78
+                }
+              },
+              {
+                "type": "pm7250b-ibat-lvl1",
+                "temp": {
+                  "status": "observed",
+                  "value": -78
+                }
+              },
+              {
+                "type": "pm7250b-bcl-lvl0",
+                "temp": {
+                  "status": "observed",
+                  "value": 0
+                }
+              },
+              {
+                "type": "pm7250b-bcl-lvl1",
+                "temp": {
+                  "status": "observed",
+                  "value": 0
+                }
+              },
+              {
+                "type": "pm7250b-bcl-lvl2",
+                "temp": {
+                  "status": "observed",
+                  "value": 0
+                }
+              },
+              {
+                "type": "socd",
+                "temp": {
+                  "status": "observed",
+                  "value": 0
+                }
+              },
+              {
+                "type": "conn-therm-usr",
+                "temp": {
+                  "status": "observed",
+                  "value": -40000
+                }
+              },
+              {
+                "type": "pm6125_tz",
+                "temp": {
+                  "status": "observed",
+                  "value": 33532
+                }
+              },
+              {
+                "type": "pmr735a_tz",
+                "temp": {
+                  "status": "observed",
+                  "value": 37000
+                }
+              },
+              {
+                "type": "msm_therm",
+                "temp": {
+                  "status": "observed",
+                  "value": 33137
+                }
+              },
+              {
+                "type": "chg_therm",
+                "temp": {
+                  "status": "observed",
+                  "value": 31813
+                }
+              },
+              {
+                "type": "cam_flash_therm",
+                "temp": {
+                  "status": "observed",
+                  "value": 32696
+                }
+              },
+              {
+                "type": "tspk_therm",
+                "temp": {
+                  "status": "observed",
+                  "value": 31568
+                }
+              },
+              {
+                "type": "pa_therm2",
+                "temp": {
+                  "status": "observed",
+                  "value": 31911
+                }
+              },
+              {
+                "type": "pa_therm1",
+                "temp": {
+                  "status": "observed",
+                  "value": 31323
+                }
+              },
+              {
+                "type": "quiet_therm",
+                "temp": {
+                  "status": "observed",
+                  "value": 32794
+                }
+              },
+              {
+                "type": "xo_therm",
+                "temp": {
+                  "status": "observed",
+                  "value": 33341
+                }
+              },
+              {
+                "type": "qtm_n_therm",
+                "temp": {
+                  "status": "observed",
+                  "value": -40960
+                }
+              },
+              {
+                "type": "qtm_e_therm",
+                "temp": {
+                  "status": "observed",
+                  "value": -40960
+                }
+              },
+              {
+                "type": "soc_usr",
+                "temp": {
+                  "status": "observed",
+                  "value": 0
+                }
+              },
+              {
+                "type": "vbat",
+                "temp": {
+                  "status": "observed",
+                  "value": 4434
+                }
+              },
+              {
+                "type": "qcom_battery",
+                "temp": {
+                  "status": "observed",
+                  "value": 29700
+                }
+              },
+              {
+                "type": "front_temp",
+                "temp": {
+                  "status": "observed",
+                  "value": 32430
+                }
+              },
+              {
+                "type": "back_temp",
+                "temp": {
+                  "status": "observed",
+                  "value": 32545
+                }
+              },
+              {
+                "type": "battery",
+                "temp": {
+                  "status": "observed",
+                  "value": 29700
+                }
+              }
+            ]
+          }
+        }
+      }
+    ],
+    "factsDigest": "sha256:311fa961d8ac174545f346f4a2ca49d5b9a921a766e06065eaac78f70613c092"
+  },
+  "canonicalSigningPayload": "{\"authorizationId\":\"pfa_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"captureCompletedAtMs\":1790165967500,\"captureStartedAtMs\":1790165966000,\"catalogDigest\":\"sha256:f39caf2456a8d4cbca429f06c5b69d014c47dc76cdcbb0c94bd508a04b89ccb5\",\"challenge\":\"fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210\",\"deploymentId\":\"deployment-174098\",\"domain\":\"proof.liskov.processor-fact-result.v1\",\"facts\":[{\"kind\":\"coverage_hardware_raw.v1\",\"value\":{\"caches\":{\"status\":\"observed\",\"value\":[{\"level\":1,\"sharedCpuList\":\"0\",\"sizeBytes\":{\"status\":\"permission_denied\"},\"type\":\"data\"},{\"level\":1,\"sharedCpuList\":\"0\",\"sizeBytes\":{\"status\":\"permission_denied\"},\"type\":\"instruction\"},{\"level\":2,\"sharedCpuList\":\"0\",\"sizeBytes\":{\"status\":\"permission_denied\"},\"type\":\"unified\"},{\"level\":1,\"sharedCpuList\":\"1\",\"sizeBytes\":{\"status\":\"permission_denied\"},\"type\":\"data\"},{\"level\":1,\"sharedCpuList\":\"1\",\"sizeBytes\":{\"status\":\"permission_denied\"},\"type\":\"instruction\"},{\"level\":2,\"sharedCpuList\":\"1\",\"sizeBytes\":{\"status\":\"permission_denied\"},\"type\":\"unified\"},{\"level\":1,\"sharedCpuList\":\"2\",\"sizeBytes\":{\"status\":\"permission_denied\"},\"type\":\"data\"},{\"level\":1,\"sharedCpuList\":\"2\",\"sizeBytes\":{\"status\":\"permission_denied\"},\"type\":\"instruction\"},{\"level\":2,\"sharedCpuList\":\"2\",\"sizeBytes\":{\"status\":\"permission_denied\"},\"type\":\"unified\"},{\"level\":1,\"sharedCpuList\":\"3\",\"sizeBytes\":{\"status\":\"permission_denied\"},\"type\":\"data\"},{\"level\":1,\"sharedCpuList\":\"3\",\"sizeBytes\":{\"status\":\"permission_denied\"},\"type\":\"instruction\"},{\"level\":2,\"sharedCpuList\":\"3\",\"sizeBytes\":{\"status\":\"permission_denied\"},\"type\":\"unified\"},{\"level\":1,\"sharedCpuList\":\"4\",\"sizeBytes\":{\"status\":\"permission_denied\"},\"type\":\"data\"},{\"level\":1,\"sharedCpuList\":\"4\",\"sizeBytes\":{\"status\":\"permission_denied\"},\"type\":\"instruction\"},{\"level\":2,\"sharedCpuList\":\"4\",\"sizeBytes\":{\"status\":\"permission_denied\"},\"type\":\"unified\"},{\"level\":1,\"sharedCpuList\":\"5\",\"sizeBytes\":{\"status\":\"permission_denied\"},\"type\":\"data\"},{\"level\":1,\"sharedCpuList\":\"5\",\"sizeBytes\":{\"status\":\"permission_denied\"},\"type\":\"instruction\"},{\"level\":2,\"sharedCpuList\":\"5\",\"sizeBytes\":{\"status\":\"permission_denied\"},\"type\":\"unified\"},{\"level\":1,\"sharedCpuList\":\"6\",\"sizeBytes\":{\"status\":\"permission_denied\"},\"type\":\"data\"},{\"level\":1,\"sharedCpuList\":\"6\",\"sizeBytes\":{\"status\":\"permission_denied\"},\"type\":\"instruction\"},{\"level\":2,\"sharedCpuList\":\"6\",\"sizeBytes\":{\"status\":\"permission_denied\"},\"type\":\"unified\"},{\"level\":1,\"sharedCpuList\":\"7\",\"sizeBytes\":{\"status\":\"permission_denied\"},\"type\":\"data\"},{\"level\":1,\"sharedCpuList\":\"7\",\"sizeBytes\":{\"status\":\"permission_denied\"},\"type\":\"instruction\"},{\"level\":2,\"sharedCpuList\":\"7\",\"sizeBytes\":{\"status\":\"permission_denied\"},\"type\":\"unified\"},{\"level\":3,\"sharedCpuList\":\"0-7\",\"sizeBytes\":{\"status\":\"permission_denied\"},\"type\":\"unified\"}]},\"cgroupControllers\":{\"status\":\"observed\",\"value\":[\"memory\",\"cpuset\",\"cpu\",\"blkio\",\"unified\"]},\"cpuPolicies\":{\"status\":\"observed\",\"value\":[{\"availableKhz\":{\"status\":\"observed\",\"value\":[300000,576000,691200,940800,1113600,1324800,1516800,1651200,1708800,1804800]},\"capacity\":{\"status\":\"observed\",\"value\":481},\"driver\":{\"status\":\"observed\",\"value\":\"qcom-cpufreq-hw\"},\"governor\":{\"status\":\"observed\",\"value\":\"schedutil\"},\"maxKhz\":{\"status\":\"observed\",\"value\":1804800},\"midr\":{\"status\":\"observed\",\"value\":\"0x412fd050\"},\"minKhz\":{\"status\":\"observed\",\"value\":300000},\"policy\":0,\"relatedCpus\":{\"status\":\"observed\",\"value\":\"0-5\"}},{\"availableKhz\":{\"status\":\"observed\",\"value\":[691200,940800,1228800,1401600,1516800,1651200,1804800,1900800,2016000]},\"capacity\":{\"status\":\"observed\",\"value\":1024},\"driver\":{\"status\":\"observed\",\"value\":\"qcom-cpufreq-hw\"},\"governor\":{\"status\":\"observed\",\"value\":\"schedutil\"},\"maxKhz\":{\"status\":\"observed\",\"value\":2016000},\"midr\":{\"status\":\"observed\",\"value\":\"0x411fd411\"},\"minKhz\":{\"status\":\"observed\",\"value\":691200},\"policy\":6,\"relatedCpus\":{\"status\":\"observed\",\"value\":\"6-7\"}}]},\"filesystems\":{\"data\":{\"status\":\"observed\",\"value\":{\"discard\":true,\"inlinecrypt\":true,\"type\":\"f2fs\"}},\"guestRoot\":{\"status\":\"observed\",\"value\":{\"discard\":true,\"inlinecrypt\":true,\"type\":\"f2fs\"}}},\"gpu\":{\"maxClockHz\":{\"status\":\"observed\",\"value\":700000000},\"model\":{\"status\":\"observed\",\"value\":\"Adreno619v2\"}},\"guestRoot\":{\"availableBytes\":{\"status\":\"observed\",\"value\":111102177280},\"totalBytes\":{\"status\":\"observed\",\"value\":118581342208},\"usedBytes\":{\"status\":\"observed\",\"value\":7344947200}},\"identity\":{\"capabilityClass\":{\"status\":\"observed\",\"value\":\"none\"},\"guestUid\":{\"status\":\"observed\",\"value\":0},\"kernelUid\":{\"status\":\"observed\",\"value\":10437}},\"kernel\":{\"architecture\":{\"status\":\"observed\",\"value\":\"aarch64\"},\"release\":{\"status\":\"observed\",\"value\":\"5.4.295-moto-gc9355f04a895\"}},\"meminfo\":{\"anonPagesKb\":{\"status\":\"observed\",\"value\":1596928},\"buffersKb\":{\"status\":\"observed\",\"value\":1828},\"cachedKb\":{\"status\":\"observed\",\"value\":765828},\"cmaFreeKb\":{\"status\":\"observed\",\"value\":0},\"cmaTotalKb\":{\"status\":\"observed\",\"value\":241664},\"commitLimitKb\":{\"status\":\"observed\",\"value\":4444688},\"committedAsKb\":{\"status\":\"observed\",\"value\":73129456},\"dirtyKb\":{\"status\":\"observed\",\"value\":2772},\"kernelStackKb\":{\"status\":\"observed\",\"value\":60332},\"mappedKb\":{\"status\":\"observed\",\"value\":494360},\"memAvailableKb\":{\"status\":\"observed\",\"value\":726224},\"memFreeKb\":{\"status\":\"observed\",\"value\":70384},\"memTotalKb\":{\"status\":\"observed\",\"value\":3555756},\"pageTablesKb\":{\"status\":\"observed\",\"value\":84756},\"shadowCallStackKb\":{\"status\":\"observed\",\"value\":15100},\"shmemKb\":{\"status\":\"observed\",\"value\":47408},\"slabKb\":{\"status\":\"observed\",\"value\":337616},\"swapCachedKb\":{\"status\":\"observed\",\"value\":42572},\"swapFreeKb\":{\"status\":\"observed\",\"value\":1045924},\"swapTotalKb\":{\"status\":\"observed\",\"value\":2666812}},\"soc\":{\"family\":{\"status\":\"observed\",\"value\":\"Snapdragon\"},\"socId\":{\"status\":\"observed\",\"value\":\"578\"}},\"thermalZones\":{\"status\":\"observed\",\"value\":[{\"temp\":{\"status\":\"unread\"},\"type\":\"modem-mmw-pa1-step\"},{\"temp\":{\"status\":\"unread\"},\"type\":\"modem-mmw-pa2-step\"},{\"temp\":{\"status\":\"unread\"},\"type\":\"modem-mmw-pa3-step\"},{\"temp\":{\"status\":\"observed\",\"value\":27000},\"type\":\"modem-lte-sub6-pa1\"},{\"temp\":{\"status\":\"observed\",\"value\":27000},\"type\":\"modem-lte-sub6-pa2\"},{\"temp\":{\"status\":\"observed\",\"value\":27000},\"type\":\"modem-mmw0-usr\"},{\"temp\":{\"status\":\"observed\",\"value\":27000},\"type\":\"modem-mmw1-usr\"},{\"temp\":{\"status\":\"observed\",\"value\":27000},\"type\":\"modem-mmw2-usr\"},{\"temp\":{\"status\":\"observed\",\"value\":27000},\"type\":\"modem-mmw3-usr\"},{\"temp\":{\"status\":\"observed\",\"value\":27000},\"type\":\"modem-skin-usr\"},{\"temp\":{\"status\":\"observed\",\"value\":27000},\"type\":\"modem-0-usr\"},{\"temp\":{\"status\":\"observed\",\"value\":27000},\"type\":\"modem-1-usr\"},{\"temp\":{\"status\":\"observed\",\"value\":27000},\"type\":\"modem-streamer-usr\"},{\"temp\":{\"status\":\"observed\",\"value\":27000},\"type\":\"modem-mmw0-mod-usr\"},{\"temp\":{\"status\":\"observed\",\"value\":27000},\"type\":\"modem-mmw1-mod-usr\"},{\"temp\":{\"status\":\"observed\",\"value\":27000},\"type\":\"modem-mmw2-mod-usr\"},{\"temp\":{\"status\":\"observed\",\"value\":27000},\"type\":\"modem-mmw3-mod-usr\"},{\"temp\":{\"status\":\"observed\",\"value\":27000},\"type\":\"beamer-n-therm-usr\"},{\"temp\":{\"status\":\"observed\",\"value\":27000},\"type\":\"beamer-e-therm-usr\"},{\"temp\":{\"status\":\"observed\",\"value\":27000},\"type\":\"beamer-w-therm-usr\"},{\"temp\":{\"status\":\"unread\"},\"type\":\"modem-mmw-pa1-usr\"},{\"temp\":{\"status\":\"unread\"},\"type\":\"modem-mmw-pa2-usr\"},{\"temp\":{\"status\":\"unread\"},\"type\":\"modem-mmw-pa3-usr\"},{\"temp\":{\"status\":\"observed\",\"value\":34800},\"type\":\"mdm-core0-step\"},{\"temp\":{\"status\":\"observed\",\"value\":35600},\"type\":\"mdm-core1-step\"},{\"temp\":{\"status\":\"observed\",\"value\":36300},\"type\":\"mdm-vec-step\"},{\"temp\":{\"status\":\"observed\",\"value\":36300},\"type\":\"mdm-scl-step\"},{\"temp\":{\"status\":\"observed\",\"value\":36800},\"type\":\"mapss-0-usr\"},{\"temp\":{\"status\":\"observed\",\"value\":39100},\"type\":\"cpu-0-0-usr\"},{\"temp\":{\"status\":\"observed\",\"value\":38700},\"type\":\"cpu-0-1-usr\"},{\"temp\":{\"status\":\"observed\",\"value\":38000},\"type\":\"cpu-0-2-usr\"},{\"temp\":{\"status\":\"observed\",\"value\":38400},\"type\":\"cpu-0-3-usr\"},{\"temp\":{\"status\":\"observed\",\"value\":38000},\"type\":\"cpu-0-4-usr\"},{\"temp\":{\"status\":\"observed\",\"value\":38700},\"type\":\"cpu-0-5-usr\"},{\"temp\":{\"status\":\"observed\",\"value\":41100},\"type\":\"cpuss-0-usr\"},{\"temp\":{\"status\":\"observed\",\"value\":39500},\"type\":\"cpuss-1-usr\"},{\"temp\":{\"status\":\"observed\",\"value\":42600},\"type\":\"cpu-1-0-usr\"},{\"temp\":{\"status\":\"observed\",\"value\":41100},\"type\":\"cpu-1-1-usr\"},{\"temp\":{\"status\":\"observed\",\"value\":42200},\"type\":\"cpu-1-2-usr\"},{\"temp\":{\"status\":\"observed\",\"value\":40700},\"type\":\"cpu-1-3-usr\"},{\"temp\":{\"status\":\"observed\",\"value\":36800},\"type\":\"gpuss-0-usr\"},{\"temp\":{\"status\":\"observed\",\"value\":36400},\"type\":\"gpuss-1-usr\"},{\"temp\":{\"status\":\"observed\",\"value\":36700},\"type\":\"mapss-1-usr\"},{\"temp\":{\"status\":\"observed\",\"value\":38600},\"type\":\"cwlan-usr\"},{\"temp\":{\"status\":\"observed\",\"value\":37900},\"type\":\"audio-usr\"},{\"temp\":{\"status\":\"observed\",\"value\":36700},\"type\":\"ddr-usr\"},{\"temp\":{\"status\":\"observed\",\"value\":37100},\"type\":\"q6-hvx-usr\"},{\"temp\":{\"status\":\"observed\",\"value\":36300},\"type\":\"camera-usr\"},{\"temp\":{\"status\":\"observed\",\"value\":34800},\"type\":\"mdm-core0-usr\"},{\"temp\":{\"status\":\"observed\",\"value\":35200},\"type\":\"mdm-core1-usr\"},{\"temp\":{\"status\":\"observed\",\"value\":36700},\"type\":\"mdm-vec-usr\"},{\"temp\":{\"status\":\"observed\",\"value\":36300},\"type\":\"msm-scl-usr\"},{\"temp\":{\"status\":\"observed\",\"value\":36300},\"type\":\"video-usr\"},{\"temp\":{\"status\":\"observed\",\"value\":39100},\"type\":\"cpu-0-0-step\"},{\"temp\":{\"status\":\"observed\",\"value\":39100},\"type\":\"cpu-0-1-step\"},{\"temp\":{\"status\":\"observed\",\"value\":38400},\"type\":\"cpu-0-2-step\"},{\"temp\":{\"status\":\"observed\",\"value\":39100},\"type\":\"cpu-0-3-step\"},{\"temp\":{\"status\":\"observed\",\"value\":39100},\"type\":\"cpu-0-4-step\"},{\"temp\":{\"status\":\"observed\",\"value\":39500},\"type\":\"cpu-0-5-step\"},{\"temp\":{\"status\":\"observed\",\"value\":41800},\"type\":\"cpu-1-0-step\"},{\"temp\":{\"status\":\"observed\",\"value\":40300},\"type\":\"cpu-1-1-step\"},{\"temp\":{\"status\":\"observed\",\"value\":42200},\"type\":\"cpu-1-2-step\"},{\"temp\":{\"status\":\"observed\",\"value\":40300},\"type\":\"cpu-1-3-step\"},{\"temp\":{\"status\":\"observed\",\"value\":36400},\"type\":\"gpuss-max-step\"},{\"temp\":{\"status\":\"observed\",\"value\":36700},\"type\":\"q6-hvx-step\"},{\"temp\":{\"status\":\"observed\",\"value\":0},\"type\":\"zeroc-0-step\"},{\"temp\":{\"status\":\"observed\",\"value\":0},\"type\":\"zeroc-1-step\"},{\"temp\":{\"status\":\"observed\",\"value\":30677},\"type\":\"pm7250b_tz\"},{\"temp\":{\"status\":\"observed\",\"value\":-78},\"type\":\"pm7250b-ibat-lvl0\"},{\"temp\":{\"status\":\"observed\",\"value\":-78},\"type\":\"pm7250b-ibat-lvl1\"},{\"temp\":{\"status\":\"observed\",\"value\":0},\"type\":\"pm7250b-bcl-lvl0\"},{\"temp\":{\"status\":\"observed\",\"value\":0},\"type\":\"pm7250b-bcl-lvl1\"},{\"temp\":{\"status\":\"observed\",\"value\":0},\"type\":\"pm7250b-bcl-lvl2\"},{\"temp\":{\"status\":\"observed\",\"value\":0},\"type\":\"socd\"},{\"temp\":{\"status\":\"observed\",\"value\":-40000},\"type\":\"conn-therm-usr\"},{\"temp\":{\"status\":\"observed\",\"value\":33532},\"type\":\"pm6125_tz\"},{\"temp\":{\"status\":\"observed\",\"value\":37000},\"type\":\"pmr735a_tz\"},{\"temp\":{\"status\":\"observed\",\"value\":33137},\"type\":\"msm_therm\"},{\"temp\":{\"status\":\"observed\",\"value\":31813},\"type\":\"chg_therm\"},{\"temp\":{\"status\":\"observed\",\"value\":32696},\"type\":\"cam_flash_therm\"},{\"temp\":{\"status\":\"observed\",\"value\":31568},\"type\":\"tspk_therm\"},{\"temp\":{\"status\":\"observed\",\"value\":31911},\"type\":\"pa_therm2\"},{\"temp\":{\"status\":\"observed\",\"value\":31323},\"type\":\"pa_therm1\"},{\"temp\":{\"status\":\"observed\",\"value\":32794},\"type\":\"quiet_therm\"},{\"temp\":{\"status\":\"observed\",\"value\":33341},\"type\":\"xo_therm\"},{\"temp\":{\"status\":\"observed\",\"value\":-40960},\"type\":\"qtm_n_therm\"},{\"temp\":{\"status\":\"observed\",\"value\":-40960},\"type\":\"qtm_e_therm\"},{\"temp\":{\"status\":\"observed\",\"value\":0},\"type\":\"soc_usr\"},{\"temp\":{\"status\":\"observed\",\"value\":4434},\"type\":\"vbat\"},{\"temp\":{\"status\":\"observed\",\"value\":29700},\"type\":\"qcom_battery\"},{\"temp\":{\"status\":\"observed\",\"value\":32430},\"type\":\"front_temp\"},{\"temp\":{\"status\":\"observed\",\"value\":32545},\"type\":\"back_temp\"},{\"temp\":{\"status\":\"observed\",\"value\":29700},\"type\":\"battery\"}]}}}],\"factsDigest\":\"sha256:311fa961d8ac174545f346f4a2ca49d5b9a921a766e06065eaac78f70613c092\",\"helperContractEpoch\":1,\"helperDigest\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"helperVersion\":\"0.11.0\",\"jobId\":\"{\\\"id\\\":\\\"174098\\\",\\\"origin\\\":{\\\"kind\\\":\\\"Acurast\\\"}}\",\"processorId\":\"5C81qALgzdeYUseGhtWPexwufYY83NcrnTazpFMcTizhuBb2\",\"profile\":\"coverage-hardware-v1\",\"runtimeInstanceId\":\"runtime-instance-174098\"}"
+}
