@@ -1,10 +1,10 @@
 [package]
 name = "liskov-runtime-cargo"
-version = "0.10.44"
+version = "0.11.0"
 edition = "2024"
 rust-version = "1.85"
 description = "Static bootstrap and process supervisor for Liskov-managed Acurast Cargo/PRoot workloads"
-license = "Apache-2.0"
+license = "FSL-1.1-Apache-2.0"
 repository = "https://github.com/proof-computer/liskov-runtime-cargo"
 readme = "README.md"
 keywords = ["liskov", "acurast", "proot", "runtime"]
