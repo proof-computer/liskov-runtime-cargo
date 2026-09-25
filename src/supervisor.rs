@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Once};
@@ -32,6 +33,7 @@ use crate::protocol::{
     RestartLimit, RuntimeAccessBootstrap, RuntimeBootstrapResponse, SupervisionMode,
     SupervisionPolicy,
 };
+use crate::thermal::{THERMAL_CLASS_ROOT, ThermalSampler, ThermalSummary};
 
 const HEALTH_CADENCE: Duration = Duration::from_secs(30);
 const MAX_INITIAL_HEALTH_JITTER: Duration = Duration::from_secs(30);
@@ -306,6 +308,7 @@ pub fn supervise_with_environment_access_and_processor_facts(
         logging.as_ref().map(LoggingController::customer),
         runtime_ssh_logs.as_ref(),
         detached_fact_tasks,
+        Path::new(THERMAL_CLASS_ROOT),
     );
     if let Some(session) = access_session.as_mut() {
         let attrs = session.binding_attrs();
@@ -448,6 +451,10 @@ impl RuntimeReporter for AsyncDiagnosticReporter {
     }
 }
 
+/// A thermal class no test host has: the thermal keys stay absent.
+#[cfg(test)]
+const NO_THERMAL_CLASS: &str = "/nonexistent/liskov-runtime-cargo-thermal";
+
 #[cfg(test)]
 fn supervise_with_reporter(
     command: &[OsString],
@@ -465,6 +472,7 @@ fn supervise_with_reporter(
         None,
         None,
         Vec::new(),
+        Path::new(NO_THERMAL_CLASS),
     )
 }
 
@@ -479,6 +487,7 @@ fn supervise_with_reporter_and_environment(
     output_logger: Option<&OutputLogger>,
     runtime_ssh_logs: Option<&RuntimeSshLogEmitter>,
     mut detached_fact_tasks: Vec<DetachedFactTask>,
+    thermal_root: &Path,
 ) -> SupervisorExit {
     if command.is_empty() {
         report(
@@ -514,6 +523,7 @@ fn supervise_with_reporter_and_environment(
     let mut process_attempt = 0_u64;
     let mut restart_count = 0_u64;
     let mut consecutive_failures = 0_u32;
+    let mut thermal = ThermalSampler::start(thermal_root);
 
     loop {
         if let Some(session) = access_session.as_deref_mut() {
@@ -617,7 +627,12 @@ fn supervise_with_reporter_and_environment(
                 }
             }
             if Instant::now() >= next_health {
-                report_health_beat(&mut reporter, process_attempt, restart_count);
+                report_health_beat(
+                    &mut reporter,
+                    process_attempt,
+                    restart_count,
+                    thermal.sample().as_ref(),
+                );
                 next_health = Instant::now() + HEALTH_CADENCE;
             }
             thread::sleep(POLL_INTERVAL);
@@ -653,14 +668,17 @@ fn supervise_with_reporter_and_environment(
                         DiagnosticStatus::Failed
                     },
                     None,
-                    json!({
-                        "processAttempt": process_attempt,
-                        "restartCount": restart_count,
-                        "exitCode": code,
-                        "uptimeMs": duration_ms(uptime),
-                        "final": true,
-                        "cleanupComplete": cleanup_complete,
-                    }),
+                    with_thermal(
+                        json!({
+                            "processAttempt": process_attempt,
+                            "restartCount": restart_count,
+                            "exitCode": code,
+                            "uptimeMs": duration_ms(uptime),
+                            "final": true,
+                            "cleanupComplete": cleanup_complete,
+                        }),
+                        thermal.sample().as_ref(),
+                    ),
                 );
                 return SupervisorExit::Code(code);
             }
@@ -670,15 +688,18 @@ fn supervise_with_reporter_and_environment(
                 "runtime.cargo.process.signaled",
                 DiagnosticStatus::Info,
                 None,
-                json!({
-                    "processAttempt": process_attempt,
-                    "restartCount": restart_count,
-                    "signal": signal,
-                    "signalSource": "supervisor_forwarded",
-                    "uptimeMs": duration_ms(uptime),
-                    "final": true,
-                    "cleanupComplete": cleanup_complete,
-                }),
+                with_thermal(
+                    json!({
+                        "processAttempt": process_attempt,
+                        "restartCount": restart_count,
+                        "signal": signal,
+                        "signalSource": "supervisor_forwarded",
+                        "uptimeMs": duration_ms(uptime),
+                        "final": true,
+                        "cleanupComplete": cleanup_complete,
+                    }),
+                    thermal.sample().as_ref(),
+                ),
             );
             return SupervisorExit::Signal(signal);
         }
@@ -690,14 +711,17 @@ fn supervise_with_reporter_and_environment(
                     "runtime.cargo.process.exited",
                     DiagnosticStatus::Succeeded,
                     None,
-                    json!({
-                        "processAttempt": process_attempt,
-                        "restartCount": restart_count,
-                        "exitCode": code,
-                        "uptimeMs": duration_ms(uptime),
-                        "final": true,
-                        "cleanupComplete": cleanup_complete,
-                    }),
+                    with_thermal(
+                        json!({
+                            "processAttempt": process_attempt,
+                            "restartCount": restart_count,
+                            "exitCode": code,
+                            "uptimeMs": duration_ms(uptime),
+                            "final": true,
+                            "cleanupComplete": cleanup_complete,
+                        }),
+                        thermal.sample().as_ref(),
+                    ),
                 );
                 return SupervisorExit::Code(code);
             }
@@ -720,6 +744,7 @@ fn supervise_with_reporter_and_environment(
                         uptime,
                         cleanup_complete,
                         false,
+                        thermal.sample().as_ref(),
                     );
                     schedule_restart(&mut reporter, failure, process_attempt, delay);
                     if let Some(signal) = sleep_interruptibly(delay) {
@@ -760,6 +785,7 @@ fn supervise_with_reporter_and_environment(
                         uptime,
                         cleanup_complete,
                         false,
+                        thermal.sample().as_ref(),
                     );
                     schedule_restart(&mut reporter, failure, process_attempt, delay);
                     if let Some(signal) = sleep_interruptibly(delay) {
@@ -832,19 +858,36 @@ fn report_health_beat(
     reporter: &mut Option<&mut dyn RuntimeReporter>,
     process_attempt: u64,
     restart_count: u64,
+    thermal: Option<&ThermalSummary>,
 ) {
     report(
         reporter,
         "runtime.health",
         DiagnosticStatus::Info,
         None,
-        json!({
-            "processAttempt": process_attempt,
-            "restartCount": restart_count,
-        }),
+        with_thermal(
+            json!({
+                "processAttempt": process_attempt,
+                "restartCount": restart_count,
+            }),
+            thermal,
+        ),
     );
 }
 
+/// Adds the thermal summary read at this instant (BKLG-20260923-opv9). When
+/// the thermal class could not be read the keys are absent, not null.
+fn with_thermal(
+    mut attrs: serde_json::Value,
+    thermal: Option<&ThermalSummary>,
+) -> serde_json::Value {
+    if let (Some(summary), Some(object)) = (thermal, attrs.as_object_mut()) {
+        summary.write_attrs(object);
+    }
+    attrs
+}
+
+#[allow(clippy::too_many_arguments)]
 fn report_attempt_failure(
     reporter: &mut Option<&mut dyn RuntimeReporter>,
     failure: FailureReason,
@@ -853,6 +896,7 @@ fn report_attempt_failure(
     uptime: Duration,
     cleanup_complete: bool,
     final_attempt: bool,
+    thermal: Option<&ThermalSummary>,
 ) {
     match failure {
         FailureReason::ExitNonzero(code) => report(
@@ -860,29 +904,35 @@ fn report_attempt_failure(
             "runtime.cargo.process.exited",
             DiagnosticStatus::Failed,
             None,
-            json!({
-                "processAttempt": process_attempt,
-                "restartCount": restart_count,
-                "exitCode": code,
-                "uptimeMs": duration_ms(uptime),
-                "final": final_attempt,
-                "cleanupComplete": cleanup_complete,
-            }),
+            with_thermal(
+                json!({
+                    "processAttempt": process_attempt,
+                    "restartCount": restart_count,
+                    "exitCode": code,
+                    "uptimeMs": duration_ms(uptime),
+                    "final": final_attempt,
+                    "cleanupComplete": cleanup_complete,
+                }),
+                thermal,
+            ),
         ),
         FailureReason::SignalUnexpected(signal) => report(
             reporter,
             "runtime.cargo.process.signaled",
             DiagnosticStatus::Failed,
             None,
-            json!({
-                "processAttempt": process_attempt,
-                "restartCount": restart_count,
-                "signal": signal,
-                "signalSource": "child_unexpected",
-                "uptimeMs": duration_ms(uptime),
-                "final": final_attempt,
-                "cleanupComplete": cleanup_complete,
-            }),
+            with_thermal(
+                json!({
+                    "processAttempt": process_attempt,
+                    "restartCount": restart_count,
+                    "signal": signal,
+                    "signalSource": "child_unexpected",
+                    "uptimeMs": duration_ms(uptime),
+                    "final": final_attempt,
+                    "cleanupComplete": cleanup_complete,
+                }),
+                thermal,
+            ),
         ),
     }
 }
@@ -1655,6 +1705,7 @@ pub(crate) mod tests {
                 None,
                 None,
                 Vec::new(),
+                Path::new(NO_THERMAL_CLASS),
             ),
             SupervisorExit::Code(0)
         );
@@ -1688,6 +1739,7 @@ pub(crate) mod tests {
                     name: "processor",
                     run: slow_task,
                 }],
+                Path::new(NO_THERMAL_CLASS),
             ),
             SupervisorExit::Code(0)
         );
@@ -1709,6 +1761,7 @@ pub(crate) mod tests {
                     name: "coverage",
                     run: panic_task,
                 }],
+                Path::new(NO_THERMAL_CLASS),
             ),
             SupervisorExit::Code(17)
         );
@@ -1754,6 +1807,7 @@ pub(crate) mod tests {
                     name: "processor",
                     run: task,
                 }],
+                Path::new(NO_THERMAL_CLASS),
             ),
             SupervisorExit::Code(0)
         );
@@ -1978,6 +2032,7 @@ pub(crate) mod tests {
                 None,
                 None,
                 Vec::new(),
+                Path::new(NO_THERMAL_CLASS),
             ),
             SupervisorExit::Code(19)
         );
@@ -2008,6 +2063,7 @@ pub(crate) mod tests {
                 None,
                 None,
                 Vec::new(),
+                Path::new(NO_THERMAL_CLASS),
             ),
             SupervisorExit::Code(0)
         );
@@ -2096,7 +2152,12 @@ pub(crate) mod tests {
     #[test]
     fn health_beat_is_exactly_one_runtime_health_diagnostic() {
         let mut recorder = RecordingReporter::default();
-        report_health_beat(&mut Some(&mut recorder as &mut dyn RuntimeReporter), 3, 2);
+        report_health_beat(
+            &mut Some(&mut recorder as &mut dyn RuntimeReporter),
+            3,
+            2,
+            None,
+        );
         assert_eq!(recorder.records.len(), 1);
         let (stage, status, code, attrs) = &recorder.records[0];
         assert_eq!(*stage, "runtime.health");
@@ -2108,6 +2169,197 @@ pub(crate) mod tests {
         assert_eq!(keys, ["processAttempt", "restartCount"]);
         assert_eq!(attrs["processAttempt"], 3);
         assert_eq!(attrs["restartCount"], 2);
+    }
+
+    fn thermal_keys(attrs: &serde_json::Value) -> BTreeMap<String, serde_json::Value> {
+        attrs
+            .as_object()
+            .unwrap()
+            .iter()
+            .filter(|(key, _)| key.starts_with("thermal"))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect()
+    }
+
+    fn assert_scalar(attrs: &serde_json::Value) {
+        for (key, value) in attrs.as_object().unwrap() {
+            assert!(
+                !value.is_object() && !value.is_array(),
+                "attr {key} is not scalar: {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn health_beat_and_exits_carry_the_same_scalar_thermal_summary() {
+        let summary = crate::thermal::tests::motorola_summary();
+        let mut recorder = RecordingReporter::default();
+        let mut reporter = Some(&mut recorder as &mut dyn RuntimeReporter);
+        report_health_beat(&mut reporter, 1, 1, Some(&summary));
+        for failure in [
+            FailureReason::ExitNonzero(9),
+            FailureReason::SignalUnexpected(libc::SIGKILL),
+        ] {
+            report_attempt_failure(
+                &mut reporter,
+                failure,
+                1,
+                1,
+                Duration::from_secs(3),
+                true,
+                false,
+                Some(&summary),
+            );
+        }
+        let stages: Vec<_> = recorder.records.iter().map(|(stage, ..)| *stage).collect();
+        assert_eq!(
+            stages,
+            [
+                "runtime.health",
+                "runtime.cargo.process.exited",
+                "runtime.cargo.process.signaled"
+            ]
+        );
+        let beat = &recorder.records[0].3;
+        let mut keys: Vec<&str> = beat
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        let mut expected = vec!["processAttempt", "restartCount"];
+        expected.extend(crate::thermal::THERMAL_SUMMARY_ATTRS);
+        expected.sort_unstable();
+        assert_eq!(keys, expected, "32 attr keys at most; these eleven fit");
+        assert_eq!(beat["thermalCpuMaxMillic"], 42600);
+        assert_eq!(beat["thermalGpuMaxMillic"], 36800);
+        assert_eq!(beat["thermalBatteryMillic"], 29700);
+        assert_eq!(beat["thermalSkinMaxMillic"], 32794);
+        assert_eq!(beat["thermalPackageMillic"], 33137);
+        assert_eq!(beat["thermalDdrMillic"], 36700);
+        assert_eq!(beat["thermalChargerMillic"], 31813);
+        assert_eq!(beat["thermalZoneCount"], 87);
+        assert_eq!(beat["thermalDeniedCount"], 0);
+        for (_, _, _, attrs) in &recorder.records {
+            assert_scalar(attrs);
+            assert_eq!(thermal_keys(attrs), thermal_keys(beat));
+        }
+    }
+
+    fn supervise_recording(
+        command: &[OsString],
+        policy: &RuntimeBootstrapResponse,
+        thermal_root: &Path,
+    ) -> (SupervisorExit, RecordingReporter) {
+        let mut recorder = RecordingReporter::default();
+        let exit = supervise_with_reporter_and_environment(
+            command,
+            policy,
+            Duration::ZERO,
+            &BTreeMap::new(),
+            Some(&mut recorder),
+            None,
+            None,
+            None,
+            Vec::new(),
+            thermal_root,
+        );
+        (exit, recorder)
+    }
+
+    #[test]
+    fn supervised_exits_read_the_thermal_class_at_that_instant() {
+        let _lock = PROCESS_TEST_LOCK.lock().unwrap();
+        let fixture = crate::thermal::tests::ThermalFixture::motorola("supervised");
+        let marker = std::env::temp_dir().join(format!(
+            "liskov-runtime-cargo-thermal-once-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&marker);
+        let policy = bootstrap(json!({
+            "mode": "on_failure",
+            "restartLimit": {"kind": "attempts", "maxRestarts": 2},
+            "serverTimeMs": 1,
+            "scheduleEndMs": 60_001,
+        }));
+        let command = vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            "if [ -f \"$1\" ]; then exit 0; else : > \"$1\"; kill -KILL $$; fi".into(),
+            "liskov-thermal-once".into(),
+            marker.as_os_str().to_owned(),
+        ];
+        let (exit, recorder) = supervise_recording(&command, &policy, &fixture.root);
+        assert_eq!(exit, SupervisorExit::Code(0));
+        std::fs::remove_file(marker).unwrap();
+        let summary = crate::thermal::tests::motorola_summary();
+        let mut expected = serde_json::Map::new();
+        summary.write_attrs(&mut expected);
+        let expected: BTreeMap<_, _> = expected.into_iter().collect();
+        let exits: Vec<_> = recorder
+            .records
+            .iter()
+            .filter(|(stage, ..)| {
+                matches!(
+                    *stage,
+                    "runtime.cargo.process.exited" | "runtime.cargo.process.signaled"
+                )
+            })
+            .collect();
+        let stages: Vec<_> = exits.iter().map(|(stage, ..)| *stage).collect();
+        assert_eq!(
+            stages,
+            [
+                "runtime.cargo.process.signaled",
+                "runtime.cargo.process.exited"
+            ]
+        );
+        for (_, _, _, attrs) in exits {
+            assert_scalar(attrs);
+            assert_eq!(thermal_keys(attrs), expected);
+        }
+    }
+
+    #[test]
+    fn without_a_thermal_class_the_customer_exit_and_attrs_are_unchanged() {
+        let _lock = PROCESS_TEST_LOCK.lock().unwrap();
+        let never = bootstrap(json!({
+            "mode": "never",
+            "serverTimeMs": 1,
+            "scheduleEndMs": 60_001,
+        }));
+        let (exit, recorder) = supervise_recording(
+            &["/bin/sh".into(), "-c".into(), "exit 0".into()],
+            &never,
+            Path::new(NO_THERMAL_CLASS),
+        );
+        assert_eq!(exit, SupervisorExit::Code(0));
+        let (stage, _, _, attrs) = recorder.records.last().unwrap();
+        assert_eq!(*stage, "runtime.cargo.process.exited");
+        assert!(thermal_keys(attrs).is_empty(), "keys absent, not null");
+    }
+
+    #[test]
+    fn a_fatal_process_diagnostic_never_carries_the_thermal_keys() {
+        // liskov-rs admits the keys on runtime.health and the two process
+        // exits only; on runtime.fatal.cargo.process they would be refused.
+        let _lock = PROCESS_TEST_LOCK.lock().unwrap();
+        let fixture = crate::thermal::tests::ThermalFixture::motorola("fatal");
+        let never = bootstrap(json!({
+            "mode": "never",
+            "serverTimeMs": 1,
+            "scheduleEndMs": 60_001,
+        }));
+        let (exit, recorder) = supervise_recording(
+            &["/bin/sh".into(), "-c".into(), "exit 7".into()],
+            &never,
+            &fixture.root,
+        );
+        assert_eq!(exit, SupervisorExit::Code(7));
+        let (stage, _, _, attrs) = recorder.records.last().unwrap();
+        assert_eq!(*stage, "runtime.fatal.cargo.process");
+        assert!(thermal_keys(attrs).is_empty());
     }
 
     #[test]

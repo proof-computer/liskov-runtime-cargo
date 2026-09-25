@@ -20,6 +20,7 @@ pub mod processor_facts;
 pub mod protocol;
 pub mod runtime_env;
 pub mod supervisor;
+pub mod thermal;
 pub mod tunnel_probe;
 
 pub use contact::{
