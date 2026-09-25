@@ -249,8 +249,9 @@ The raw helper, the two static Dropbear executables, and release-manifest v2
 are attested separately. The manifest binds the immutable tag and source commit
 to every exact digest and byte size. The archive contains the helper and its
 fixed sibling `liskov-dropbear` and `liskov-dropbearkey` executables, plus this
-README and the Apache-2.0 license. Runtime access verifies all three executable
-digests before use and never installs packages inside the customer image.
+README and the FSL-1.1-Apache-2.0 license. Runtime access verifies all three
+executable digests before use and never installs packages inside the customer
+image.
 Verify the checksums before use:
 
 ```sh
@@ -413,3 +414,10 @@ which address the prober dialled.
 The signed block, shared vector and catalog match the `liskov-rs` contract owner.
 Existing envelopes omit the optional blocks and retain their canonical bytes.
 Refs BKLG-20260914-fglr; ADR-0139.
+
+## License
+
+From v0.11.0 this repository is licensed under the Functional Source License,
+Version 1.1, with Apache-2.0 as the future licence (`FSL-1.1-Apache-2.0`): each
+version becomes available under Apache-2.0 two years after its release. Every
+release tag before v0.11.0 remains under Apache-2.0. See [`LICENSE`](LICENSE).
