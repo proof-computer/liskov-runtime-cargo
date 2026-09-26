@@ -14,6 +14,7 @@ pub mod http;
 pub mod job_secrets;
 pub mod log_config_secret;
 pub mod logging;
+pub mod memory;
 pub mod precontact;
 pub mod probe;
 pub mod processor_facts;
