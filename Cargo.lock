@@ -264,6 +264,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "fastcdc"
+version = "4.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b2613fe3f26b5958b5cd1cb2a07b58c1f3411adaa16abd6b0882279b1eb08c37"
+
+[[package]]
 name = "filetime"
 version = "0.2.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -724,6 +730,7 @@ version = "0.11.0"
 dependencies = [
  "base64",
  "clap",
+ "fastcdc",
  "flate2",
  "futures-util",
  "getrandom 0.3.4",
