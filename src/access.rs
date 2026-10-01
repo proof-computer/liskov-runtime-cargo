@@ -1,5 +1,6 @@
 //! Closed Runtime SSH provider adapter used after signed first contact.
 
+mod cloudflared;
 mod managed;
 
 #[cfg(test)]
@@ -505,6 +506,12 @@ impl Drop for DaemonGuard {
 }
 
 pub(super) fn terminate_child(child: &mut Child) -> Result<(), AccessError> {
+    terminate_child_within(child, Duration::from_secs(2))
+}
+
+/// Sends SIGTERM to the child's process group, waits up to `grace` for it to
+/// exit, then SIGKILLs the group and reaps it.
+fn terminate_child_within(child: &mut Child, grace: Duration) -> Result<(), AccessError> {
     if child
         .try_wait()
         .map_err(|_| AccessError::new("access_cleanup_failed"))?
@@ -519,7 +526,7 @@ pub(super) fn terminate_child(child: &mut Child) -> Result<(), AccessError> {
     unsafe {
         libc::kill(-process_group, libc::SIGTERM);
     }
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    let deadline = std::time::Instant::now() + grace;
     while std::time::Instant::now() < deadline {
         if child
             .try_wait()
