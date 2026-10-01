@@ -1,5 +1,6 @@
 //! Closed Runtime SSH provider adapter used after signed first contact.
 
+mod acurast_tunnel;
 mod cloudflared;
 mod managed;
 

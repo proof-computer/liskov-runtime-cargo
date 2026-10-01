@@ -147,6 +147,31 @@ impl ProbeClient {
         params: Value,
         timeout: Duration,
     ) -> Result<RawReply, ProbeError> {
+        let (response, id) = self.exchange(method, params, timeout)?;
+        parse_reply(&response, &id)
+    }
+
+    /// [`Self::call_with_timeout`] without redacting the result.
+    ///
+    /// For a caller that must read the value itself and summarizes it before
+    /// anything can reach a log: the Acurast tunnel handoff reads
+    /// `tunnel_certPem` this way. Error messages are still redacted.
+    pub fn call_unredacted_with_timeout(
+        &self,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+    ) -> Result<RawReply, ProbeError> {
+        let (response, id) = self.exchange(method, params, timeout)?;
+        parse_reply_with(&response, &id, false)
+    }
+
+    fn exchange(
+        &self,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+    ) -> Result<(Value, String), ProbeError> {
         // Decimal-uint ids: Acurast Core keys pending connections by UInt.
         let id = self.next_id.fetch_add(1, Ordering::Relaxed).to_string();
         let request = json!({
@@ -196,12 +221,20 @@ impl ProbeClient {
 
         let response: Value =
             serde_json::from_slice(&response_bytes).map_err(ProbeError::InvalidJson)?;
-        parse_reply(&response, &id)
+        Ok((response, id))
     }
 }
 
 /// Validate the JSON-RPC envelope and split it into a [`RawReply`].
 pub fn parse_reply(response: &Value, expected_id: &str) -> Result<RawReply, ProbeError> {
+    parse_reply_with(response, expected_id, true)
+}
+
+fn parse_reply_with(
+    response: &Value,
+    expected_id: &str,
+    redact_result: bool,
+) -> Result<RawReply, ProbeError> {
     if response["jsonrpc"] != json!("2.0") {
         return Err(ProbeError::JsonRpcVersion);
     }
@@ -225,7 +258,11 @@ pub fn parse_reply(response: &Value, expected_id: &str) -> Result<RawReply, Prob
     }
     match response.get("result") {
         Some(result) => Ok(RawReply {
-            result: Some(redact(result)),
+            result: Some(if redact_result {
+                redact(result)
+            } else {
+                result.clone()
+            }),
             error_code: None,
             error_message: None,
         }),
@@ -711,6 +748,21 @@ mod tests {
         let reply = parse_reply(&response, "1").unwrap();
         let text = serde_json::to_string(&reply).unwrap();
         assert!(!text.contains("MIIBkTCB"));
+    }
+
+    #[test]
+    fn the_unredacted_parse_keeps_the_result_and_still_redacts_errors() {
+        let response = json!({"jsonrpc": "2.0", "id": "1", "result": CERT_PEM});
+        let reply = parse_reply_with(&response, "1", false).unwrap();
+        assert_eq!(reply.result, Some(json!(CERT_PEM)));
+
+        let error = json!({
+            "jsonrpc": "2.0",
+            "id": "1",
+            "error": {"code": JSON_RPC_INTERNAL_ERROR, "message": PRIVATE_PEM},
+        });
+        let reply = parse_reply_with(&error, "1", false).unwrap();
+        assert!(!reply.error_message.unwrap().contains("secretbytes"));
     }
 
     #[test]
