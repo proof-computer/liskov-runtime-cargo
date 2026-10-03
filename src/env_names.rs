@@ -6,7 +6,8 @@
 //! 2026-09-02, so the signed bootstrap envelope is now read only under its
 //! `LISKOV_*` name (`BKLG-20260922-gyu8`). Its legacy spelling stays reserved
 //! and redacted, because anything that sets it carries a bearer diagnostic
-//! token. The Lockbox bootstrap reader still falls back to its legacy name.
+//! token. The job-bound Lockbox bootstrap is read only as
+//! `LISKOV_LOCKBOX_BOOTSTRAP` (`BKLG-20261002-i3m2`).
 //!
 //! `BRIDGE_SOCKET` is deliberately absent from this module. It is supplied by
 //! the Acurast Cargo runtime, it is not Liskov-owned, and it must never be
@@ -33,12 +34,8 @@ pub const RESERVED_BOOTSTRAP_ENV_NAMES: &[&str] = &[BOOTSTRAP_ENV, LEGACY_BOOTST
 /// server-owned Blackbox log configuration.
 pub const LOCKBOX_BOOTSTRAP_ENV: &str = "LISKOV_LOCKBOX_BOOTSTRAP";
 
-/// Migration bridge for [`LOCKBOX_BOOTSTRAP_ENV`].
-pub const LEGACY_LOCKBOX_BOOTSTRAP_ENV: &str = "PROOF_LOCKBOX_BOOTSTRAP";
-
-/// Reader preference order for the job-bound Lockbox bootstrap metadata.
-pub const LOCKBOX_BOOTSTRAP_ENV_NAMES: &[&str] =
-    &[LOCKBOX_BOOTSTRAP_ENV, LEGACY_LOCKBOX_BOOTSTRAP_ENV];
+/// The names the job-bound Lockbox bootstrap metadata is read from, in order.
+pub const LOCKBOX_BOOTSTRAP_ENV_NAMES: &[&str] = &[LOCKBOX_BOOTSTRAP_ENV];
 
 /// Internal fail-closed supervision canary control. Not a customer-authored
 /// policy surface.
@@ -133,13 +130,13 @@ mod tests {
     }
 
     #[test]
-    fn lockbox_reader_prefers_the_liskov_name_and_falls_back_to_the_legacy_one() {
+    fn lockbox_reader_reads_only_the_liskov_name() {
         assert_eq!(
             first_present(
                 LOCKBOX_BOOTSTRAP_ENV_NAMES,
                 lookup(&[
                     (LOCKBOX_BOOTSTRAP_ENV, "new"),
-                    (LEGACY_LOCKBOX_BOOTSTRAP_ENV, "old"),
+                    ("PROOF_LOCKBOX_BOOTSTRAP", "old"),
                 ])
             ),
             Some("new".to_owned())
@@ -147,9 +144,16 @@ mod tests {
         assert_eq!(
             first_present(
                 LOCKBOX_BOOTSTRAP_ENV_NAMES,
-                lookup(&[(LEGACY_LOCKBOX_BOOTSTRAP_ENV, "old")])
+                lookup(&[("PROOF_LOCKBOX_BOOTSTRAP", "old")])
             ),
-            Some("old".to_owned())
+            None
+        );
+        assert_eq!(
+            first_present(
+                LOCKBOX_BOOTSTRAP_ENV_NAMES,
+                lookup(&[(LOCKBOX_BOOTSTRAP_ENV, "new")])
+            ),
+            Some("new".to_owned())
         );
     }
 
@@ -174,7 +178,7 @@ mod tests {
     }
 
     #[test]
-    fn neither_lockbox_spelling_is_reserved() {
+    fn the_lockbox_bootstrap_name_is_not_reserved() {
         // Reserving these would sever the signed runtime-environment delivery
         // channel `hydrate_blackbox_log_config` reads, and would hide the
         // metadata from customer workloads that legitimately see it today.
