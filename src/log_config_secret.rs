@@ -31,6 +31,11 @@ const REQUEST_DOMAIN_V2: &str = "proof.lockbox.job-secret-request.v2";
 const RESPONSE_DOMAIN_V2: &str = "proof.lockbox.job-secret-response.v2";
 const ENCRYPTED_PAYLOAD_DOMAIN_V2: &str = "proof.lockbox.job-secret-response.encrypted-payload.v2";
 const RESPONSE_AAD_DOMAIN_V2: &str = "proof.lockbox.job-secret-response.aad.v2";
+/// The secp256k1 generator point. Encrypting to it once is how the JavaScript
+/// SDK materialises a lazily created secp256k1 encryption key (`3i2d`); the
+/// result is discarded.
+const SECP256K1_PRIMING_PUBLIC_KEY: &str =
+    "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
 const REQUEST_TTL_MS: u64 = 60_000;
 const MAX_CONFIG_BYTES: usize = 64 * 1024;
 
@@ -91,6 +96,33 @@ impl LogConfigSecretError {
             Self::ResponseBinding => "response_binding",
             Self::Decryption(_) => "decryption",
             Self::InvalidPlaintext => "invalid_plaintext",
+        }
+    }
+}
+
+/// The processor encryption key tier the response is encrypted to. The issuer
+/// infers it from the acknowledgement, so it travels beside the signed request,
+/// never inside it (ADR-0172).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResponseCurve {
+    P256,
+    Secp256k1,
+}
+
+impl ResponseCurve {
+    fn bridge_curve(self) -> &'static str {
+        match self {
+            Self::P256 => "p256",
+            Self::Secp256k1 => "secp256k1",
+        }
+    }
+
+    /// The only `(version, curveName)` envelope accepted for a request that
+    /// sent a key of this curve.
+    fn envelope(self) -> (&'static str, &'static str) {
+        match self {
+            Self::P256 => ("acurast-p256-hkdf-aes-256-gcm-v2", "secp256r1"),
+            Self::Secp256k1 => ("acurast-secp256k1-hkdf-aes-256-gcm-v1", "secp256k1"),
         }
     }
 }
@@ -236,11 +268,12 @@ pub(crate) fn discover_lockbox_bootstrap_with(
     nonce: [u8; 16],
 ) -> Result<Option<String>, LogConfigSecretError> {
     let endpoint = secure_join(secrets_url, "/api/jobs/secret-bootstrap")?;
+    let (response_encryption_key, _) = encryption_public_key(bridge)?;
     let unsigned = UnsignedSecretBootstrapRequest {
         domain: SECRET_BOOTSTRAP_REQUEST_DOMAIN_V2,
         job_id: bootstrap.job_id.clone(),
         processor_id: bootstrap.processor_id.clone(),
-        response_encryption_key: encryption_public_key(bridge)?,
+        response_encryption_key,
         nonce: hex::encode(nonce),
         issued_at_ms: now_ms,
         expires_at_ms: now_ms
@@ -366,7 +399,7 @@ pub(crate) fn load_job_secret_payload_with(
         return Err(LogConfigSecretError::InvalidBootstrap);
     }
     let endpoint = secure_endpoint(&config.u)?;
-    let response_encryption_key = encryption_public_key(bridge)?;
+    let (response_encryption_key, response_curve) = encryption_public_key(bridge)?;
     let unsigned = UnsignedRequest {
         domain: REQUEST_DOMAIN_V2,
         application_uid: bootstrap.application_uid.clone(),
@@ -402,7 +435,7 @@ pub(crate) fn load_job_secret_payload_with(
     if !(200..300).contains(&response.status) {
         return Err(LogConfigSecretError::Rejected);
     }
-    decrypt_job_secret_payload(&unsigned, bridge, &response.body)
+    decrypt_job_secret_payload(&unsigned, response_curve, bridge, &response.body)
 }
 
 fn secure_endpoint(raw: &str) -> Result<url::Url, LogConfigSecretError> {
@@ -424,16 +457,56 @@ fn secure_join(raw: &str, path: &str) -> Result<url::Url, LogConfigSecretError> 
         .map_err(|_| LogConfigSecretError::InvalidBootstrap)
 }
 
-fn encryption_public_key(bridge: &dyn Bridge) -> Result<String, LogConfigSecretError> {
-    let result = bridge
-        .call("deployment_encryptionKeys", json!([]))
-        .map_err(LogConfigSecretError::EncryptionKey)?;
-    result
-        .get("encryptionKeys")
-        .and_then(|keys| keys.get("p256"))
-        .and_then(Value::as_str)
-        .and_then(normalize_p256_key)
+/// The response key and its curve, in the SDK's tier order: any p256 key
+/// first, secp256k1 only when no p256 key is exposed. The issuer binds the
+/// request key to the acknowledgement's selected key, so preferring secp256k1
+/// while a p256 key exists would be answered `response_key_mismatch`.
+fn encryption_public_key(
+    bridge: &dyn Bridge,
+) -> Result<(String, ResponseCurve), LogConfigSecretError> {
+    if let Some(selected) = select_encryption_key(&deployment_encryption_keys(bridge)?)? {
+        return Ok(selected);
+    }
+    // A secp256k1 key may be materialised only by its first use; prime it the
+    // way the JavaScript SDK does, best-effort, and read once more.
+    let _ = bridge.call(
+        "signer_encrypt",
+        json!([{
+            "curve": "secp256k1",
+            "publicKey": SECP256K1_PRIMING_PUBLIC_KEY,
+            "salt": "00",
+            "bytes": "00",
+        }]),
+    );
+    select_encryption_key(&deployment_encryption_keys(bridge)?)?
         .ok_or(LogConfigSecretError::InvalidEncryptionKey)
+}
+
+fn deployment_encryption_keys(bridge: &dyn Bridge) -> Result<Value, LogConfigSecretError> {
+    bridge
+        .call("deployment_encryptionKeys", json!([]))
+        .map_err(LogConfigSecretError::EncryptionKey)
+}
+
+/// `None` only when neither key is exposed. An exposed key that is not a
+/// public key is an error, never a reason to fall through to the next tier.
+fn select_encryption_key(
+    result: &Value,
+) -> Result<Option<(String, ResponseCurve)>, LogConfigSecretError> {
+    let keys = result.get("encryptionKeys");
+    for curve in [ResponseCurve::P256, ResponseCurve::Secp256k1] {
+        match keys.and_then(|keys| keys.get(curve.bridge_curve())) {
+            None | Some(Value::Null) => continue,
+            Some(value) => {
+                return value
+                    .as_str()
+                    .and_then(normalize_public_key)
+                    .map(|key| Some((key, curve)))
+                    .ok_or(LogConfigSecretError::InvalidEncryptionKey);
+            }
+        }
+    }
+    Ok(None)
 }
 
 fn sign(bridge: &dyn Bridge, message: &[u8]) -> Result<String, LogConfigSecretError> {
@@ -456,6 +529,7 @@ fn sign(bridge: &dyn Bridge, message: &[u8]) -> Result<String, LogConfigSecretEr
 
 fn decrypt_job_secret_payload(
     request: &UnsignedRequest,
+    curve: ResponseCurve,
     bridge: &dyn Bridge,
     body: &[u8],
 ) -> Result<Value, LogConfigSecretError> {
@@ -486,10 +560,10 @@ fn decrypt_job_secret_payload(
     let encrypted = response["encryptedPayload"]
         .as_object()
         .ok_or(LogConfigSecretError::InvalidResponse)?;
+    let (version, curve_name) = curve.envelope();
     if encrypted.get("domain").and_then(Value::as_str) != Some(ENCRYPTED_PAYLOAD_DOMAIN_V2)
-        || encrypted.get("version").and_then(Value::as_str)
-            != Some("acurast-p256-hkdf-aes-256-gcm-v2")
-        || encrypted.get("curveName").and_then(Value::as_str) != Some("secp256r1")
+        || encrypted.get("version").and_then(Value::as_str) != Some(version)
+        || encrypted.get("curveName").and_then(Value::as_str) != Some(curve_name)
     {
         return Err(LogConfigSecretError::InvalidResponse);
     }
@@ -527,7 +601,7 @@ fn decrypt_job_secret_payload(
         .call(
             "signer_decrypt",
             json!([{
-                "curve": "p256",
+                "curve": curve.bridge_curve(),
                 "publicKey": sender_public_key,
                 "salt": salt_hex,
                 "bytes": ciphertext_hex,
@@ -632,7 +706,8 @@ fn normalize_policy_digest(value: &str) -> Option<String> {
     (value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())).then_some(value)
 }
 
-fn normalize_p256_key(value: &str) -> Option<String> {
+/// A compressed or uncompressed SEC1 public key, on either curve.
+fn normalize_public_key(value: &str) -> Option<String> {
     let value = value
         .trim()
         .strip_prefix("0x")
@@ -692,48 +767,89 @@ mod tests {
     const APP_UID: &str = "app-0123456789abcdef0123456789abcdef";
     const POLICY_DIGEST: &str = "1111111111111111111111111111111111111111111111111111111111111111";
     const P256_KEY: &str = "02abababababababababababababababababababababababababababababababab";
+    // liskov-rs `crates/slipway-crypto/vectors/grant_k1.json` at bad80efb195c,
+    // copied so the k1 values reaching `signer_decrypt` are realistic.
+    const K1_RECIPIENT_KEY: &str =
+        "023c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1";
+    const K1_SENDER_KEY: &str =
+        "032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991";
+    const K1_SALT: &str = "00000000000000000000000000000000";
+    const K1_CIPHERTEXT: &str = "000102030405060708090a0bf45b672a768eef124229082e7704ab0be7b669d3f0f1ad7511f0dbb0783bb9cf05cb72dfe50688739c7cf6";
+    const P256_ENVELOPE: Envelope = Envelope {
+        domain: ENCRYPTED_PAYLOAD_DOMAIN_V2,
+        version: "acurast-p256-hkdf-aes-256-gcm-v2",
+        curve_name: "secp256r1",
+        sender_public_key: P256_KEY,
+        salt_hex: "2222222222222222222222222222222222222222222222222222222222222222",
+        ciphertext_hex: "3333333333333333333333333333333333333333333333333333333333333333",
+    };
+    const K1_ENVELOPE: Envelope = Envelope {
+        domain: ENCRYPTED_PAYLOAD_DOMAIN_V2,
+        version: "acurast-secp256k1-hkdf-aes-256-gcm-v1",
+        curve_name: "secp256k1",
+        sender_public_key: K1_SENDER_KEY,
+        salt_hex: K1_SALT,
+        ciphertext_hex: K1_CIPHERTEXT,
+    };
+
+    struct Envelope {
+        domain: &'static str,
+        version: &'static str,
+        curve_name: &'static str,
+        sender_public_key: &'static str,
+        salt_hex: &'static str,
+        ciphertext_hex: &'static str,
+    }
 
     struct FakeBridge {
-        replies: Mutex<VecDeque<Value>>,
+        replies: Mutex<VecDeque<Result<Value, BridgeError>>>,
         calls: Mutex<Vec<(String, Value)>>,
     }
 
     impl FakeBridge {
         fn new(plaintext: &[u8]) -> Self {
+            Self::with_keys(json!({"p256": P256_KEY}), plaintext)
+        }
+
+        fn with_keys(keys: Value, plaintext: &[u8]) -> Self {
+            Self::replying([
+                Ok(json!({"encryptionKeys": keys})),
+                Ok(json!({"bytes": "11".repeat(64)})),
+                Ok(json!({"bytes": hex::encode(plaintext)})),
+            ])
+        }
+
+        fn for_discovery(plaintext: &[u8]) -> Self {
+            Self::discovering(json!({"p256": P256_KEY}), plaintext)
+        }
+
+        fn discovering(keys: Value, plaintext: &[u8]) -> Self {
+            Self::replying([
+                Ok(json!({"encryptionKeys": keys.clone()})),
+                Ok(json!({"bytes": "11".repeat(64)})),
+                Ok(json!({"encryptionKeys": keys})),
+                Ok(json!({"bytes": "22".repeat(64)})),
+                Ok(json!({"bytes": hex::encode(plaintext)})),
+            ])
+        }
+
+        fn replying<const N: usize>(replies: [Result<Value, BridgeError>; N]) -> Self {
             Self {
-                replies: Mutex::new(
-                    [
-                        json!({"encryptionKeys": {"p256": P256_KEY}}),
-                        json!({"bytes": "11".repeat(64)}),
-                        json!({"bytes": hex::encode(plaintext)}),
-                    ]
-                    .into(),
-                ),
+                replies: Mutex::new(replies.into()),
                 calls: Mutex::new(Vec::new()),
             }
         }
 
-        fn for_discovery(plaintext: &[u8]) -> Self {
-            Self {
-                replies: Mutex::new(
-                    [
-                        json!({"encryptionKeys": {"p256": P256_KEY}}),
-                        json!({"bytes": "11".repeat(64)}),
-                        json!({"encryptionKeys": {"p256": P256_KEY}}),
-                        json!({"bytes": "22".repeat(64)}),
-                        json!({"bytes": hex::encode(plaintext)}),
-                    ]
-                    .into(),
-                ),
-                calls: Mutex::new(Vec::new()),
-            }
+        fn methods(&self) -> Vec<String> {
+            let calls = self.calls.lock().unwrap();
+            calls.iter().map(|(method, _)| method.clone()).collect()
         }
     }
 
     impl Bridge for FakeBridge {
         fn call(&self, method: &str, params: Value) -> Result<Value, BridgeError> {
             self.calls.lock().unwrap().push((method.to_owned(), params));
-            Ok(self.replies.lock().unwrap().pop_front().unwrap())
+            self.replies.lock().unwrap().pop_front().unwrap()
         }
     }
 
@@ -823,21 +939,10 @@ mod tests {
     }
 
     fn response_body(plaintext: &[u8]) -> Vec<u8> {
-        let request = UnsignedRequest {
-            domain: REQUEST_DOMAIN_V2,
-            application_uid: APP_UID.to_owned(),
-            application_id: "app-1".to_owned(),
-            grant_id: "grant-1".to_owned(),
-            policy_digest: POLICY_DIGEST.to_owned(),
-            job_id: "job-1".to_owned(),
-            deployment_id: "dep-1".to_owned(),
-            processor_id: "processor-1".to_owned(),
-            requested_secret_ids: vec![BLACKBOX_LOG_CONFIG_SECRET_ID.to_owned()],
-            nonce: "07".repeat(16),
-            issued_at_ms: 1_000,
-            expires_at_ms: 61_000,
-            response_encryption_key: P256_KEY.to_owned(),
-        };
+        response_body_with(plaintext, &P256_ENVELOPE)
+    }
+
+    fn response_body_with(plaintext: &[u8], envelope: &Envelope) -> Vec<u8> {
         let aad = json!({
             "domain": RESPONSE_AAD_DOMAIN_V2,
             "requestId": "request-1",
@@ -850,18 +955,17 @@ mod tests {
             "processorId": "processor-1",
         });
         let mut encrypted = json!({
-            "domain": ENCRYPTED_PAYLOAD_DOMAIN_V2,
-            "version": "acurast-p256-hkdf-aes-256-gcm-v2",
-            "curveName": "secp256r1",
-            "senderPublicKey": P256_KEY,
-            "saltHex": "22".repeat(32),
-            "ciphertextHex": "33".repeat(32),
+            "domain": envelope.domain,
+            "version": envelope.version,
+            "curveName": envelope.curve_name,
+            "senderPublicKey": envelope.sender_public_key,
+            "saltHex": envelope.salt_hex,
+            "ciphertextHex": envelope.ciphertext_hex,
             "plaintextDigest": sha256_prefixed(plaintext),
             "aadDigest": sha256_prefixed(&canonical_json_bytes(&aad)),
         });
         let digest = sha256_prefixed(&canonical_json_bytes(&encrypted));
         encrypted["encryptedPayloadDigest"] = json!(digest);
-        let _ = request;
         serde_json::to_vec(&json!({
             "ok": true,
             "domain": RESPONSE_DOMAIN_V2,
@@ -1021,6 +1125,249 @@ mod tests {
         assert_eq!(bridge_calls[2].0, "deployment_encryptionKeys");
         assert_eq!(bridge_calls[3].0, "signer_sign");
         assert_eq!(bridge_calls[4].0, "signer_decrypt");
+    }
+
+    fn load_with(
+        bridge: &FakeBridge,
+        http: &FakeHttp,
+    ) -> Result<Option<String>, LogConfigSecretError> {
+        load_blackbox_log_config_with(
+            &bootstrap(true),
+            bridge,
+            http,
+            &compact_bootstrap(),
+            1_000,
+            [7; 16],
+        )
+    }
+
+    fn sent_response_key(http: &FakeHttp, index: usize) -> Value {
+        let http_calls = http.calls.lock().unwrap();
+        let request: Value = serde_json::from_slice(&http_calls[index].1).unwrap();
+        request["responseEncryptionKey"].clone()
+    }
+
+    #[test]
+    fn a_secp256k1_only_processor_requests_and_decrypts_on_secp256k1() {
+        let config = "k1-blackbox-config";
+        let plaintext = plaintext(config);
+        let bridge = FakeBridge::with_keys(json!({"secp256k1": K1_RECIPIENT_KEY}), &plaintext);
+        let http = FakeHttp::single(HttpResponse {
+            status: 200,
+            body: response_body_with(&plaintext, &K1_ENVELOPE),
+        });
+
+        let loaded = load_with(&bridge, &http).unwrap();
+
+        assert_eq!(loaded.as_deref(), Some(config));
+        assert_eq!(sent_response_key(&http, 0), K1_RECIPIENT_KEY);
+        assert_eq!(
+            bridge.methods(),
+            ["deployment_encryptionKeys", "signer_sign", "signer_decrypt"]
+        );
+        let calls = bridge.calls.lock().unwrap();
+        assert_eq!(
+            calls[2].1,
+            json!([{
+                "curve": "secp256k1",
+                "publicKey": K1_SENDER_KEY,
+                "salt": K1_SALT,
+                "bytes": K1_CIPHERTEXT,
+            }])
+        );
+    }
+
+    #[test]
+    fn a_secp256k1_only_processor_discovers_its_grant_with_the_secp256k1_key() {
+        let plaintext = plaintext("config");
+        let bridge = FakeBridge::discovering(json!({"secp256k1": K1_RECIPIENT_KEY}), &plaintext);
+        let http = FakeHttp::single(HttpResponse {
+            status: 200,
+            body: serde_json::to_vec(&json!({
+                "ok": true,
+                "domain": SECRET_BOOTSTRAP_RESPONSE_DOMAIN_V2,
+                "lockboxUrl": "https://lockbox.example",
+                "applicationUid": APP_UID,
+                "applicationId": "app-1",
+                "grantId": "grant-1",
+                "policyDigest": POLICY_DIGEST,
+                "deploymentId": "dep-1",
+                "jobId": "job-1",
+                "processorId": "processor-1",
+                "requestedSecretIds": [BLACKBOX_LOG_CONFIG_SECRET_ID],
+            }))
+            .unwrap(),
+        });
+
+        discover_lockbox_bootstrap_with(
+            &bootstrap(true),
+            &bridge,
+            &http,
+            DEFAULT_SECRETS_URL,
+            1_000,
+            [6; 16],
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(sent_response_key(&http, 0), K1_RECIPIENT_KEY);
+        assert_eq!(
+            bridge.methods(),
+            ["deployment_encryptionKeys", "signer_sign"]
+        );
+    }
+
+    #[test]
+    fn a_processor_exposing_both_keys_is_served_on_p256() {
+        let plaintext = plaintext("config");
+        let bridge = FakeBridge::with_keys(
+            json!({"p256": P256_KEY, "secp256k1": K1_RECIPIENT_KEY}),
+            &plaintext,
+        );
+        let http = FakeHttp::single(HttpResponse {
+            status: 200,
+            body: response_body(&plaintext),
+        });
+
+        assert_eq!(
+            load_with(&bridge, &http).unwrap().as_deref(),
+            Some("config")
+        );
+        assert_eq!(sent_response_key(&http, 0), P256_KEY);
+        assert_eq!(
+            bridge.methods(),
+            ["deployment_encryptionKeys", "signer_sign", "signer_decrypt"]
+        );
+        assert_eq!(bridge.calls.lock().unwrap()[2].1[0]["curve"], "p256");
+    }
+
+    fn priming_call() -> Value {
+        json!([{
+            "curve": "secp256k1",
+            "publicKey": SECP256K1_PRIMING_PUBLIC_KEY,
+            "salt": "00",
+            "bytes": "00",
+        }])
+    }
+
+    #[test]
+    fn a_processor_exposing_neither_key_is_primed_once_then_refused_before_http() {
+        let bridge = FakeBridge::replying([
+            Ok(json!({"encryptionKeys": {}})),
+            Ok(json!({"bytes": "00"})),
+            Ok(json!({"encryptionKeys": {}})),
+        ]);
+        let http = FakeHttp {
+            responses: Mutex::new(VecDeque::new()),
+            calls: Mutex::new(Vec::new()),
+        };
+
+        assert!(matches!(
+            load_with(&bridge, &http),
+            Err(LogConfigSecretError::InvalidEncryptionKey)
+        ));
+        assert_eq!(
+            bridge.methods(),
+            [
+                "deployment_encryptionKeys",
+                "signer_encrypt",
+                "deployment_encryptionKeys"
+            ]
+        );
+        assert_eq!(bridge.calls.lock().unwrap()[1].1, priming_call());
+        assert!(http.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_secp256k1_key_materialised_by_priming_is_used_even_when_priming_errors() {
+        let plaintext = plaintext("config");
+        let bridge = FakeBridge::replying([
+            Ok(json!({"encryptionKeys": {}})),
+            Err(BridgeError::InvalidSocketName),
+            Ok(json!({"encryptionKeys": {"secp256k1": K1_RECIPIENT_KEY}})),
+            Ok(json!({"bytes": "11".repeat(64)})),
+            Ok(json!({"bytes": hex::encode(&plaintext)})),
+        ]);
+        let http = FakeHttp::single(HttpResponse {
+            status: 200,
+            body: response_body_with(&plaintext, &K1_ENVELOPE),
+        });
+
+        assert_eq!(
+            load_with(&bridge, &http).unwrap().as_deref(),
+            Some("config")
+        );
+        assert_eq!(sent_response_key(&http, 0), K1_RECIPIENT_KEY);
+        assert_eq!(
+            bridge.methods(),
+            [
+                "deployment_encryptionKeys",
+                "signer_encrypt",
+                "deployment_encryptionKeys",
+                "signer_sign",
+                "signer_decrypt"
+            ]
+        );
+        let calls = bridge.calls.lock().unwrap();
+        assert_eq!(calls[1].1, priming_call());
+        assert_eq!(calls[4].1[0]["curve"], "secp256k1");
+    }
+
+    #[test]
+    fn an_envelope_that_does_not_match_the_sent_key_is_an_invalid_response() {
+        let k1_on_v1_domain = Envelope {
+            domain: "proof.lockbox.job-secret-response.encrypted-payload.v1",
+            ..K1_ENVELOPE
+        };
+        let k1_id_on_secp256r1 = Envelope {
+            curve_name: "secp256r1",
+            ..K1_ENVELOPE
+        };
+        let p256_id_on_secp256k1 = Envelope {
+            curve_name: "secp256k1",
+            ..P256_ENVELOPE
+        };
+        let p256_keys = json!({"p256": P256_KEY});
+        let k1_keys = json!({"secp256k1": K1_RECIPIENT_KEY});
+        for (name, keys, envelope) in [
+            ("p256 request, k1 envelope", &p256_keys, &K1_ENVELOPE),
+            (
+                "p256 request, p256 id on secp256k1",
+                &p256_keys,
+                &p256_id_on_secp256k1,
+            ),
+            ("k1 request, p256-v2 envelope", &k1_keys, &P256_ENVELOPE),
+            (
+                "k1 request, k1 id on secp256r1",
+                &k1_keys,
+                &k1_id_on_secp256r1,
+            ),
+            (
+                "k1 request, k1 envelope on v1 domain",
+                &k1_keys,
+                &k1_on_v1_domain,
+            ),
+        ] {
+            let plaintext = plaintext("config");
+            let bridge = FakeBridge::with_keys(keys.clone(), &plaintext);
+            let http = FakeHttp::single(HttpResponse {
+                status: 200,
+                body: response_body_with(&plaintext, envelope),
+            });
+
+            assert!(
+                matches!(
+                    load_with(&bridge, &http),
+                    Err(LogConfigSecretError::InvalidResponse)
+                ),
+                "{name}"
+            );
+            assert_eq!(
+                bridge.methods(),
+                ["deployment_encryptionKeys", "signer_sign"],
+                "{name}"
+            );
+        }
     }
 
     #[test]
