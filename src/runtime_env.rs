@@ -484,8 +484,8 @@ mod tests {
             );
         }
 
-        // The Lockbox bootstrap names are deliberately deliverable through this
-        // channel under both spellings; reserving them would sever it.
+        // The Lockbox bootstrap name is deliberately deliverable through this
+        // channel; reserving it would sever it.
         for name in crate::env_names::LOCKBOX_BOOTSTRAP_ENV_NAMES {
             let deliverable = FakeHttp::new(response(json!({ *name: "metadata" })));
             let values = load_runtime_environment_with(

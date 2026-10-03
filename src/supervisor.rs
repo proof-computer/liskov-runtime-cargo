@@ -1620,7 +1620,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn keeps_the_lockbox_bootstrap_metadata_visible_under_both_spellings() {
+    fn keeps_the_lockbox_bootstrap_metadata_visible() {
         // Metadata, never a secret, and customer workloads read it today.
         for name in crate::env_names::LOCKBOX_BOOTSTRAP_ENV_NAMES {
             let environment =

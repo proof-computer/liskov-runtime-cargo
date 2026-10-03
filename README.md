@@ -89,8 +89,8 @@ process value. When neither contains the config, the supervisor uses the
 signed `/api/jobs/secret-bootstrap` protocol to discover the exact job grant,
 then requests only `blackbox-log-config` and decrypts its response through the
 Acurast bridge. The transitional job-bound Lockbox bootstrap value is still
-accepted when present, read from `LISKOV_LOCKBOX_BOOTSTRAP` and falling back to
-the legacy `PROOF_LOCKBOX_BOOTSTRAP` name. Both paths verify the response,
+accepted when present, read only from `LISKOV_LOCKBOX_BOOTSTRAP`. Both paths
+verify the response,
 encrypted-payload, AAD, plaintext, and secret bindings before installing the
 value in memory. This narrow lookup
 lets the controller start before Runtime SSH without making the supervisor the

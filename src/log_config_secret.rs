@@ -243,9 +243,8 @@ pub fn hydrate_blackbox_log_config(
 /// The job-bound Lockbox bootstrap metadata, if any is already ambient.
 ///
 /// Channel order is unchanged and load-bearing: a signed runtime-environment
-/// value outranks an inherited process value, as the README documents. Within
-/// each channel the `LISKOV_*` name is preferred and the legacy
-/// `PROOF_LOCKBOX_BOOTSTRAP` is the migration bridge (`BKLG-20260829-m8kd`).
+/// value outranks an inherited process value, as the README documents. Only
+/// `LISKOV_LOCKBOX_BOOTSTRAP` is read.
 fn ambient_lockbox_bootstrap<F>(
     runtime_environment: &BTreeMap<String, String>,
     process_env: F,
@@ -761,7 +760,7 @@ mod tests {
     use std::sync::Mutex;
 
     use super::*;
-    use crate::env_names::{LEGACY_LOCKBOX_BOOTSTRAP_ENV, LOCKBOX_BOOTSTRAP_ENV};
+    use crate::env_names::LOCKBOX_BOOTSTRAP_ENV;
     use crate::http::HttpResponse;
 
     const APP_UID: &str = "app-0123456789abcdef0123456789abcdef";
@@ -1375,7 +1374,7 @@ mod tests {
         let plaintext = plaintext("config");
         let bridge = FakeBridge::new(&plaintext);
         let mut environment =
-            BTreeMap::from([(LEGACY_LOCKBOX_BOOTSTRAP_ENV.to_owned(), compact_bootstrap())]);
+            BTreeMap::from([(LOCKBOX_BOOTSTRAP_ENV.to_owned(), compact_bootstrap())]);
         hydrate_blackbox_log_config(&bootstrap(false), &bridge, &mut environment).unwrap();
         assert!(bridge.calls.lock().unwrap().is_empty());
 
@@ -1466,52 +1465,59 @@ mod tests {
 
     #[test]
     fn the_signed_runtime_environment_outranks_the_inherited_process_value() {
-        let environment = BTreeMap::from([(
-            LEGACY_LOCKBOX_BOOTSTRAP_ENV.to_owned(),
-            "signed-legacy".to_owned(),
-        )]);
+        let environment = BTreeMap::from([(LOCKBOX_BOOTSTRAP_ENV.to_owned(), "signed".to_owned())]);
         assert_eq!(
             ambient_lockbox_bootstrap(
                 &environment,
-                process_env(&[(LOCKBOX_BOOTSTRAP_ENV, "process-new")])
+                process_env(&[(LOCKBOX_BOOTSTRAP_ENV, "process")])
             ),
-            Some("signed-legacy".to_owned())
+            Some("signed".to_owned())
         );
     }
 
     #[test]
-    fn the_liskov_lockbox_name_is_preferred_within_each_channel() {
+    fn the_legacy_lockbox_literal_does_not_replace_the_liskov_name() {
         let environment = BTreeMap::from([
-            (LOCKBOX_BOOTSTRAP_ENV.to_owned(), "signed-new".to_owned()),
+            (LOCKBOX_BOOTSTRAP_ENV.to_owned(), "signed".to_owned()),
             (
-                LEGACY_LOCKBOX_BOOTSTRAP_ENV.to_owned(),
+                "PROOF_LOCKBOX_BOOTSTRAP".to_owned(),
                 "signed-legacy".to_owned(),
             ),
         ]);
         assert_eq!(
             ambient_lockbox_bootstrap(&environment, process_env(&[])),
-            Some("signed-new".to_owned())
+            Some("signed".to_owned())
         );
         assert_eq!(
             ambient_lockbox_bootstrap(
                 &BTreeMap::new(),
                 process_env(&[
-                    (LOCKBOX_BOOTSTRAP_ENV, "process-new"),
-                    (LEGACY_LOCKBOX_BOOTSTRAP_ENV, "process-legacy"),
+                    (LOCKBOX_BOOTSTRAP_ENV, "process"),
+                    ("PROOF_LOCKBOX_BOOTSTRAP", "process-legacy"),
                 ])
             ),
-            Some("process-new".to_owned())
+            Some("process".to_owned())
         );
     }
 
     #[test]
-    fn the_legacy_lockbox_name_still_resolves_on_its_own() {
+    fn the_legacy_lockbox_name_is_ignored_in_both_channels() {
+        assert_eq!(
+            ambient_lockbox_bootstrap(
+                &BTreeMap::from([(
+                    "PROOF_LOCKBOX_BOOTSTRAP".to_owned(),
+                    "signed-legacy".to_owned(),
+                )]),
+                process_env(&[])
+            ),
+            None
+        );
         assert_eq!(
             ambient_lockbox_bootstrap(
                 &BTreeMap::new(),
-                process_env(&[(LEGACY_LOCKBOX_BOOTSTRAP_ENV, "process-legacy")])
+                process_env(&[("PROOF_LOCKBOX_BOOTSTRAP", "process-legacy")])
             ),
-            Some("process-legacy".to_owned())
+            None
         );
         assert_eq!(
             ambient_lockbox_bootstrap(&BTreeMap::new(), process_env(&[])),
