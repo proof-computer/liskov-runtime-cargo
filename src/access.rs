@@ -294,6 +294,7 @@ pub enum SidecarEvent {
 }
 
 pub struct TailscaleAccessSession {
+    peer_proxy: Option<String>,
     daemon: DaemonProcess,
     root: PathBuf,
     pub attachment_id: String,
@@ -1183,6 +1184,18 @@ fn setup_in_root(
     })?;
     let daemon_deadline = subprocess_deadline(deadline, DAEMON_SOCKET_TIMEOUT)
         .map_err(stage_error("access_deadline_exceeded"))?;
+    let proxy_address = if access.publications.is_empty() {
+        None
+    } else {
+        let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .map_err(|_| AccessError::new("access_sidecar_spawn_failed"))?;
+        Some(
+            listener
+                .local_addr()
+                .map_err(|_| AccessError::new("access_sidecar_spawn_failed"))?
+                .to_string(),
+        )
+    };
     let mut daemon = DaemonGuard(Some(timed_stage(stage_logger, "daemon_spawn", || {
         spawn_daemon(
             &tailscaled_path,
@@ -1191,6 +1204,7 @@ fn setup_in_root(
             access.launch_profile,
             provider_logger,
             auth_key,
+            proxy_address.as_deref(),
         )
     })?));
     // Every exit from this loop is reported, including the ones that never
@@ -1483,6 +1497,7 @@ fn setup_in_root(
     }
     daemon.disable_startup_capture();
     Ok(TailscaleAccessSession {
+        peer_proxy: proxy_address.map(|address| format!("socks5h://{address}")),
         daemon: daemon.take(),
         root: root.to_path_buf(),
         attachment_id: access.attachment_id.clone(),
@@ -1651,9 +1666,15 @@ fn spawn_daemon(
     launch_profile: Option<RuntimeAccessLaunchProfile>,
     provider_logger: Option<RuntimeSshLogEmitter>,
     auth_key: &str,
+    proxy_address: Option<&str>,
 ) -> Result<DaemonProcess, AccessError> {
     let mut command = Command::new(binary);
-    command.args(daemon_arguments(socket, state_dir, launch_profile));
+    command.args(daemon_arguments(
+        socket,
+        state_dir,
+        launch_profile,
+        proxy_address,
+    ));
     command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -1738,10 +1759,14 @@ fn daemon_arguments(
     socket: &Path,
     state_dir: &Path,
     launch_profile: Option<RuntimeAccessLaunchProfile>,
+    proxy_address: Option<&str>,
 ) -> Vec<OsString> {
     let mut arguments = vec![OsString::from("--tun=userspace-networking")];
     if launch_profile == Some(RuntimeAccessLaunchProfile::TailscaleAcurastProotV1) {
         arguments.push(OsString::from("--netmon-mode=permission-fallback-v4"));
+    }
+    if let Some(address) = proxy_address {
+        arguments.push(OsString::from(format!("--socks5-server={address}")));
     }
     arguments.extend([
         OsString::from("--state=mem:"),
@@ -2135,6 +2160,15 @@ struct TailscaleSelf {
     dns_name: String,
 }
 
+impl AccessSession {
+    pub fn peer_proxy(&self) -> Option<&str> {
+        match self {
+            Self::Tailscale(session) => session.peer_proxy.as_deref(),
+            Self::Managed(_) => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use base64::Engine as _;
@@ -2143,6 +2177,24 @@ mod tests {
     use crate::protocol::{
         RuntimeAccessArtifact, RuntimeAccessProvider, RuntimeAccessProviderKind,
     };
+
+    #[test]
+    fn peer_proxy_is_explicit_and_absent_from_the_ssh_only_daemon() {
+        let ordinary = daemon_arguments(Path::new("/tmp/s"), Path::new("/tmp/d"), None, None);
+        assert!(
+            !ordinary
+                .iter()
+                .any(|a| a.to_string_lossy().contains("socks5"))
+        );
+        let peer = daemon_arguments(
+            Path::new("/tmp/s"),
+            Path::new("/tmp/d"),
+            None,
+            Some("127.0.0.1:32123"),
+        );
+        assert!(peer.contains(&OsString::from("--socks5-server=127.0.0.1:32123")));
+        assert_eq!(peer.len(), ordinary.len() + 1);
+    }
 
     #[test]
     fn a_real_status_document_deserializes() {
@@ -2331,7 +2383,7 @@ mod tests {
     fn constrained_launch_profile_adds_only_the_netmon_argument() {
         let socket = Path::new("/tmp/socket");
         let state = Path::new("/tmp/state");
-        let standard = daemon_arguments(socket, state, None);
+        let standard = daemon_arguments(socket, state, None, None);
         assert_eq!(
             standard,
             [
@@ -2347,6 +2399,7 @@ mod tests {
                 socket,
                 state,
                 Some(RuntimeAccessLaunchProfile::TailscaleStandardV1),
+                None,
             ),
             standard
         );
@@ -2354,6 +2407,7 @@ mod tests {
             socket,
             state,
             Some(RuntimeAccessLaunchProfile::TailscaleAcurastProotV1),
+            None,
         );
         assert_eq!(constrained.len(), standard.len() + 1);
         assert_eq!(constrained[0], standard[0]);

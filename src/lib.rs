@@ -6,6 +6,7 @@ pub mod contact;
 pub mod coverage;
 pub mod customer_environment;
 pub mod diagnostics;
+pub mod discovery;
 pub mod env_names;
 pub mod file_secrets;
 pub mod handoff;

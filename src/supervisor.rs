@@ -157,11 +157,27 @@ pub fn supervise_with_environment_access_and_processor_facts(
     // The reporter starts before the detached tasks are built, so the coverage
     // producer can be handed an emit handle. Nothing is reported in between, so
     // the sequence stream is unchanged by the ordering.
+    let discovery = match crate::discovery::DiscoveryFile::for_bootstrap(bootstrap) {
+        Ok(file) => file.map(Arc::new),
+        Err(_) => {
+            eprintln!("liskov discovery file setup failed");
+            None
+        }
+    };
     let http: Arc<dyn HttpClient> = Arc::new(UreqHttpClient::with_limits(
         DIAGNOSTIC_HTTP_TIMEOUT,
-        MAX_DIAGNOSTIC_RESPONSE_BYTES,
+        if discovery.is_some() {
+            crate::discovery::MAX_DISCOVERY_BYTES + MAX_DIAGNOSTIC_RESPONSE_BYTES
+        } else {
+            MAX_DIAGNOSTIC_RESPONSE_BYTES
+        },
     ));
-    let mut reporter = AsyncDiagnosticReporter::spawn(bootstrap, bridge.clone(), http);
+    let mut reporter = AsyncDiagnosticReporter::spawn_with_discovery(
+        bootstrap,
+        bridge.clone(),
+        http,
+        discovery.clone(),
+    );
     let mut detached_fact_tasks = Vec::new();
     if let Some(run) = processor_fact_authorization.and_then(|authorization| {
         ProcessorFactBinding::from_bootstrap(bootstrap)
@@ -297,11 +313,27 @@ pub fn supervise_with_environment_access_and_processor_facts(
             runtime_ssh_logs.as_ref(),
         );
     }
+    let mut customer_runtime_environment = runtime_environment.clone();
+    customer_runtime_environment.remove(crate::discovery::DISCOVERY_FILE_ENV);
+    customer_runtime_environment.remove(crate::discovery::PEER_PROXY_ENV);
+    if let Some(file) = &discovery {
+        customer_runtime_environment.insert(
+            "LISKOV_RUNTIME_INSTANCE_ID".into(),
+            bootstrap.runtime_instance_id.clone(),
+        );
+        customer_runtime_environment.insert(
+            crate::discovery::DISCOVERY_FILE_ENV.into(),
+            file.path().to_string_lossy().into_owned(),
+        );
+    }
+    if let Some(proxy) = access_session.as_ref().and_then(AccessSession::peer_proxy) {
+        customer_runtime_environment.insert(crate::discovery::PEER_PROXY_ENV.into(), proxy.into());
+    }
     let result = supervise_with_reporter_and_environment(
         command,
         bootstrap,
         bootstrap_elapsed,
-        runtime_environment,
+        &customer_runtime_environment,
         reporter
             .as_mut()
             .map(|reporter| reporter as &mut dyn RuntimeReporter),

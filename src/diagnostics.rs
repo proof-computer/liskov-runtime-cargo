@@ -48,6 +48,7 @@ pub struct DiagnosticReporter {
     processor_id: String,
     runtime_instance_id: String,
     sequence: u64,
+    discovery: Option<Arc<crate::discovery::DiscoveryFile>>,
 }
 
 impl DiagnosticReporter {
@@ -78,6 +79,7 @@ impl DiagnosticReporter {
             processor_id: bootstrap.processor_id.clone(),
             runtime_instance_id: bootstrap.runtime_instance_id.clone(),
             sequence: 0,
+            discovery: None,
         })
     }
 
@@ -89,8 +91,13 @@ impl DiagnosticReporter {
         stage: &'static str,
         status: DiagnosticStatus,
         code: Option<&'static str>,
-        attrs: Value,
+        mut attrs: Value,
     ) {
+        if stage == "runtime.health" {
+            if let Some(discovery) = &self.discovery {
+                discovery.request_attrs(&mut attrs);
+            }
+        }
         let sequence = self.sequence;
         self.sequence = self.sequence.saturating_add(1);
         let Some(timestamp_ms) = unix_time_ms() else {
@@ -133,12 +140,22 @@ impl DiagnosticReporter {
             return;
         };
         for _ in 0..MAX_DELIVERY_ATTEMPTS {
-            if self
-                .http
-                .post(&self.endpoint, &body)
-                .is_ok_and(|response| (200..300).contains(&response.status))
-            {
-                break;
+            if let Ok(response) = self.http.post(&self.endpoint, &body) {
+                if (200..300).contains(&response.status) {
+                    if stage == "runtime.health" {
+                        if let Some(discovery) = &self.discovery {
+                            if discovery.accept_response(&response.body).is_err() {
+                                discovery.unavailable();
+                            }
+                        }
+                    }
+                    return;
+                }
+            }
+        }
+        if stage == "runtime.health" {
+            if let Some(discovery) = &self.discovery {
+                discovery.unavailable();
             }
         }
     }
@@ -172,6 +189,15 @@ impl AsyncDiagnosticReporter {
         bridge: Arc<dyn Bridge>,
         http: Arc<dyn HttpClient>,
     ) -> Option<Self> {
+        Self::spawn_with_discovery(bootstrap, bridge, http, None)
+    }
+
+    pub fn spawn_with_discovery(
+        bootstrap: &RuntimeBootstrapResponse,
+        bridge: Arc<dyn Bridge>,
+        http: Arc<dyn HttpClient>,
+        discovery: Option<Arc<crate::discovery::DiscoveryFile>>,
+    ) -> Option<Self> {
         // Validate the endpoint before starting a thread. The worker owns all
         // signing and HTTP state and is the sole sequence authority.
         DiagnosticReporter::new(bootstrap, bridge.clone(), http.clone())?;
@@ -183,6 +209,7 @@ impl AsyncDiagnosticReporter {
                 let Some(mut reporter) = DiagnosticReporter::new(&bootstrap, bridge, http) else {
                     return;
                 };
+                reporter.discovery = discovery;
                 while let Ok(work) = receiver.recv() {
                     match work {
                         DiagnosticWork::Observation {
@@ -397,6 +424,45 @@ mod tests {
             processor_facts: None,
             fact_authorization: None,
         }
+    }
+
+    #[test]
+    fn signed_health_requests_discovery_and_valid_response_reaches_the_file() {
+        struct DiscoveryHttp;
+        impl HttpClient for DiscoveryHttp {
+            fn post(&self, _: &str, body: &[u8]) -> Result<HttpResponse, HttpError> {
+                let request: Value = serde_json::from_slice(body).unwrap();
+                assert_eq!(request["attrs"]["discoveryVersion"], 1);
+                assert!(request["signature"].as_str().is_some());
+                Ok(HttpResponse {
+                    status: 200,
+                    body: serde_json::to_vec(&json!({"ok":true,"discovery":{
+                    "schema":"liskov.discovery.v1","applicationUid":"app-uid",
+                    "self":{"jobId":"job","runtimeInstanceId":"instance"},
+                    "revision":"r1","observedAtMs":100,"peers":[]}}))
+                    .unwrap(),
+                })
+            }
+        }
+        let file = Arc::new(
+            crate::discovery::DiscoveryFile::create(
+                &std::env::temp_dir(),
+                "app-uid",
+                "job",
+                "instance",
+            )
+            .unwrap(),
+        );
+        let mut reporter = DiagnosticReporter::new(
+            &bootstrap(),
+            Arc::new(FakeBridge::default()),
+            Arc::new(DiscoveryHttp),
+        )
+        .unwrap();
+        reporter.discovery = Some(file.clone());
+        reporter.report("runtime.health", DiagnosticStatus::Info, None, json!({}));
+        let snapshot: Value = serde_json::from_slice(&std::fs::read(file.path()).unwrap()).unwrap();
+        assert_eq!(snapshot["self"]["runtimeInstanceId"], "instance");
     }
 
     #[test]
