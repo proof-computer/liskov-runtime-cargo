@@ -63,8 +63,8 @@ fn main() -> ExitCode {
     let core_url = resolve_core_url(cli.core_url, |name| std::env::var(name).ok());
     let diagnostic_http =
         UreqHttpClient::with_limits(PRECONTACT_HTTP_TIMEOUT, MAX_PRECONTACT_RESPONSE_BYTES);
-    // BKLG-20260829-m8kd step 1: prefer `LISKOV_BOOTSTRAP`, fall back to the
-    // legacy `PROOF_SLIPWAY_BOOTSTRAP` the platform still emits.
+    // BKLG-20260922-gyu8: the envelope is read only as `LISKOV_BOOTSTRAP`, the
+    // one name the platform emits. The legacy spelling is not a fallback.
     let reporter = match first_present_in_process_env(BOOTSTRAP_ENV_NAMES) {
         Some(raw) => {
             let now_ms = SystemTime::now()

@@ -1,10 +1,12 @@
 //! Canonical names of the Liskov-owned runtime environment contract.
 //!
 //! Liskov-owned variables are migrating to the `LISKOV_*` prefix the workspace
-//! constitution requires (`BKLG-20260829-m8kd`). Step 1 is reader-side only:
-//! every reader prefers the `LISKOV_*` name and falls back to the legacy one.
-//! The platform still emits only the legacy names, so the alias is a no-op
-//! until the emitter flips.
+//! constitution requires (`BKLG-20260829-m8kd`). Readers first accepted both
+//! spellings; the platform has emitted only `LISKOV_BOOTSTRAP` since
+//! 2026-09-02, so the signed bootstrap envelope is now read only under its
+//! `LISKOV_*` name (`BKLG-20260922-gyu8`). Its legacy spelling stays reserved
+//! and redacted, because anything that sets it carries a bearer diagnostic
+//! token. The Lockbox bootstrap reader still falls back to its legacy name.
 //!
 //! `BRIDGE_SOCKET` is deliberately absent from this module. It is supplied by
 //! the Acurast Cargo runtime, it is not Liskov-owned, and it must never be
@@ -16,12 +18,16 @@
 /// removed from the customer environment before startup.
 pub const BOOTSTRAP_ENV: &str = "LISKOV_BOOTSTRAP";
 
-/// Migration bridge for [`BOOTSTRAP_ENV`]; still the only name the platform
-/// emits today.
+/// The retired spelling of [`BOOTSTRAP_ENV`]. It is no longer read, but it is
+/// still in [`RESERVED_BOOTSTRAP_ENV_NAMES`] and [`PROTECTED_ENV_NAMES`].
 pub const LEGACY_BOOTSTRAP_ENV: &str = "PROOF_SLIPWAY_BOOTSTRAP";
 
-/// Reader preference order for the signed runtime-bootstrap envelope.
-pub const BOOTSTRAP_ENV_NAMES: &[&str] = &[BOOTSTRAP_ENV, LEGACY_BOOTSTRAP_ENV];
+/// The names the signed runtime-bootstrap envelope is read from, in order.
+pub const BOOTSTRAP_ENV_NAMES: &[&str] = &[BOOTSTRAP_ENV];
+
+/// Every spelling a signed bootstrap envelope has ever had; reserved and
+/// redacted, whether or not it is read.
+pub const RESERVED_BOOTSTRAP_ENV_NAMES: &[&str] = &[BOOTSTRAP_ENV, LEGACY_BOOTSTRAP_ENV];
 
 /// The job-bound Lockbox bootstrap metadata the supervisor uses to resolve the
 /// server-owned Blackbox log configuration.
@@ -92,7 +98,7 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_reader_prefers_the_liskov_name_and_falls_back_to_the_legacy_one() {
+    fn bootstrap_reader_reads_only_the_liskov_name() {
         assert_eq!(
             first_present(
                 BOOTSTRAP_ENV_NAMES,
@@ -105,7 +111,7 @@ mod tests {
                 BOOTSTRAP_ENV_NAMES,
                 lookup(&[(LEGACY_BOOTSTRAP_ENV, "old")])
             ),
-            Some("old".to_owned())
+            None
         );
         assert_eq!(
             first_present(BOOTSTRAP_ENV_NAMES, lookup(&[(BOOTSTRAP_ENV, "new")])),
@@ -115,7 +121,7 @@ mod tests {
     }
 
     #[test]
-    fn an_explicitly_empty_preferred_value_does_not_fall_through() {
+    fn the_legacy_bootstrap_value_is_never_a_fallback() {
         assert_eq!(
             first_present(
                 BOOTSTRAP_ENV_NAMES,
@@ -123,6 +129,7 @@ mod tests {
             ),
             Some(String::new())
         );
+        assert!(!BOOTSTRAP_ENV_NAMES.contains(&LEGACY_BOOTSTRAP_ENV));
     }
 
     #[test]
@@ -148,7 +155,14 @@ mod tests {
 
     #[test]
     fn both_bootstrap_spellings_are_reserved_and_redacted() {
+        // The legacy spelling is no longer read, but it still carries a bearer
+        // diagnostic token wherever something sets it.
+        assert!(RESERVED_BOOTSTRAP_ENV_NAMES.contains(&BOOTSTRAP_ENV));
+        assert!(RESERVED_BOOTSTRAP_ENV_NAMES.contains(&LEGACY_BOOTSTRAP_ENV));
         for name in BOOTSTRAP_ENV_NAMES {
+            assert!(RESERVED_BOOTSTRAP_ENV_NAMES.contains(name));
+        }
+        for name in RESERVED_BOOTSTRAP_ENV_NAMES {
             assert!(
                 PROTECTED_ENV_NAMES.contains(name),
                 "{name} must be reserved against signed runtime-env override \
@@ -175,7 +189,7 @@ mod tests {
     #[test]
     fn bridge_socket_is_never_aliased_or_reserved() {
         // BRIDGE_SOCKET belongs to the Acurast Cargo runtime, not to Liskov.
-        for name in BOOTSTRAP_ENV_NAMES
+        for name in RESERVED_BOOTSTRAP_ENV_NAMES
             .iter()
             .chain(LOCKBOX_BOOTSTRAP_ENV_NAMES)
             .chain(PROTECTED_ENV_NAMES)

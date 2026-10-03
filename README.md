@@ -18,8 +18,8 @@ not start.
 When the signed bootstrap envelope contains the Liskov-owned `x.pc` extension,
 the helper also emits bounded pre-contact evidence before bridge discovery and
 once more on terminal contact failure. The envelope is read from
-`LISKOV_BOOTSTRAP`, falling back to the legacy `PROOF_SLIPWAY_BOOTSTRAP` name
-the platform still emits. This bearer-authenticated evidence is
+`LISKOV_BOOTSTRAP` only; the retired `PROOF_SLIPWAY_BOOTSTRAP` spelling is no
+longer read. This bearer-authenticated evidence is
 diagnostic only: it never authorizes command execution or replaces the signed
 runtime-bootstrap gate.
 
@@ -160,10 +160,10 @@ startup, and is not a customer-authored policy surface. Managed Runtime SSH
 receives its exact-job connector credential in the authenticated
 runtime-bootstrap response and takes it out of that in-memory response before
 customer startup. Both spellings of the bootstrap secret
-(`LISKOV_BOOTSTRAP` and `PROOF_SLIPWAY_BOOTSTRAP`), the supervision canary
-control, and the reserved Runtime SSH environment credential are removed from
-the captured customer environment. Runtime values cannot reintroduce those
-protected names. The Lockbox bootstrap value is not one of them: it is
+(`LISKOV_BOOTSTRAP` and the no-longer-read `PROOF_SLIPWAY_BOOTSTRAP`), the
+supervision canary control, and the reserved Runtime SSH environment credential
+are removed from the captured customer environment. Runtime values cannot
+reintroduce those protected names. The Lockbox bootstrap value is not one of them: it is
 fetch metadata rather than a secret, so it stays deliverable and visible.
 
 The customer command inherits the processor's Android process environment,
