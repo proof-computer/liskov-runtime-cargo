@@ -421,3 +421,25 @@ From v0.11.0 this repository is licensed under the Functional Source License,
 Version 1.1, with Apache-2.0 as the future licence (`FSL-1.1-Apache-2.0`): each
 version becomes available under Apache-2.0 two years after its release. Every
 release tag before v0.11.0 remains under Apache-2.0. See [`LICENSE`](LICENSE).
+
+
+## Application service discovery (candidate)
+
+The job-facing `liskov.discovery.v1` contract remains part of the unreleased
+V6 private endpoint path. It does not activate V6 or create a tailnet.
+The application declares its named HTTP service and local port; Liskov returns
+observed publication URLs. A hostname is not proof of peer reachability.
+
+For a Tailscale workload with declared endpoints the helper exports
+`LISKOV_DISCOVERY_FILE`, `LISKOV_PEER_PROXY` (a loopback `socks5h://` proxy), and
+`LISKOV_RUNTIME_INSTANCE_ID`. The file appears after the first successful
+signed health refresh. It is atomically replaced; unavailable or invalid
+responses preserve the previous snapshot and its original timestamp.
+The snapshot contains `schema`, `applicationUid`, `self`, opaque `revision`,
+`observedAtMs`, and `peers[].{jobId,instanceId,services}`. Named services contain
+protocol and named endpoints with provider, URL (nullable), observed state and
+observation timestamp. Limits are 256 peers, 32 endpoints per peer, 512 KiB.
+Health diagnostics include discovery version, last-success time and refresh
+failure, allowing operators to distinguish an empty directory from a stale one.
+The proxy is not enabled for SSH-only attachments. HTTP/model/global proxy
+variables are not modified. Applications retain their own authentication.
