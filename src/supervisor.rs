@@ -1563,11 +1563,11 @@ pub(crate) mod tests {
 
     #[test]
     fn redacts_every_spelling_of_the_signed_bootstrap_envelope() {
-        // BKLG-20260829-m8kd: the reader now accepts `LISKOV_BOOTSTRAP`, so it
-        // must be removed from the customer environment exactly like the legacy
-        // name. Missing this is how a rename carries a signed bootstrap secret
-        // past the supervisor.
-        for name in crate::env_names::BOOTSTRAP_ENV_NAMES {
+        // BKLG-20260829-m8kd, BKLG-20260922-gyu8: the envelope is read only as
+        // `LISKOV_BOOTSTRAP`, but every spelling it has had is removed from the
+        // customer environment. Missing one is how a rename carries a signed
+        // bootstrap secret past the supervisor.
+        for name in crate::env_names::RESERVED_BOOTSTRAP_ENV_NAMES {
             let environment = sanitize_environment_values([
                 (OsString::from(*name), OsString::from("secret")),
                 (

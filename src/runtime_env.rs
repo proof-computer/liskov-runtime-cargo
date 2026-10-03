@@ -463,10 +463,11 @@ mod tests {
             Err(RuntimeEnvError::InvalidResponse)
         ));
 
-        // BKLG-20260829-m8kd: both spellings of the signed bootstrap envelope
-        // are reserved. A signed runtime-env response that sets either one is
-        // rejected, so the rename cannot open an override path.
-        for name in crate::env_names::BOOTSTRAP_ENV_NAMES {
+        // BKLG-20260829-m8kd, BKLG-20260922-gyu8: every spelling the signed
+        // bootstrap envelope has had is reserved, read or not. A signed
+        // runtime-env response that sets any one is rejected, so neither the
+        // rename nor the retired reader can open an override path.
+        for name in crate::env_names::RESERVED_BOOTSTRAP_ENV_NAMES {
             let reserved = FakeHttp::new(response(json!({ *name: "secret" })));
             assert!(
                 matches!(
