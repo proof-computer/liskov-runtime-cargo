@@ -5,6 +5,7 @@ use crate::bridge::BridgeError;
 use crate::diagnostics::canonical_json_bytes;
 use crate::http::{HttpError, HttpResponse};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::sync::Mutex;
 
 fn fixture() -> Value {
@@ -16,15 +17,19 @@ fn fixture() -> Value {
 
 struct BridgeFixture {
     fixture: Value,
+    /// The one encryption key the processor exposes: `p256` or `secp256k1`.
+    key_curve: &'static str,
+    decrypt_params: Mutex<Vec<Value>>,
 }
 impl Bridge for BridgeFixture {
-    fn call(&self, method: &str, _: Value) -> Result<Value, BridgeError> {
+    fn call(&self, method: &str, params: Value) -> Result<Value, BridgeError> {
         Ok(match method {
             "deployment_encryptionKeys" => {
-                json!({ "encryptionKeys": { "p256": self.fixture["recipientPublicKey"] } })
+                json!({ "encryptionKeys": { self.key_curve: self.fixture["recipientPublicKey"] } })
             }
             "signer_sign" => json!({ "bytes": "11".repeat(64) }),
             "signer_decrypt" => {
+                self.decrypt_params.lock().unwrap().push(params);
                 json!({ "bytes": hex::encode(canonical_json_bytes(&self.fixture["plaintext"])) })
             }
             _ => panic!("unexpected bridge method"),
@@ -55,6 +60,16 @@ impl HttpClient for ServiceFixture {
 }
 
 fn load(fixture: &Value) -> Result<CustomerSecretDelivery, LogConfigSecretError> {
+    load_on(fixture, "p256").0
+}
+
+fn load_on(
+    fixture: &Value,
+    key_curve: &'static str,
+) -> (
+    Result<CustomerSecretDelivery, LogConfigSecretError>,
+    Vec<Value>,
+) {
     let bootstrap: RuntimeBootstrapResponse =
         serde_json::from_value(fixture["bootstrap"].clone()).unwrap();
     let http = ServiceFixture {
@@ -63,6 +78,8 @@ fn load(fixture: &Value) -> Result<CustomerSecretDelivery, LogConfigSecretError>
     };
     let bridge = BridgeFixture {
         fixture: fixture.clone(),
+        key_curve,
+        decrypt_params: Mutex::new(Vec::new()),
     };
     let result = load_customer_secrets_with(
         &bootstrap,
@@ -87,8 +104,14 @@ fn load(fixture: &Value) -> Result<CustomerSecretDelivery, LogConfigSecretError>
             fixture["request"]["requestedSecretIds"]
         );
         assert_eq!(requests[1]["applicationUid"], bootstrap.application_uid);
+        for request in requests.iter() {
+            assert_eq!(
+                request["responseEncryptionKey"],
+                fixture["recipientPublicKey"]
+            );
+        }
     }
-    result
+    (result, bridge.decrypt_params.into_inner().unwrap())
 }
 
 #[test]
@@ -99,6 +122,40 @@ fn production_service_fixture_delivers_the_exact_customer_environment_value() {
         BTreeMap::from([("USER_SECRET".into(), "customer-secret-value".into())])
     );
     assert!(result.files.is_empty());
+}
+
+#[test]
+fn a_secp256k1_only_processor_installs_the_customer_secret_decrypted_on_secp256k1() {
+    let mut fixture = fixture();
+    let encrypted = &mut fixture["response"]["encryptedPayload"];
+    encrypted["version"] = json!("acurast-secp256k1-hkdf-aes-256-gcm-v1");
+    encrypted["curveName"] = json!("secp256k1");
+    encrypted
+        .as_object_mut()
+        .unwrap()
+        .remove("encryptedPayloadDigest");
+    let digest = format!(
+        "sha256:{}",
+        hex::encode(Sha256::digest(canonical_json_bytes(encrypted)))
+    );
+    encrypted["encryptedPayloadDigest"] = json!(digest);
+    let sent = encrypted.clone();
+
+    let (result, decrypts) = load_on(&fixture, "secp256k1");
+
+    assert_eq!(
+        result.unwrap().environment,
+        BTreeMap::from([("USER_SECRET".into(), "customer-secret-value".into())])
+    );
+    assert_eq!(
+        decrypts,
+        [json!([{
+            "curve": "secp256k1",
+            "publicKey": sent["senderPublicKey"],
+            "salt": sent["saltHex"],
+            "bytes": sent["ciphertextHex"],
+        }])]
+    );
 }
 
 #[test]
