@@ -26,8 +26,18 @@ fi
 
 private_root=/tmp/liskov-managed-access-smoke
 dropbear_pid=
+listener_pid=
+forward_ssh_pid=
 
 cleanup() {
+  if [ -n "${forward_ssh_pid}" ]; then
+    kill -TERM "${forward_ssh_pid}" 2>/dev/null || true
+    wait "${forward_ssh_pid}" 2>/dev/null || true
+  fi
+  if [ -n "${listener_pid}" ]; then
+    kill -TERM "${listener_pid}" 2>/dev/null || true
+    wait "${listener_pid}" 2>/dev/null || true
+  fi
   if [ -n "${dropbear_pid}" ]; then
     kill -TERM "${dropbear_pid}" 2>/dev/null || true
     wait "${dropbear_pid}" 2>/dev/null || true
@@ -75,7 +85,8 @@ cp "${operator_key}.pub" "${authorization_dir}/authorized_keys"
 chmod 0600 "${authorization_dir}/authorized_keys"
 
 # The processor-shaped container fixes unprivileged_port_start at 1024.
-"${dropbear}" -F -E -s -g -j -k \
+# Same flags as dropbear_arguments, apart from this deliberate port-22 probe.
+"${dropbear}" -F -E -s -g -k \
   -p 127.0.0.1:22 \
   -r "${host_key}" \
   -D "${authorization_dir}" \
@@ -94,8 +105,9 @@ wait "${low_port_pid}" 2>/dev/null || true
 # Dropbear re-executes accepted connections through /proc/self/fd for ASLR.
 # QEMU user mode cannot redispatch that anonymous AArch64 executable, so make
 # argv[0] intentionally unopenable and exercise Dropbear's straight-fork
-# fallback. The release binary and production hardening flags remain exact.
-"${qemu_aarch64}" -0 /tmp/liskov-dropbear-qemu-no-reexec "${dropbear}" -F -E -s -g -j -k \
+# fallback. This argv matches dropbear_arguments: local and dynamic forwarding
+# stay on (-j omitted) and remote forwarding stays off (-k).
+"${qemu_aarch64}" -0 /tmp/liskov-dropbear-qemu-no-reexec "${dropbear}" -F -E -s -g -k \
   -p 127.0.0.1:2222 \
   -r "${host_key}" \
   -D "${authorization_dir}" \
@@ -172,6 +184,108 @@ if grep -q 'PTY allocation request failed' "${pty_openssh_log}"; then
   exit 1
 fi
 
+# QEMU user mode uses the host network stack, so a listener on 127.0.0.1 is a
+# legal direct-tcpip target. ssh -L must deliver one byte; ssh -R must fail.
+forward_local_port=18080
+forward_target_port=18081
+remote_listen_port=18082
+forward_byte_file=${private_root}/forwarded-byte
+forward_ssh_log=${private_root}/openssh-local-forward.log
+remote_ssh_log=${private_root}/openssh-remote-forward.log
+: >"${forward_byte_file}"
+
+"${stock_loader}" --library-path "${stock_library_dir}" "${netcat}" \
+  -l 127.0.0.1 "${forward_target_port}" >"${forward_byte_file}" </dev/null &
+listener_pid=$!
+sleep 1
+if ! kill -0 "${listener_pid}" 2>/dev/null; then
+  echo "managed access smoke: forward target listener exited" >&2
+  wait "${listener_pid}" 2>/dev/null || true
+  listener_pid=
+  exit 1
+fi
+
+set +e
+"${stock_loader}" --library-path "${stock_library_dir}" "${ssh_client}" -vvv -N \
+  -o BatchMode=yes \
+  -o ExitOnForwardFailure=yes \
+  -o HostKeyAlias=liskov-managed-canary \
+  -o IdentitiesOnly=yes \
+  -o "IdentityFile=${operator_key}" \
+  -o "ProxyCommand=${stock_loader} --library-path ${stock_library_dir} ${netcat} 127.0.0.1 2222" \
+  -o StrictHostKeyChecking=yes \
+  -o "UserKnownHostsFile=${known_hosts}" \
+  -L "127.0.0.1:${forward_local_port}:127.0.0.1:${forward_target_port}" \
+  root@liskov-managed-canary \
+  >/dev/null 2>"${forward_ssh_log}" &
+forward_ssh_pid=$!
+set -e
+sleep 1
+if ! kill -0 "${forward_ssh_pid}" 2>/dev/null; then
+  echo "managed access smoke: local forwarding ssh exited before delivering a byte" >&2
+  wait "${forward_ssh_pid}" 2>/dev/null || true
+  forward_ssh_pid=
+  sed -n '1,200p' "${forward_ssh_log}" >&2
+  exit 1
+fi
+
+set +e
+printf 'Q' | "${stock_loader}" --library-path "${stock_library_dir}" "${netcat}" \
+  -N -w 5 127.0.0.1 "${forward_local_port}"
+deliver_status=$?
+set -e
+if [ "${deliver_status}" -ne 0 ]; then
+  echo "managed access smoke: local forward delivery failed with status ${deliver_status}" >&2
+  sed -n '1,200p' "${forward_ssh_log}" >&2
+  exit 1
+fi
+
+i=0
+while kill -0 "${listener_pid}" 2>/dev/null; do
+  if [ "${i}" -ge 5 ]; then
+    echo "managed access smoke: forward target listener did not finish" >&2
+    exit 1
+  fi
+  sleep 1
+  i=$((i + 1))
+done
+wait "${listener_pid}" 2>/dev/null || true
+listener_pid=
+if [ "$(cat "${forward_byte_file}")" != "Q" ]; then
+  echo "managed access smoke: local forward did not deliver the byte" >&2
+  sed -n '1,200p' "${forward_ssh_log}" >&2
+  exit 1
+fi
+kill -TERM "${forward_ssh_pid}" 2>/dev/null || true
+wait "${forward_ssh_pid}" 2>/dev/null || true
+forward_ssh_pid=
+
+set +e
+"${stock_loader}" --library-path "${stock_library_dir}" "${ssh_client}" -vvv \
+  -o BatchMode=yes \
+  -o ExitOnForwardFailure=yes \
+  -o HostKeyAlias=liskov-managed-canary \
+  -o IdentitiesOnly=yes \
+  -o "IdentityFile=${operator_key}" \
+  -o "ProxyCommand=${stock_loader} --library-path ${stock_library_dir} ${netcat} 127.0.0.1 2222" \
+  -o StrictHostKeyChecking=yes \
+  -o "UserKnownHostsFile=${known_hosts}" \
+  -R "127.0.0.1:${remote_listen_port}:127.0.0.1:9" \
+  root@liskov-managed-canary \
+  true \
+  >/dev/null 2>"${remote_ssh_log}"
+remote_status=$?
+set -e
+if [ "${remote_status}" -eq 0 ]; then
+  echo "managed access smoke: remote forwarding unexpectedly succeeded" >&2
+  exit 1
+fi
+if ! grep -q 'remote port forwarding failed' "${remote_ssh_log}"; then
+  echo "managed access smoke: remote forwarding refused for an unexpected reason (status ${remote_status})" >&2
+  sed -n '1,200p' "${remote_ssh_log}" >&2
+  exit 1
+fi
+
 # Access-sidecar failure is independent of the customer's exact exit result.
 /bin/sh -c 'sleep 1; exit 23' &
 customer_pid=$!
@@ -184,4 +298,4 @@ customer_status=$?
 set -e
 test "${customer_status}" -eq 23
 
-echo "managed access smoke passed: injected-static-toolchain low-port=denied loopback-2222=openssh pty=request-accepted customer-exit=23"
+echo "managed access smoke passed: injected-static-toolchain low-port=denied loopback-2222=openssh pty=request-accepted local-forward=byte remote-forward=refused customer-exit=23"

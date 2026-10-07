@@ -800,7 +800,6 @@ fn dropbear_arguments(host_key: &Path, authorization_dir: &Path, pid_file: &Path
         OsString::from("-E"),
         OsString::from("-s"),
         OsString::from("-g"),
-        OsString::from("-j"),
         OsString::from("-k"),
         OsString::from("-p"),
         OsString::from(FIXED_SSH_TARGET),
@@ -1802,12 +1801,16 @@ mod tests {
             .map(|pair| pair[1].as_str());
         assert_eq!(listen, Some(FIXED_SSH_TARGET));
         assert_eq!(listen, Some("127.0.0.1:2222"));
-        for flag in ["-F", "-E", "-s", "-g", "-j", "-k", "-r", "-D", "-P"] {
+        for flag in ["-F", "-E", "-s", "-g", "-k", "-r", "-D", "-P"] {
             assert!(
                 rendered.iter().any(|value| value == flag),
                 "missing dropbear flag {flag}"
             );
         }
+        assert!(
+            !rendered.iter().any(|value| value == "-j"),
+            "dropbear must allow local and dynamic forwarding"
+        );
         assert!(!rendered.iter().any(|value| value.contains("0.0.0.0")));
         assert!(
             !rendered
