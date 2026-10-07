@@ -220,14 +220,26 @@ set +e
   >/dev/null 2>"${forward_ssh_log}" &
 forward_ssh_pid=$!
 set -e
-sleep 1
-if ! kill -0 "${forward_ssh_pid}" 2>/dev/null; then
-  echo "managed access smoke: local forwarding ssh exited before delivering a byte" >&2
-  wait "${forward_ssh_pid}" 2>/dev/null || true
-  forward_ssh_pid=
-  sed -n '1,200p' "${forward_ssh_log}" >&2
-  exit 1
-fi
+# Key exchange against the QEMU-emulated Dropbear takes seconds, and OpenSSH
+# binds the -L listener only after authentication, so wait for that listener
+# rather than a fixed delay.
+i=0
+until grep -q "Local forwarding listening on 127.0.0.1 port ${forward_local_port}\." "${forward_ssh_log}"; do
+  if ! kill -0 "${forward_ssh_pid}" 2>/dev/null; then
+    echo "managed access smoke: local forwarding ssh exited before delivering a byte" >&2
+    wait "${forward_ssh_pid}" 2>/dev/null || true
+    forward_ssh_pid=
+    sed -n '1,200p' "${forward_ssh_log}" >&2
+    exit 1
+  fi
+  if [ "${i}" -ge 60 ]; then
+    echo "managed access smoke: local forward listener not ready after 60 s" >&2
+    sed -n '1,200p' "${forward_ssh_log}" >&2
+    exit 1
+  fi
+  sleep 1
+  i=$((i + 1))
+done
 
 set +e
 printf 'Q' | "${stock_loader}" --library-path "${stock_library_dir}" "${netcat}" \
