@@ -1,0 +1,1 @@
+{"schema":"liskov.peer-advertisement.v2","service":"swarm","port":8841,"ready":true,"tlsFingerprint":"sha256:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1","peerSyncLastSuccessAtMs":1789999999000,"peerSyncFailureCode":"none"}

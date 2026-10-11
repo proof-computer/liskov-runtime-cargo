@@ -164,19 +164,33 @@ pub fn supervise_with_environment_access_and_processor_facts(
             None
         }
     };
+    let direct_peer = match crate::discovery::direct::DirectPeerDiscovery::create(
+        &std::env::temp_dir(),
+        &bootstrap.application_uid,
+        &bootstrap.job_id,
+        &bootstrap.runtime_instance_id,
+        discovery.is_some(),
+    ) {
+        Ok(peer) => Some(Arc::new(peer)),
+        Err(_) => {
+            eprintln!("liskov direct discovery file setup failed");
+            None
+        }
+    };
     let http: Arc<dyn HttpClient> = Arc::new(UreqHttpClient::with_limits(
         DIAGNOSTIC_HTTP_TIMEOUT,
-        if discovery.is_some() {
+        if discovery.is_some() || direct_peer.is_some() {
             crate::discovery::MAX_DISCOVERY_BYTES + MAX_DIAGNOSTIC_RESPONSE_BYTES
         } else {
             MAX_DIAGNOSTIC_RESPONSE_BYTES
         },
     ));
-    let mut reporter = AsyncDiagnosticReporter::spawn_with_discovery(
+    let mut reporter = AsyncDiagnosticReporter::spawn_with_direct_peer(
         bootstrap,
         bridge.clone(),
         http,
         discovery.clone(),
+        direct_peer.clone(),
     );
     let mut detached_fact_tasks = Vec::new();
     if let Some(run) = processor_fact_authorization.and_then(|authorization| {
@@ -313,22 +327,13 @@ pub fn supervise_with_environment_access_and_processor_facts(
             runtime_ssh_logs.as_ref(),
         );
     }
-    let mut customer_runtime_environment = runtime_environment.clone();
-    customer_runtime_environment.remove(crate::discovery::DISCOVERY_FILE_ENV);
-    customer_runtime_environment.remove(crate::discovery::PEER_PROXY_ENV);
-    if let Some(file) = &discovery {
-        customer_runtime_environment.insert(
-            "LISKOV_RUNTIME_INSTANCE_ID".into(),
-            bootstrap.runtime_instance_id.clone(),
-        );
-        customer_runtime_environment.insert(
-            crate::discovery::DISCOVERY_FILE_ENV.into(),
-            file.path().to_string_lossy().into_owned(),
-        );
-    }
-    if let Some(proxy) = access_session.as_ref().and_then(AccessSession::peer_proxy) {
-        customer_runtime_environment.insert(crate::discovery::PEER_PROXY_ENV.into(), proxy.into());
-    }
+    let customer_runtime_environment = discovery_environment(
+        runtime_environment,
+        bootstrap,
+        discovery.as_deref(),
+        direct_peer.as_deref(),
+        access_session.as_ref().and_then(AccessSession::peer_proxy),
+    );
     let result = supervise_with_reporter_and_environment(
         command,
         bootstrap,
@@ -369,6 +374,44 @@ pub fn supervise_with_environment_access_and_processor_facts(
         logging.finish();
     }
     result
+}
+
+fn discovery_environment(
+    runtime_environment: &BTreeMap<String, String>,
+    bootstrap: &RuntimeBootstrapResponse,
+    discovery: Option<&crate::discovery::DiscoveryFile>,
+    direct_peer: Option<&crate::discovery::direct::DirectPeerDiscovery>,
+    peer_proxy: Option<&str>,
+) -> BTreeMap<String, String> {
+    let mut environment = runtime_environment.clone();
+    environment.remove(crate::discovery::DISCOVERY_FILE_ENV);
+    environment.remove(crate::discovery::PEER_PROXY_ENV);
+    environment.remove(crate::discovery::direct::ADVERTISEMENT_FILE_ENV);
+    environment.remove(crate::discovery::direct::DIRECTORY_FILE_ENV);
+    environment.insert(
+        "LISKOV_RUNTIME_INSTANCE_ID".into(),
+        bootstrap.runtime_instance_id.clone(),
+    );
+    if let Some(file) = discovery {
+        environment.insert(
+            crate::discovery::DISCOVERY_FILE_ENV.into(),
+            file.path().to_string_lossy().into_owned(),
+        );
+    }
+    if let Some(peer) = direct_peer {
+        environment.insert(
+            crate::discovery::direct::ADVERTISEMENT_FILE_ENV.into(),
+            peer.advertisement_path().to_string_lossy().into_owned(),
+        );
+        environment.insert(
+            crate::discovery::direct::DIRECTORY_FILE_ENV.into(),
+            peer.directory_path().to_string_lossy().into_owned(),
+        );
+    }
+    if let Some(proxy) = peer_proxy {
+        environment.insert(crate::discovery::PEER_PROXY_ENV.into(), proxy.into());
+    }
+    environment
 }
 
 fn log_access(
@@ -471,6 +514,8 @@ trait RuntimeReporter {
         code: Option<&'static str>,
         attrs: serde_json::Value,
     );
+    fn begin_child(&mut self) {}
+    fn end_child(&mut self) {}
 }
 
 impl RuntimeReporter for AsyncDiagnosticReporter {
@@ -482,6 +527,12 @@ impl RuntimeReporter for AsyncDiagnosticReporter {
         attrs: serde_json::Value,
     ) {
         self.report(stage, status, code, attrs);
+    }
+    fn begin_child(&mut self) {
+        AsyncDiagnosticReporter::begin_child(self);
+    }
+    fn end_child(&mut self) {
+        AsyncDiagnosticReporter::end_child(self);
     }
 }
 
@@ -579,10 +630,16 @@ fn supervise_with_reporter_and_environment(
             start_detached_fact_task(task);
         }
         let started_at = Instant::now();
+        if let Some(reporter) = reporter.as_deref_mut() {
+            reporter.begin_child();
+        }
         let child = spawn_customer(command, &environment, output_logger.is_some());
         let mut child = match child {
             Ok(child) => child,
             Err(_) => {
+                if let Some(reporter) = reporter.as_deref_mut() {
+                    reporter.end_child();
+                }
                 report(
                     &mut reporter,
                     "runtime.fatal.cargo.process",
@@ -635,6 +692,9 @@ fn supervise_with_reporter_and_environment(
                 if forwarded_signal.is_none() {
                     if signal_process_group(process_group, signal).is_err() {
                         let cleanup_complete = terminate_and_reap_group(process_group);
+                        if let Some(reporter) = reporter.as_deref_mut() {
+                            reporter.end_child();
+                        }
                         report(
                             &mut reporter,
                             "runtime.fatal.cargo.supervisor",
@@ -662,6 +722,9 @@ fn supervise_with_reporter_and_environment(
                 Ok(None) => {}
                 Err(_) => {
                     let cleanup_complete = terminate_and_reap_group(process_group);
+                    if let Some(reporter) = reporter.as_deref_mut() {
+                        reporter.end_child();
+                    }
                     report(
                         &mut reporter,
                         "runtime.fatal.cargo.supervisor",
@@ -690,6 +753,9 @@ fn supervise_with_reporter_and_environment(
         };
         let uptime = started_at.elapsed();
         let cleanup_complete = terminate_and_reap_group(process_group);
+        if let Some(reporter) = reporter.as_deref_mut() {
+            reporter.end_child();
+        }
         if let Some(output_attempt) = output_attempt {
             output_attempt.finish();
         }
@@ -1098,6 +1164,21 @@ fn customer_environment(
     runtime_environment: &BTreeMap<String, String>,
     guest: &dyn GuestFilesystem,
 ) -> (Vec<(OsString, OsString)>, Vec<Normalization>) {
+    // The processor environment is outside the signed runtime-env map. Strip
+    // helper-owned discovery names there too, or an old Planetarium binary
+    // could see a forged v1 mode switch on a non-Tailscale job.
+    let inherited = inherited.into_iter().filter(|(name, _)| {
+        !matches!(
+            name.to_str(),
+            Some(
+                "LISKOV_DISCOVERY_FILE"
+                    | "LISKOV_PEER_PROXY"
+                    | "LISKOV_PEER_ADVERTISEMENT_FILE"
+                    | "LISKOV_PEER_DIRECTORY_FILE"
+                    | "LISKOV_RUNTIME_INSTANCE_ID"
+            )
+        )
+    });
     let (inherited, normalized) = normalize_customer_environment(
         sanitize_environment_values(inherited),
         |name| runtime_environment.contains_key(name),
@@ -1439,6 +1520,176 @@ pub(crate) mod tests {
             processor_facts: None,
             fact_authorization: None,
         }
+    }
+
+    #[test]
+    fn direct_metadata_is_verified_and_keeps_the_legacy_file_and_proxy_distinct() {
+        let bootstrap = bootstrap(json!({}));
+        let direct = crate::discovery::direct::DirectPeerDiscovery::create(
+            &std::env::temp_dir(),
+            &bootstrap.application_uid,
+            &bootstrap.job_id,
+            &bootstrap.runtime_instance_id,
+            false,
+        )
+        .unwrap();
+        let inherited = BTreeMap::from([
+            (
+                "LISKOV_RUNTIME_INSTANCE_ID".into(),
+                "customer-forged".into(),
+            ),
+            (
+                crate::discovery::DISCOVERY_FILE_ENV.into(),
+                "/forged/v1".into(),
+            ),
+            (
+                crate::discovery::direct::ADVERTISEMENT_FILE_ENV.into(),
+                "/forged/input".into(),
+            ),
+            (
+                crate::discovery::direct::DIRECTORY_FILE_ENV.into(),
+                "/forged/output".into(),
+            ),
+            (
+                crate::discovery::PEER_PROXY_ENV.into(),
+                "socks5h://forged".into(),
+            ),
+        ]);
+        let env = discovery_environment(&inherited, &bootstrap, None, Some(&direct), None);
+        assert_eq!(
+            env["LISKOV_RUNTIME_INSTANCE_ID"],
+            bootstrap.runtime_instance_id
+        );
+        assert!(!env.contains_key(crate::discovery::DISCOVERY_FILE_ENV));
+        assert!(!env.contains_key(crate::discovery::PEER_PROXY_ENV));
+        assert_eq!(
+            env[crate::discovery::direct::ADVERTISEMENT_FILE_ENV],
+            direct.advertisement_path().to_string_lossy()
+        );
+        assert_eq!(
+            env[crate::discovery::direct::DIRECTORY_FILE_ENV],
+            direct.directory_path().to_string_lossy()
+        );
+        assert_ne!(
+            env[crate::discovery::direct::ADVERTISEMENT_FILE_ENV],
+            env[crate::discovery::direct::DIRECTORY_FILE_ENV]
+        );
+        let inherited_process = inherited
+            .iter()
+            .map(|(name, value)| (OsString::from(name), OsString::from(value)));
+        let (child, _) = customer_environment(inherited_process, &env, &ProcessFilesystem);
+        let child: BTreeMap<String, String> = child
+            .into_iter()
+            .map(|(name, value)| (name.into_string().unwrap(), value.into_string().unwrap()))
+            .collect();
+        assert!(!child.contains_key(crate::discovery::DISCOVERY_FILE_ENV));
+        assert!(!child.contains_key(crate::discovery::PEER_PROXY_ENV));
+        assert_eq!(
+            child["LISKOV_RUNTIME_INSTANCE_ID"],
+            bootstrap.runtime_instance_id
+        );
+        assert_eq!(
+            child[crate::discovery::direct::ADVERTISEMENT_FILE_ENV],
+            direct.advertisement_path().to_string_lossy()
+        );
+
+        let legacy = crate::discovery::DiscoveryFile::create(
+            &std::env::temp_dir(),
+            &bootstrap.application_uid,
+            &bootstrap.job_id,
+            &bootstrap.runtime_instance_id,
+        )
+        .unwrap();
+        let legacy_env = discovery_environment(
+            &inherited,
+            &bootstrap,
+            Some(&legacy),
+            Some(&direct),
+            Some("socks5h://127.0.0.1:1234"),
+        );
+        assert_eq!(
+            legacy_env[crate::discovery::DISCOVERY_FILE_ENV],
+            legacy.path().to_string_lossy()
+        );
+        assert_eq!(
+            legacy_env[crate::discovery::PEER_PROXY_ENV],
+            "socks5h://127.0.0.1:1234"
+        );
+    }
+
+    #[test]
+    fn direct_discovery_is_independent_of_ssh_and_legacy_v1_selection() {
+        use base64::Engine as _;
+        let mut bootstrap = bootstrap(json!({}));
+        assert!(
+            crate::discovery::DiscoveryFile::for_bootstrap(&bootstrap)
+                .unwrap()
+                .is_none(),
+            "no SSH means no legacy v1 file"
+        );
+        bootstrap.access = Some(
+            serde_json::from_value(json!({
+                "provider":{"kind":"liskov"},
+                "attachmentId":"managed-1",
+                "fence":1,
+                "gatewayUrl":"wss://access.example",
+                "tunnelId":"managed_1",
+                "protocol":"liskov_access_v1",
+                "setupDeadlineMs":1_800_000_000_000_u64,
+                "binding":{
+                    "organizationId":"org","applicationId":"app",
+                    "applicationUid":"app-uid","liskovDeploymentId":"liskov-dep",
+                    "deploymentId":"deployment","liskovJobId":"liskov-job",
+                    "jobId":"job","policyDigest":"digest"
+                },
+                "authorizedKeyFingerprints":[format!(
+                    "SHA256:{}",
+                    base64::engine::general_purpose::STANDARD_NO_PAD.encode([1_u8;32])
+                )],
+                "toolchain":{
+                    "runtimeContactSha256":"1".repeat(64),
+                    "dropbearSha256":"2".repeat(64),
+                    "dropbearkeySha256":"3".repeat(64)
+                }
+            }))
+            .unwrap(),
+        );
+        assert!(bootstrap.access.as_ref().unwrap().valid());
+        assert!(
+            crate::discovery::DiscoveryFile::for_bootstrap(&bootstrap)
+                .unwrap()
+                .is_none(),
+            "managed SSH does not imply Tailscale v1 discovery"
+        );
+        bootstrap.access = Some(
+            serde_json::from_value(json!({
+                "provider":{"kind":"tailscale"},
+                "attachmentId":"tail-1",
+                "expectedTailnet":"example.com",
+                "setupDeadlineMs":1_800_000_000_000_u64,
+                "fence":1,
+                "artifact":{
+                    "descriptorId":"descriptor-1",
+                    "version":"1.98.10-liskov.1",
+                    "url":"https://liskov.example/client.tgz",
+                    "sha256":"1".repeat(64),
+                    "byteSize":10
+                },
+                "publications":[{
+                    "useSite":"/ingress/swarm/private/provider",
+                    "serviceName":"swarm",
+                    "localPort":8841
+                }]
+            }))
+            .unwrap(),
+        );
+        assert!(bootstrap.access.as_ref().unwrap().valid());
+        assert!(
+            crate::discovery::DiscoveryFile::for_bootstrap(&bootstrap)
+                .unwrap()
+                .is_some(),
+            "legacy Tailscale publications still select the v1 file"
+        );
     }
 
     #[test]

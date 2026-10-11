@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde_json::{Map, Value, json};
 
 use crate::bridge::Bridge;
-use crate::http::HttpClient;
+use crate::http::{HttpClient, HttpError};
 use crate::protocol::RuntimeBootstrapResponse;
 
 pub const RUNTIME_DIAGNOSTIC_DOMAIN_V4: &str = "proof.liskov.runtime-diagnostic.v4";
@@ -49,6 +49,7 @@ pub struct DiagnosticReporter {
     runtime_instance_id: String,
     sequence: u64,
     discovery: Option<Arc<crate::discovery::DiscoveryFile>>,
+    direct_peer: Option<Arc<crate::discovery::direct::DirectPeerDiscovery>>,
 }
 
 impl DiagnosticReporter {
@@ -80,6 +81,7 @@ impl DiagnosticReporter {
             runtime_instance_id: bootstrap.runtime_instance_id.clone(),
             sequence: 0,
             discovery: None,
+            direct_peer: None,
         })
     }
 
@@ -93,9 +95,13 @@ impl DiagnosticReporter {
         code: Option<&'static str>,
         mut attrs: Value,
     ) {
+        let mut direct_request = crate::discovery::direct::Request::None;
         if stage == "runtime.health" {
             if let Some(discovery) = &self.discovery {
                 discovery.request_attrs(&mut attrs);
+            }
+            if let Some(peer) = &self.direct_peer {
+                direct_request = peer.request_attrs(&mut attrs);
             }
         }
         let sequence = self.sequence;
@@ -139,23 +145,39 @@ impl DiagnosticReporter {
         let Ok(body) = serde_json::to_vec(&unsigned) else {
             return;
         };
+        let mut response_oversized = false;
         for _ in 0..MAX_DELIVERY_ATTEMPTS {
-            if let Ok(response) = self.http.post(&self.endpoint, &body) {
-                if (200..300).contains(&response.status) {
+            match self.http.post(&self.endpoint, &body) {
+                Ok(response) if (200..300).contains(&response.status) => {
                     if stage == "runtime.health" {
                         if let Some(discovery) = &self.discovery {
                             if discovery.accept_response(&response.body).is_err() {
                                 discovery.unavailable();
                             }
                         }
+                        if let Some(peer) = &self.direct_peer {
+                            let _ = peer.accept_response(direct_request, &response.body);
+                        }
                     }
                     return;
                 }
+                Err(HttpError::ResponseTooLarge) => response_oversized = true,
+                _ => {}
             }
         }
         if stage == "runtime.health" {
             if let Some(discovery) = &self.discovery {
                 discovery.unavailable();
+            }
+            if let Some(peer) = &self.direct_peer {
+                if response_oversized {
+                    peer.set_failure(
+                        direct_request,
+                        crate::discovery::direct::DiscoveryFailure::Oversized,
+                    );
+                } else {
+                    peer.unavailable(direct_request);
+                }
             }
         }
     }
@@ -181,6 +203,7 @@ pub(crate) enum DiagnosticWork {
 /// forwarding, child reaping, restart timers, or the customer result.
 pub struct AsyncDiagnosticReporter {
     sender: Option<SyncSender<DiagnosticWork>>,
+    direct_peer: Option<Arc<crate::discovery::direct::DirectPeerDiscovery>>,
 }
 
 impl AsyncDiagnosticReporter {
@@ -198,10 +221,21 @@ impl AsyncDiagnosticReporter {
         http: Arc<dyn HttpClient>,
         discovery: Option<Arc<crate::discovery::DiscoveryFile>>,
     ) -> Option<Self> {
+        Self::spawn_with_direct_peer(bootstrap, bridge, http, discovery, None)
+    }
+
+    pub fn spawn_with_direct_peer(
+        bootstrap: &RuntimeBootstrapResponse,
+        bridge: Arc<dyn Bridge>,
+        http: Arc<dyn HttpClient>,
+        discovery: Option<Arc<crate::discovery::DiscoveryFile>>,
+        direct_peer: Option<Arc<crate::discovery::direct::DirectPeerDiscovery>>,
+    ) -> Option<Self> {
         // Validate the endpoint before starting a thread. The worker owns all
         // signing and HTTP state and is the sole sequence authority.
         DiagnosticReporter::new(bootstrap, bridge.clone(), http.clone())?;
         let bootstrap = bootstrap.clone();
+        let worker_peer = direct_peer.clone();
         let (sender, receiver) = sync_channel(DIAGNOSTIC_QUEUE_CAPACITY);
         thread::Builder::new()
             .name("liskov-cargo-diagnostics".into())
@@ -210,6 +244,7 @@ impl AsyncDiagnosticReporter {
                     return;
                 };
                 reporter.discovery = discovery;
+                reporter.direct_peer = worker_peer;
                 while let Ok(work) = receiver.recv() {
                     match work {
                         DiagnosticWork::Observation {
@@ -228,7 +263,22 @@ impl AsyncDiagnosticReporter {
             .ok()?;
         Some(Self {
             sender: Some(sender),
+            direct_peer,
         })
+    }
+
+    pub fn begin_child(&self) {
+        if let Some(peer) = &self.direct_peer {
+            if peer.begin_child().is_err() {
+                eprintln!("liskov direct discovery child reset failed");
+            }
+        }
+    }
+
+    pub fn end_child(&self) {
+        if let Some(peer) = &self.direct_peer {
+            peer.end_child();
+        }
     }
 
     /// A cloneable emit handle onto this reporter's queue, or `None` once the
@@ -463,6 +513,132 @@ mod tests {
         reporter.report("runtime.health", DiagnosticStatus::Info, None, json!({}));
         let snapshot: Value = serde_json::from_slice(&std::fs::read(file.path()).unwrap()).unwrap();
         assert_eq!(snapshot["self"]["runtimeInstanceId"], "instance");
+    }
+
+    #[test]
+    fn full_direct_health_signs_all_scalar_attrs_before_delivery() {
+        let peer = Arc::new(
+            crate::discovery::direct::DirectPeerDiscovery::create(
+                &std::env::temp_dir(),
+                "app-uid",
+                "job",
+                "instance",
+                false,
+            )
+            .unwrap(),
+        );
+        peer.begin_child().unwrap();
+        let fingerprint = format!("sha256:{}", "a".repeat(64));
+        std::fs::write(
+            peer.advertisement_path(),
+            serde_json::to_vec(&json!({
+                "schema": "liskov.peer-advertisement.v2",
+                "service": "sync",
+                "port": 8841,
+                "ready": true,
+                "tlsFingerprint": fingerprint,
+                "peerSyncLastSuccessAtMs": 1,
+                "peerSyncFailureCode": "none",
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let bridge = Arc::new(FakeBridge::default());
+        let http = Arc::new(FakeHttp::default());
+        let mut reporter =
+            DiagnosticReporter::new(&bootstrap(), bridge.clone(), http.clone()).unwrap();
+        reporter.direct_peer = Some(peer);
+        let attrs = json!({
+            "processAttempt": 0, "restartCount": 0,
+            "thermalCpuMaxMillic": null, "thermalGpuMaxMillic": null,
+            "thermalBatteryMillic": null, "thermalSkinMaxMillic": null,
+            "thermalPackageMillic": null, "thermalDdrMillic": null,
+            "thermalChargerMillic": null, "thermalZoneCount": 0,
+            "thermalDeniedCount": 0,
+            "memTotalKib": null, "memAvailableKib": null,
+            "swapTotalKib": null, "swapFreeKib": null,
+            "workloadRssKib": null, "workloadRssPeakKib": null,
+            "memDeniedCount": 0,
+        });
+        reporter.report("runtime.health", DiagnosticStatus::Info, None, attrs);
+        let signed: Value = serde_json::from_slice(&http.bodies.lock().unwrap()[0]).unwrap();
+        let signed_attrs = signed["attrs"].as_object().unwrap();
+        assert_eq!(signed_attrs.len(), 26);
+        assert_eq!(signed_attrs["discoveryVersion"], 2);
+        assert_eq!(signed_attrs["peerTlsFingerprint"], fingerprint);
+        let mut unsigned = signed.clone();
+        unsigned.as_object_mut().unwrap().remove("signature");
+        let canonical = canonical_json_bytes(&unsigned);
+        let calls = bridge.calls.lock().unwrap();
+        assert_eq!(calls[0].1[0]["bytes"], hex::encode(canonical));
+    }
+
+    #[test]
+    fn owner_full_27_attr_fixture_has_exact_canonical_signed_bytes() {
+        use sha2::{Digest, Sha256};
+        let request = include_str!("../vectors/liskov-discovery-v2-signed-health-request.json");
+        let canonical = include_str!("../vectors/liskov-discovery-v2-signed-health-canonical.json");
+        assert_eq!(
+            hex::encode(Sha256::digest(request.as_bytes())),
+            "8404e5bc30bb16b68786aa302b787cd569bee03dd5f0abb8c68f5019f89390e9"
+        );
+        assert_eq!(
+            hex::encode(Sha256::digest(canonical.as_bytes())),
+            "37898bc256b812ab3a0bf6bc2d1d674906912be927bb7f1b75b8a2e49585a76b"
+        );
+        let signed: Value = serde_json::from_str(request).unwrap();
+        assert_eq!(signed["attrs"].as_object().unwrap().len(), 27);
+        let mut unsigned = signed;
+        unsigned.as_object_mut().unwrap().remove("signature");
+        assert_eq!(
+            canonical_json_bytes(&unsigned),
+            canonical.trim_end().as_bytes()
+        );
+    }
+
+    #[test]
+    fn bounded_http_reader_reports_oversized_direct_snapshot() {
+        struct OversizedHttp;
+        impl HttpClient for OversizedHttp {
+            fn post(&self, _: &str, _: &[u8]) -> Result<HttpResponse, HttpError> {
+                Err(HttpError::ResponseTooLarge)
+            }
+        }
+        let peer = Arc::new(
+            crate::discovery::direct::DirectPeerDiscovery::create(
+                &std::env::temp_dir(),
+                "app-uid",
+                "job",
+                "instance",
+                false,
+            )
+            .unwrap(),
+        );
+        peer.begin_child().unwrap();
+        std::fs::write(
+            peer.advertisement_path(),
+            serde_json::to_vec(&json!({
+                "schema":"liskov.peer-advertisement.v2",
+                "service":"sync",
+                "port":8841,
+                "ready":true,
+                "tlsFingerprint":format!("sha256:{}", "a".repeat(64))
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut reporter = DiagnosticReporter::new(
+            &bootstrap(),
+            Arc::new(FakeBridge::default()),
+            Arc::new(OversizedHttp),
+        )
+        .unwrap();
+        reporter.direct_peer = Some(peer.clone());
+        reporter.report("runtime.health", DiagnosticStatus::Info, None, json!({}));
+        let mut attrs = json!({});
+        peer.request_attrs(&mut attrs);
+        assert_eq!(attrs["discoveryFailureCode"], "oversized");
+        assert_eq!(attrs["discoveryRefreshFailed"], true);
     }
 
     #[test]

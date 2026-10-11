@@ -1,0 +1,1 @@
+{"schema":"liskov.discovery.v2","applicationUid":"app-0123456789abcdef0123456789abcdef","self":{"jobId":"job-a","runtimeInstanceId":"instance-a"},"revision":"sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945","observedAtMs":1790000000100,"validUntilMs":1790000080000,"peers":[]}

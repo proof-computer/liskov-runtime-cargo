@@ -1,4 +1,5 @@
 //! A private, atomically replaced advisory service directory for the workload.
+pub mod direct;
 use crate::protocol::{RuntimeAccessBootstrap, RuntimeBootstrapResponse};
 use serde_json::Value;
 use std::{

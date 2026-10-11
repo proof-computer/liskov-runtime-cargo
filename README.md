@@ -443,3 +443,55 @@ Health diagnostics include discovery version, last-success time and refresh
 failure, allowing operators to distinguish an empty directory from a stale one.
 The proxy is not enabled for SSH-only attachments. HTTP/model/global proxy
 variables are not modified. Applications retain their own authentication.
+
+### Direct IPv6 discovery for native workloads (release candidate)
+
+For jobs without the v1 Tailscale publication path, the helper supplies
+`LISKOV_RUNTIME_INSTANCE_ID`, `LISKOV_PEER_ADVERTISEMENT_FILE`, and
+`LISKOV_PEER_DIRECTORY_FILE` before starting the native workload. It does
+not supply `LISKOV_DISCOVERY_FILE` in this mode. This is helper-owned runtime
+metadata and does not change V5 policy or its authored variables. A missing
+advertisement file means the workload has not opted in.
+
+To opt in, atomically replace the advertisement file with one JSON object no
+larger than 4 KiB:
+
+```json
+{
+  "schema": "liskov.peer-advertisement.v2",
+  "service": "sync",
+  "port": 8841,
+  "ready": true,
+  "tlsFingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+```
+
+The service uses HTTPS in this version. The fingerprint is SHA-256 of the
+listener's leaf certificate DER. The helper also accepts optional
+`peerSyncLastSuccessAtMs` and `peerSyncFailureCode`
+(`none`, `connect`, `tls`, `auth`, `identity`, `exchange`, or
+`discovery`). These sync summaries are application-reported, not proof of
+platform delivery or peer reachability. It refuses extra fields, symlinks,
+oversized files, invalid ports, and invalid fingerprints. The helper supplies
+verified app/job/runtime identity itself; the workload cannot advertise an IP,
+URL, credential, or identity. An attempted direct advertisement on a v1
+Tailscale job reports a conflict and retains v1 discovery.
+
+Each health beat reads the current file and signs the v2 request attributes.
+A complete, current `liskov.discovery.v2` response replaces the private
+directory file atomically. The snapshot includes a lease and each peer's
+expiry; consumers must stop using expired endpoints. A failed, stale,
+unsupported, or oversized response leaves the last good bytes and original
+expiry intact and reports a bounded failure code. The helper removes the
+advertisement before each supervised child start, so a restarted child must
+opt in again. Direct discovery is advisory; applications still authenticate
+peers and pin each advertised TLS certificate.
+
+On child exit the helper stops reporting readiness and removes the input.
+An advertisement already accepted by the server retains only its original
+lease, at most 90 seconds from that health beat; the exited child's file
+cannot renew it.
+
+`discoveryLastSuccessAtMs` retains the v1 meaning: it is the server's
+`observedAtMs` on the last accepted snapshot, rather than a local receive
+timestamp. The helper uses that value to reject delayed snapshots.
