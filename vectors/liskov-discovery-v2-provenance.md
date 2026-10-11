@@ -3,6 +3,7 @@
 Source: `crates/slipway-executor-contracts/src/runtime_diagnostics/direct_peer.rs` and its v4 parser integration.
 Source baseline: liskov-rs `origin/main` at `54977276c` (2026-10-11).
 Source implementation: proof-computer/liskov-rs `417ea4103a9353e6920d8e834cee4f403c228548` (PR #1662).
+Error-only v2 amendment: proof-computer/liskov-rs `6add59728348fc548712441fd3474cce20e83482`.
 This file hashes the portable bytes independently.
 All JSON vectors are UTF-8, compact, newline-terminated. SHA-256 includes that newline.
 
@@ -15,6 +16,13 @@ All JSON vectors are UTF-8, compact, newline-terminated. SHA-256 includes that n
 | `liskov-discovery-v2-invalid.json` | `5df4629dd908661b1dc5294d6ae403030bde972d0338f3bb42076a1e73e77349` |
 | `liskov-discovery-v2-signed-health-canonical.json` | `37898bc256b812ab3a0bf6bc2d1d674906912be927bb7f1b75b8a2e49585a76b` |
 | `liskov-discovery-v2-signed-health-request.json` | `8404e5bc30bb16b68786aa302b787cd569bee03dd5f0abb8c68f5019f89390e9` |
+| `liskov-discovery-v2-signed-error-health-canonical.json` | `59d39043c6c982c3ba4d176451e9fddcd3d942df41df5358219f31654069f0d2` |
+| `liskov-discovery-v2-signed-error-health-request.json` | `776f442927f3c951f2e134dba19e84a9dbb4ecbe22377645c7052001c4086ac4` |
 | `liskov-discovery-v2-unavailable.json` | `2e751fae689173e15828648c6b54dbd04f08cb94731696ce78671b2a93f1e8d0` |
 
 The signed-health canonical fixture omits only `signature`; it must equal the existing diagnostic-v4 canonical signed message after parsing the 27-attribute request. `directory` and `complete-empty` use the SHA-256 of their compact serialized `peers` array as `revision`. The unavailable fixture is a response to an accepted health beat and is distinct from a complete empty snapshot.
+
+The amended error-only request has exactly four attrs: `processAttempt`,
+`restartCount`, `discoveryVersion:2`, and bounded
+`peerAdvertisementError:"invalid"`. It carries no endpoint, sync, or
+response-freshness scalar. Its canonical fixture removes only `signature`.
