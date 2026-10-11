@@ -477,6 +477,13 @@ verified app/job/runtime identity itself; the workload cannot advertise an IP,
 URL, credential, or identity. An attempted direct advertisement on a v1
 Tailscale job reports a conflict and retains v1 discovery.
 
+A malformed, oversized, or symlinked local file still produces a signed v2
+health beat with `discoveryVersion: 2` and only a bounded
+`peerAdvertisementError` in place of endpoint attributes. Liskov can retain
+that refusal and return typed `unavailable`; the helper cannot write a
+complete directory from this beat or extend the last good lease. A missing
+file remains no opt-in, while a v1 Tailscale conflict keeps its v1 request.
+
 Each health beat reads the current file and signs the v2 request attributes.
 A complete, current `liskov.discovery.v2` response replaces the private
 directory file atomically. The snapshot includes a lease and each peer's

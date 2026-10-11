@@ -62,6 +62,7 @@ impl AdvertisementFailure {
 pub enum Request {
     None,
     Direct { generation: u64 },
+    ErrorOnly { generation: u64 },
 }
 
 struct State {
@@ -198,7 +199,18 @@ impl DirectPeerDiscovery {
             }
             Err(failure) => {
                 attrs["peerAdvertisementError"] = failure.code().into();
-                Request::None
+                if failure == AdvertisementFailure::Conflict {
+                    // A Tailscale publication keeps the v1 request shape.
+                    Request::None
+                } else {
+                    // A refused local file is still a typed v2 health beat.
+                    // It has no endpoint scalars and may only receive a v2
+                    // unavailable response, never a complete directory.
+                    attrs["discoveryVersion"] = 2.into();
+                    Request::ErrorOnly {
+                        generation: state.generation,
+                    }
+                }
             }
         }
     }
@@ -208,8 +220,9 @@ impl DirectPeerDiscovery {
     }
 
     pub fn set_failure(&self, request: Request, failure: DiscoveryFailure) {
-        let Request::Direct { generation } = request else {
-            return;
+        let generation = match request {
+            Request::None => return,
+            Request::Direct { generation } | Request::ErrorOnly { generation } => generation,
         };
         let mut state = self.state.lock().unwrap();
         if state.child_active && state.generation == generation {
@@ -218,11 +231,13 @@ impl DirectPeerDiscovery {
     }
 
     pub fn accept_response(&self, request: Request, body: &[u8]) -> Result<(), DiscoveryFailure> {
-        let Request::Direct { generation } = request else {
-            return Ok(());
+        let (generation, allow_directory) = match request {
+            Request::None => return Ok(()),
+            Request::Direct { generation } => (generation, true),
+            Request::ErrorOnly { generation } => (generation, false),
         };
         let now_ms = unix_time_ms();
-        let result = self.validate_and_write(generation, body, now_ms);
+        let result = self.validate_and_write(generation, body, now_ms, allow_directory);
         if let Err(failure) = result {
             self.set_failure(request, failure);
         }
@@ -234,6 +249,7 @@ impl DirectPeerDiscovery {
         generation: u64,
         body: &[u8],
         now_ms: i64,
+        allow_directory: bool,
     ) -> Result<(), DiscoveryFailure> {
         if body.len() > MAX_DISCOVERY_BYTES + 16 * 1024 {
             return Err(DiscoveryFailure::Oversized);
@@ -262,6 +278,11 @@ impl DirectPeerDiscovery {
                 Some("no_ipv6" | "store_unavailable") => DiscoveryFailure::Unavailable,
                 _ => DiscoveryFailure::Invalid,
             });
+        }
+        if !allow_directory {
+            // A refused local advertisement cannot turn a server mistake (or
+            // delayed response) into a successful empty or populated file.
+            return Err(DiscoveryFailure::Invalid);
         }
         let (observed, expiry) = validate_snapshot(
             snapshot,
@@ -758,9 +779,13 @@ mod tests {
         ] {
             write_advertisement(&file, &ad);
             let mut attrs = json!({});
-            assert_eq!(file.request_attrs(&mut attrs), Request::None);
+            assert!(matches!(
+                file.request_attrs(&mut attrs),
+                Request::ErrorOnly { .. }
+            ));
+            assert_eq!(attrs["discoveryVersion"], 2);
             assert_eq!(attrs["peerAdvertisementError"], code);
-            assert!(attrs.get("peerTlsFingerprint").is_none());
+            assert_eq!(attrs.as_object().unwrap().len(), 2);
         }
         fs::write(
             file.advertisement_path(),
@@ -768,18 +793,30 @@ mod tests {
         )
         .unwrap();
         let mut attrs = json!({});
-        assert_eq!(file.request_attrs(&mut attrs), Request::None);
+        assert!(matches!(
+            file.request_attrs(&mut attrs),
+            Request::ErrorOnly { .. }
+        ));
+        assert_eq!(attrs["discoveryVersion"], 2);
         assert_eq!(attrs["peerAdvertisementError"], "oversized");
         remove_if_present(&file.advertisement_path()).unwrap();
         symlink("/etc/passwd", file.advertisement_path()).unwrap();
         let mut attrs = json!({});
-        assert_eq!(file.request_attrs(&mut attrs), Request::None);
+        assert!(matches!(
+            file.request_attrs(&mut attrs),
+            Request::ErrorOnly { .. }
+        ));
+        assert_eq!(attrs["discoveryVersion"], 2);
         assert_eq!(attrs["peerAdvertisementError"], "symlink");
         remove_if_present(&file.advertisement_path()).unwrap();
         let path = CString::new(file.advertisement_path().as_os_str().as_bytes()).unwrap();
         assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
         let mut attrs = json!({});
-        assert_eq!(file.request_attrs(&mut attrs), Request::None);
+        assert!(matches!(
+            file.request_attrs(&mut attrs),
+            Request::ErrorOnly { .. }
+        ));
+        assert_eq!(attrs["discoveryVersion"], 2);
         assert_eq!(attrs["peerAdvertisementError"], "invalid");
     }
 
@@ -788,15 +825,100 @@ mod tests {
         let file = file(true);
         file.begin_child().unwrap();
         write_advertisement(&file, &advertisement());
-        let mut attrs = json!({"discoveryVersion": 1});
+        let mut attrs = json!({
+            "discoveryVersion": 1,
+            "discoveryLastSuccessAtMs": 0,
+            "discoveryRefreshFailed": false
+        });
         assert_eq!(file.request_attrs(&mut attrs), Request::None);
         assert_eq!(attrs["discoveryVersion"], 1);
         assert_eq!(attrs["peerAdvertisementError"], "conflict");
+        assert_eq!(attrs["discoveryLastSuccessAtMs"], 0);
+        assert_eq!(attrs["discoveryRefreshFailed"], false);
         assert!(attrs.get("peerService").is_none());
         fs::write(file.advertisement_path(), b"{").unwrap();
         let mut attrs = json!({"discoveryVersion": 1});
         assert_eq!(file.request_attrs(&mut attrs), Request::None);
         assert_eq!(attrs["peerAdvertisementError"], "conflict");
+    }
+
+    #[test]
+    fn error_only_v2_accepts_unavailable_but_never_writes_or_renews_a_directory() {
+        let file = file(false);
+        file.begin_child().unwrap();
+        write_advertisement(&file, &advertisement());
+        let mut attrs = json!({});
+        let ready_request = file.request_attrs(&mut attrs);
+        let observed = unix_time_ms();
+        let good = json!({"ok": true, "discovery": snapshot(observed)});
+        file.accept_response(ready_request, &serde_json::to_vec(&good).unwrap())
+            .unwrap();
+        let original = fs::read(file.directory_path()).unwrap();
+        let original_expiry = file.state.lock().unwrap().valid_until_ms;
+
+        fs::write(file.advertisement_path(), b"{").unwrap();
+        let mut attrs = json!({"processAttempt": 1, "restartCount": 0});
+        let request = file.request_attrs(&mut attrs);
+        assert!(matches!(request, Request::ErrorOnly { .. }));
+        assert_eq!(
+            attrs,
+            json!({
+                "processAttempt": 1,
+                "restartCount": 0,
+                "discoveryVersion": 2,
+                "peerAdvertisementError": "invalid"
+            })
+        );
+        assert_eq!(
+            file.accept_response(request, br#"{"ok":true}"#),
+            Err(DiscoveryFailure::Unsupported),
+            "an old server does not turn a refusal into a successful directory"
+        );
+        assert_eq!(fs::read(file.directory_path()).unwrap(), original);
+        assert_eq!(file.state.lock().unwrap().valid_until_ms, original_expiry);
+        assert_eq!(
+            file.state.lock().unwrap().failure,
+            Some(DiscoveryFailure::Unsupported)
+        );
+        let mut retry_attrs = json!({"processAttempt": 1, "restartCount": 0});
+        assert!(matches!(
+            file.request_attrs(&mut retry_attrs),
+            Request::ErrorOnly { .. }
+        ));
+        assert_eq!(retry_attrs, attrs);
+        let unavailable = json!({"ok": true, "discovery": {
+            "schema": "liskov.discovery.v2", "status": "unavailable", "reason": "invalid"
+        }});
+        assert_eq!(
+            file.accept_response(request, &serde_json::to_vec(&unavailable).unwrap()),
+            Err(DiscoveryFailure::Invalid)
+        );
+        assert_eq!(fs::read(file.directory_path()).unwrap(), original);
+        assert_eq!(file.state.lock().unwrap().valid_until_ms, original_expiry);
+
+        let mut empty = good;
+        empty["discovery"]["peers"] = json!([]);
+        set_revision(&mut empty["discovery"]);
+        empty["discovery"]["observedAtMs"] = (observed + 1).into();
+        assert_eq!(
+            file.accept_response(request, &serde_json::to_vec(&empty).unwrap()),
+            Err(DiscoveryFailure::Invalid),
+            "error-only cannot turn a server mistake into complete-empty"
+        );
+        assert_eq!(fs::read(file.directory_path()).unwrap(), original);
+        assert_eq!(file.state.lock().unwrap().valid_until_ms, original_expiry);
+
+        file.end_child();
+        file.begin_child().unwrap();
+        assert!(!file.directory_path().exists());
+        assert_eq!(
+            file.accept_response(request, &serde_json::to_vec(&unavailable).unwrap()),
+            Err(DiscoveryFailure::Invalid)
+        );
+        assert!(file.state.lock().unwrap().failure.is_none());
+        let mut after_restart = json!({"processAttempt": 0, "restartCount": 1});
+        assert_eq!(file.request_attrs(&mut after_restart), Request::None);
+        assert_eq!(after_restart.as_object().unwrap().len(), 2);
     }
 
     #[test]
@@ -1039,6 +1161,7 @@ mod tests {
                 generation,
                 &serde_json::to_vec(&wrapped).unwrap(),
                 1_790_000_000_100,
+                true,
             )
             .unwrap();
         assert_eq!(

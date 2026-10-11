@@ -597,6 +597,90 @@ mod tests {
     }
 
     #[test]
+    fn owner_error_only_four_attr_fixture_has_exact_canonical_signed_bytes() {
+        use sha2::{Digest, Sha256};
+        let request =
+            include_str!("../vectors/liskov-discovery-v2-signed-error-health-request.json");
+        let canonical =
+            include_str!("../vectors/liskov-discovery-v2-signed-error-health-canonical.json");
+        assert_eq!(
+            hex::encode(Sha256::digest(request.as_bytes())),
+            "776f442927f3c951f2e134dba19e84a9dbb4ecbe22377645c7052001c4086ac4"
+        );
+        assert_eq!(
+            hex::encode(Sha256::digest(canonical.as_bytes())),
+            "59d39043c6c982c3ba4d176451e9fddcd3d942df41df5358219f31654069f0d2"
+        );
+        let signed: Value = serde_json::from_str(request).unwrap();
+        assert_eq!(signed["attrs"].as_object().unwrap().len(), 4);
+        let mut unsigned = signed;
+        unsigned.as_object_mut().unwrap().remove("signature");
+        assert_eq!(
+            canonical_json_bytes(&unsigned),
+            canonical.trim_end().as_bytes()
+        );
+    }
+
+    #[test]
+    fn invalid_local_advertisement_signs_only_the_four_error_only_attrs() {
+        struct ErrorOnlyHttp {
+            bodies: Mutex<Vec<Vec<u8>>>,
+        }
+        impl HttpClient for ErrorOnlyHttp {
+            fn post(&self, _: &str, body: &[u8]) -> Result<HttpResponse, HttpError> {
+                self.bodies.lock().unwrap().push(body.to_vec());
+                Ok(HttpResponse {
+                    status: 200,
+                    body: serde_json::to_vec(&json!({"ok": true, "discovery": {
+                        "schema": "liskov.discovery.v2",
+                        "status": "unavailable",
+                        "reason": "invalid"
+                    }}))
+                    .unwrap(),
+                })
+            }
+        }
+        let peer = Arc::new(
+            crate::discovery::direct::DirectPeerDiscovery::create(
+                &std::env::temp_dir(),
+                "app-uid",
+                "job",
+                "instance",
+                false,
+            )
+            .unwrap(),
+        );
+        peer.begin_child().unwrap();
+        std::fs::write(peer.advertisement_path(), b"{").unwrap();
+        let bridge = Arc::new(FakeBridge::default());
+        let http = Arc::new(ErrorOnlyHttp {
+            bodies: Mutex::new(Vec::new()),
+        });
+        let mut reporter =
+            DiagnosticReporter::new(&bootstrap(), bridge.clone(), http.clone()).unwrap();
+        reporter.direct_peer = Some(peer.clone());
+        reporter.report(
+            "runtime.health",
+            DiagnosticStatus::Info,
+            None,
+            json!({"processAttempt": 1, "restartCount": 0}),
+        );
+        let signed: Value = serde_json::from_slice(&http.bodies.lock().unwrap()[0]).unwrap();
+        let owner: Value = serde_json::from_str(include_str!(
+            "../vectors/liskov-discovery-v2-signed-error-health-request.json"
+        ))
+        .unwrap();
+        assert_eq!(signed["attrs"], owner["attrs"]);
+        let mut unsigned = signed;
+        unsigned.as_object_mut().unwrap().remove("signature");
+        assert_eq!(
+            bridge.calls.lock().unwrap()[0].1[0]["bytes"],
+            hex::encode(canonical_json_bytes(&unsigned))
+        );
+        assert!(!peer.directory_path().exists());
+    }
+
+    #[test]
     fn bounded_http_reader_reports_oversized_direct_snapshot() {
         struct OversizedHttp;
         impl HttpClient for OversizedHttp {
