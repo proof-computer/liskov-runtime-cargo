@@ -12,6 +12,7 @@ pub mod file_secrets;
 pub mod handoff;
 pub mod hardware;
 pub mod http;
+mod job_identity;
 pub mod job_secrets;
 pub mod log_config_secret;
 pub mod logging;
