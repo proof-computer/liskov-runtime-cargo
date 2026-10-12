@@ -164,14 +164,8 @@ pub fn supervise_with_environment_access_and_processor_facts(
             None
         }
     };
-    let direct_peer = match crate::discovery::direct::DirectPeerDiscovery::create(
-        &std::env::temp_dir(),
-        &bootstrap.application_uid,
-        &bootstrap.job_id,
-        &bootstrap.runtime_instance_id,
-        discovery.is_some(),
-    ) {
-        Ok(peer) => Some(Arc::new(peer)),
+    let direct_peer = match prepare_direct_peer(bootstrap) {
+        Ok(peer) => Some(peer),
         Err(_) => {
             eprintln!("liskov direct discovery file setup failed");
             None
@@ -374,6 +368,25 @@ pub fn supervise_with_environment_access_and_processor_facts(
         logging.finish();
     }
     result
+}
+
+// Helper custody is independent of both the inherited Android TMPDIR and a
+// customer-signed TMPDIR. Customer normalization remains a separate later step.
+fn prepare_direct_peer(
+    bootstrap: &RuntimeBootstrapResponse,
+) -> std::io::Result<Arc<crate::discovery::direct::DirectPeerDiscovery>> {
+    // The verified v1 publication intent wins even when its file allocation
+    // fails. An unavailable v1 file must never silently become direct-v2 mode.
+    let legacy_mode = matches!(&bootstrap.access,
+        Some(RuntimeAccessBootstrap::Tailscale(access)) if !access.publications.is_empty());
+    crate::discovery::direct::DirectPeerDiscovery::create(
+        Path::new(crate::customer_environment::DEFAULT_TMPDIR),
+        &bootstrap.application_uid,
+        &bootstrap.job_id,
+        &bootstrap.runtime_instance_id,
+        legacy_mode,
+    )
+    .map(Arc::new)
 }
 
 fn discovery_environment(
@@ -1497,6 +1510,9 @@ pub(crate) mod tests {
     /// `reap_descendants` reaps *any* waitable child, so tests that spawn
     /// processes must not overlap — including the access-module command tests.
     pub(crate) static PROCESS_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[path = "guest_direct_handoff.rs"]
+    mod guest_direct_handoff;
 
     fn bootstrap(supervision: serde_json::Value) -> RuntimeBootstrapResponse {
         RuntimeBootstrapResponse {

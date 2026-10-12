@@ -41,6 +41,19 @@ jobs:
           sudo apt-get install --yes binutils file musl-tools netcat-openbsd openssh-client
       - name: Build release helper
         run: cargo build --release --locked --target aarch64-unknown-linux-musl --bin liskov-runtime-contact
+      - name: Build static offline startup and custody test executable
+        run: |
+          cargo test --release --locked --target aarch64-unknown-linux-musl \
+            --lib --no-run --message-format=json > /tmp/guest-direct-build.jsonl
+          python3 - <<'PYTHON'
+          import json
+          from pathlib import Path
+          binaries = [row["executable"] for line in Path("/tmp/guest-direct-build.jsonl").read_text().splitlines()
+                      if (row := json.loads(line)).get("reason") == "compiler-artifact"
+                      and row.get("profile", {}).get("test") and row.get("executable")]
+          assert len(binaries) == 1, "expected the existing library test executable"
+          Path("/tmp/guest-direct-executable").write_text(binaries[0])
+          PYTHON
       - name: Build evidence probe
         run: cargo build --release --locked --target aarch64-unknown-linux-musl --features tunnel-probe --bin liskov-tunnel-probe
       - name: Build offline processor-fact fixture probe
@@ -75,7 +88,7 @@ jobs:
             echo "artifact unexpectedly contains a dynamic interpreter" >&2
             exit 1
           fi
-          for artifact in target/aarch64-unknown-linux-musl/release/liskov-tunnel-probe target/aarch64-unknown-linux-musl/release/liskov-fact-probe target/dropbear-static/liskov-dropbear target/dropbear-static/liskov-dropbearkey; do
+          for artifact in "$(cat /tmp/guest-direct-executable)" target/aarch64-unknown-linux-musl/release/liskov-tunnel-probe target/aarch64-unknown-linux-musl/release/liskov-fact-probe target/dropbear-static/liskov-dropbear target/dropbear-static/liskov-dropbearkey; do
             file "$artifact" | grep -q 'ELF 64-bit LSB.*ARM aarch64'
             readelf -h "$artifact" | grep -q 'Machine:.*AArch64'
             if readelf -l "$artifact" | grep -q 'Requesting program interpreter'; then
@@ -86,6 +99,7 @@ jobs:
       - name: Stage exact runtime toolchain candidate
         run: |
           mkdir candidate-dist
+          install -m 0755 "$(cat /tmp/guest-direct-executable)" candidate-dist/liskov-guest-direct-tests
           install -m 0755 target/aarch64-unknown-linux-musl/release/liskov-runtime-contact candidate-dist/liskov-runtime-contact
           install -m 0755 target/aarch64-unknown-linux-musl/release/liskov-tunnel-probe candidate-dist/liskov-tunnel-probe
           install -m 0755 target/aarch64-unknown-linux-musl/release/liskov-fact-probe candidate-dist/liskov-fact-probe
@@ -130,6 +144,7 @@ jobs:
         run: |
           chmod 0755 \
             candidate/liskov-runtime-contact \
+            candidate/liskov-guest-direct-tests \
             candidate/liskov-tunnel-probe \
             candidate/liskov-fact-probe \
             candidate/liskov-dropbear \
@@ -139,7 +154,7 @@ jobs:
             candidate/test-nc \
             candidate/test-ld-linux
       - name: Exercise helper under QEMU/PRoot
-        run: scripts/smoke-qemu-proot.sh candidate/liskov-runtime-contact
+        run: scripts/smoke-qemu-proot.sh candidate/liskov-runtime-contact candidate/liskov-guest-direct-tests
       - name: Exercise reusable local emulator profiles
         run: |
           scripts/run-qemu-proot-runtime.sh --self-test

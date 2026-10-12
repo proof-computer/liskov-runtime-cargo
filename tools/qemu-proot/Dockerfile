@@ -48,6 +48,30 @@ RUN cc -O2 -Wall -Wextra -Werror \
     && aarch64-linux-gnu-gcc -O2 -Wall -Wextra -Werror \
         -o /build/network-probe-aarch64 /build/network-probe.c
 
+# Bookworm's QEMU 7.2 rejects the supervisor's existing GET/SET_CHILD_SUBREAPER.
+# Use an upstream digest-pinned linux-user build that implements both, so the
+# offline guest fixture exercises production authority without a test bypass.
+RUN qemu_version=9.2.0 \
+    && qemu_archive_sha256=f859f0bc65e1f533d040bbe8c92bcfecee5af2c921a6687c652fb44d089bd894 \
+    && apt-get update \
+    && apt-get install --yes --no-install-recommends \
+        libglib2.0-dev libpcre2-dev libffi-dev zlib1g-dev \
+        ninja-build pkg-config python3 python3-venv \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl --fail --location --show-error --silent \
+        --output /build/qemu.tar.xz \
+        "https://download.qemu.org/qemu-${qemu_version}.tar.xz" \
+    && printf '%s  %s\n' "${qemu_archive_sha256}" /build/qemu.tar.xz \
+        | sha256sum --check --strict \
+    && tar -xJf /build/qemu.tar.xz -C /build \
+    && cd "/build/qemu-${qemu_version}" \
+    && ./configure --target-list=aarch64-linux-user --static \
+        --disable-system --disable-tools --disable-docs --disable-guest-agent \
+        --disable-plugins --disable-download \
+    && make -j"$(nproc)" \
+    && install -m 0755 build/qemu-aarch64 /build/qemu-aarch64-static \
+    && ! readelf -l /build/qemu-aarch64-static | grep -q 'Requesting program interpreter'
+
 FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818
 
 RUN apt-get update \
@@ -55,10 +79,11 @@ RUN apt-get update \
         ca-certificates \
         curl \
         libtalloc2 \
-        qemu-user-static \
         xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
+COPY --from=builder /build/qemu-aarch64-static /usr/local/bin/qemu-aarch64-static
+COPY --from=builder /build/qemu-9.2.0/COPYING /usr/share/licenses/qemu/COPYING
 COPY --from=builder /build/proot-58aad2cb1c36ea6af7b32d76ccd5bf8d0a967939/src/proot /usr/local/bin/proot
 COPY --from=builder /build/proot-58aad2cb1c36ea6af7b32d76ccd5bf8d0a967939/COPYING /usr/share/licenses/termux-proot/COPYING
 COPY --from=builder /build/deny-af-netlink /usr/local/bin/deny-af-netlink
