@@ -4,15 +4,15 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeSet,
-    fs::{self, DirBuilder, OpenOptions},
+    fs::File,
     io::{self, Read, Write},
-    os::unix::fs::{DirBuilderExt, OpenOptionsExt},
     path::{Path, PathBuf},
     sync::Mutex,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use super::MAX_DISCOVERY_BYTES;
+mod private_parent;
 
 pub const ADVERTISEMENT_FILE_ENV: &str = "LISKOV_PEER_ADVERTISEMENT_FILE";
 pub const DIRECTORY_FILE_ENV: &str = "LISKOV_PEER_DIRECTORY_FILE";
@@ -76,6 +76,7 @@ struct State {
 
 pub struct DirectPeerDiscovery {
     root: PathBuf,
+    custody: private_parent::Directory,
     application_uid: String,
     job_id: String,
     runtime_instance_id: String,
@@ -91,12 +92,15 @@ impl DirectPeerDiscovery {
         runtime_instance_id: &str,
         legacy_mode: bool,
     ) -> io::Result<Self> {
+        let parent_guard = private_parent::Parent::open(parent)?;
         let mut random = [0u8; 16];
         getrandom::fill(&mut random).map_err(io::Error::other)?;
-        let root = parent.join(format!("liskov-direct-peer-{}", hex::encode(random)));
-        DirBuilder::new().mode(0o700).create(&root)?;
+        let custody =
+            parent_guard.allocate(&format!("liskov-direct-peer-{}", hex::encode(random)))?;
+        let root = custody.path();
         Ok(Self {
             root,
+            custody,
             application_uid: application_uid.into(),
             job_id: job_id.into(),
             runtime_instance_id: runtime_instance_id.into(),
@@ -125,8 +129,8 @@ impl DirectPeerDiscovery {
         let mut state = self.state.lock().unwrap();
         state.child_active = false;
         state.generation = state.generation.wrapping_add(1);
-        remove_if_present(&self.advertisement_path())?;
-        remove_if_present(&self.directory_path())?;
+        self.custody.remove("advertisement.json")?;
+        self.custody.remove("directory.json")?;
         state.last_success_at_ms = 0;
         state.valid_until_ms = None;
         state.failure = None;
@@ -139,7 +143,7 @@ impl DirectPeerDiscovery {
         state.child_active = false;
         state.generation = state.generation.wrapping_add(1);
         // Do not permit an old process's input to be read on a future beat.
-        let _ = remove_if_present(&self.advertisement_path());
+        let _ = self.custody.remove("advertisement.json");
     }
 
     pub fn request_attrs(&self, attrs: &mut Value) -> Request {
@@ -148,10 +152,22 @@ impl DirectPeerDiscovery {
         if !state.child_active {
             return Request::None;
         }
-        let ad = if self.legacy_mode && fs::symlink_metadata(self.advertisement_path()).is_ok() {
-            Err(AdvertisementFailure::Conflict)
+        let ad = if self.legacy_mode {
+            // Authenticated v1 intent cannot be promoted to v2 by an I/O
+            // refusal or by a race removing/replacing its local file.
+            match self.custody.exists("advertisement.json") {
+                Ok(false) => Ok(None),
+                Ok(true) | Err(_) => Err(AdvertisementFailure::Conflict),
+            }
         } else {
-            read_advertisement(&self.advertisement_path(), now_ms)
+            read_opened_advertisement(self.custody.read("advertisement.json"), now_ms).and_then(
+                |ad| {
+                    self.custody
+                        .validate()
+                        .map_err(|_| AdvertisementFailure::Invalid)?;
+                    Ok(ad)
+                },
+            )
         };
         if !attrs.is_object() {
             *attrs = json!({});
@@ -295,19 +311,14 @@ impl DirectPeerDiscovery {
         if bytes.len() > MAX_DISCOVERY_BYTES {
             return Err(DiscoveryFailure::Oversized);
         }
-        let temp = self.root.join("next-direct.json");
         let written = (|| -> io::Result<()> {
-            let mut file = OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .mode(0o600)
-                .open(&temp)?;
+            let mut file = self.custody.create("next-direct.json")?;
             file.write_all(&bytes)?;
             file.sync_all()?;
             Ok(())
         })();
         if written.is_err() {
-            let _ = remove_if_present(&temp);
+            let _ = self.custody.remove("next-direct.json");
             return Err(DiscoveryFailure::Unavailable);
         }
         let mut state = self.state.lock().unwrap();
@@ -317,24 +328,18 @@ impl DirectPeerDiscovery {
         {
             Err(DiscoveryFailure::Stale)
         } else {
-            fs::rename(&temp, self.directory_path()).map_err(|_| DiscoveryFailure::Unavailable)?;
+            self.custody
+                .rename("next-direct.json", "directory.json")
+                .map_err(|_| DiscoveryFailure::Unavailable)?;
             state.last_success_at_ms = observed;
             state.valid_until_ms = Some(expiry);
             state.failure = None;
             Ok(())
         };
         if verdict.is_err() {
-            let _ = remove_if_present(&temp);
+            let _ = self.custody.remove("next-direct.json");
         }
         verdict
-    }
-}
-
-impl Drop for DirectPeerDiscovery {
-    fn drop(&mut self) {
-        if let Err(error) = fs::remove_dir_all(&self.root) {
-            eprintln!("liskov direct discovery cleanup failed: {:?}", error.kind());
-        }
     }
 }
 
@@ -352,15 +357,25 @@ struct Advertisement {
     peer_sync_failure_code: Option<String>,
 }
 
+#[cfg(test)]
 fn read_advertisement(
     path: &Path,
     now_ms: i64,
 ) -> Result<Option<Advertisement>, AdvertisementFailure> {
-    let file = match OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
-        .open(path)
-    {
+    use std::os::unix::fs::OpenOptionsExt;
+    read_opened_advertisement(
+        std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
+            .open(path),
+        now_ms,
+    )
+}
+fn read_opened_advertisement(
+    opened: io::Result<File>,
+    now_ms: i64,
+) -> Result<Option<Advertisement>, AdvertisementFailure> {
+    let file = match opened {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) if error.raw_os_error() == Some(libc::ELOOP) => {
@@ -650,8 +665,9 @@ fn unix_time_ms() -> i64 {
         .unwrap_or(0)
 }
 
+#[cfg(test)]
 fn remove_if_present(path: &Path) -> io::Result<()> {
-    match fs::remove_file(path) {
+    match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
@@ -662,8 +678,124 @@ fn remove_if_present(path: &Path) -> io::Result<()> {
 mod tests {
     use super::*;
     use std::ffi::CString;
+    use std::fs;
     use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::{PermissionsExt, symlink};
+
+    #[test]
+    fn replaced_parent_or_leaf_cannot_redirect_reads_writes_or_cleanup() {
+        for replace_parent in [false, true] {
+            let mut random = [0u8; 16];
+            getrandom::fill(&mut random).unwrap();
+            let parent = std::env::temp_dir().join(format!("11fh-custody-{}", hex::encode(random)));
+            fs::create_dir(&parent).unwrap();
+            let file =
+                DirectPeerDiscovery::create(&parent, "app", "self", "incarnation", false).unwrap();
+            file.begin_child().unwrap();
+            write_advertisement(&file, &advertisement());
+            let request = file.request_attrs(&mut json!({}));
+            assert!(matches!(request, Request::Direct { .. }));
+            let original = if replace_parent {
+                parent.clone()
+            } else {
+                file.root.clone()
+            };
+            let moved = original.with_extension("moved");
+            fs::rename(&original, &moved).unwrap();
+            fs::create_dir(&original).unwrap();
+            if replace_parent {
+                fs::create_dir(&file.root).unwrap();
+            }
+            let foreign = file.root.clone();
+            fs::write(foreign.join("sentinel"), b"foreign").unwrap();
+            fs::write(
+                foreign.join("advertisement.json"),
+                serde_json::to_vec(&advertisement()).unwrap(),
+            )
+            .unwrap();
+            let mut attrs = json!({});
+            assert!(matches!(
+                file.request_attrs(&mut attrs),
+                Request::ErrorOnly { .. }
+            ));
+            assert!(attrs.get("peerPort").is_none());
+            assert_eq!(
+                file.accept_response(
+                    request,
+                    &serde_json::to_vec(&json!({"ok":true,"discovery":snapshot(unix_time_ms())}))
+                        .unwrap()
+                ),
+                Err(DiscoveryFailure::Unavailable)
+            );
+            assert!(!foreign.join("directory.json").exists());
+            assert!(!foreign.join("next-direct.json").exists());
+            assert!(file.begin_child().is_err());
+            drop(file);
+            assert_eq!(fs::read(foreign.join("sentinel")).unwrap(), b"foreign");
+            assert!(foreign.join("advertisement.json").is_file());
+            fs::remove_dir_all(&parent).unwrap();
+            if moved.exists() {
+                fs::remove_dir_all(&moved).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_intent_never_becomes_v2_when_parent_or_leaf_is_substituted() {
+        for replace_parent in [false, true] {
+            let mut random = [0u8; 16];
+            getrandom::fill(&mut random).unwrap();
+            let parent = std::env::temp_dir().join(format!("11fh-legacy-{}", hex::encode(random)));
+            fs::create_dir(&parent).unwrap();
+            let file =
+                DirectPeerDiscovery::create(&parent, "app", "self", "incarnation", true).unwrap();
+            file.begin_child().unwrap();
+            write_advertisement(&file, &advertisement());
+            let original = if replace_parent {
+                parent.clone()
+            } else {
+                file.root.clone()
+            };
+            let moved = original.with_extension("moved");
+            fs::rename(&original, &moved).unwrap();
+            fs::create_dir(&original).unwrap();
+            let mut attrs = json!({"discoveryVersion":1});
+            assert_eq!(file.request_attrs(&mut attrs), Request::None);
+            assert_eq!(attrs["peerAdvertisementError"], "conflict");
+            assert_eq!(attrs["discoveryVersion"], 1);
+            assert!(attrs.get("peerPort").is_none());
+            drop(file);
+            fs::remove_dir_all(&parent).unwrap();
+            if moved.exists() {
+                fs::remove_dir_all(&moved).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn privacy_mode_changes_refuse_advertisements_and_lease_refresh() {
+        let file = file(false);
+        file.begin_child().unwrap();
+        write_advertisement(&file, &advertisement());
+        let request = file.request_attrs(&mut json!({}));
+        fs::set_permissions(&file.root, fs::Permissions::from_mode(0o777)).unwrap();
+        let mut attrs = json!({});
+        assert!(matches!(
+            file.request_attrs(&mut attrs),
+            Request::ErrorOnly { .. }
+        ));
+        assert!(attrs.get("peerPort").is_none());
+        assert_eq!(
+            file.accept_response(
+                request,
+                &serde_json::to_vec(&json!({"ok":true,"discovery":snapshot(unix_time_ms())}))
+                    .unwrap()
+            ),
+            Err(DiscoveryFailure::Unavailable)
+        );
+        assert!(!file.directory_path().exists());
+        fs::set_permissions(&file.root, fs::Permissions::from_mode(0o700)).unwrap();
+    }
 
     fn file(legacy: bool) -> DirectPeerDiscovery {
         DirectPeerDiscovery::create(&std::env::temp_dir(), "app", "self", "incarnation", legacy)

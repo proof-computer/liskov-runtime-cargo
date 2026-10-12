@@ -24,3 +24,26 @@ an Acurast-specific outbound-connect interceptor. That dirty patch is not
 present in public Termux PRoot and is not reconstructed here. This tool matches
 the public base version and command-line extensions, then exposes explicit
 local fault profiles without claiming to reproduce the Android-only patch.
+
+`scripts/smoke-qemu-proot.sh <release-helper> [static-lib-test-executable]`
+keeps the release binary's version and missing-bridge refusal separate from
+an offline source/ABI handoff proof. The optional executable is Cargo's existing
+AArch64 library test binary, built from the same candidate source. Both emulator
+profiles run the production supervisor setup and real diagnostic reporter with
+offline Bridge/HTTP fixtures: an invalid inherited Android TMPDIR cannot redirect
+helper storage, the real child writes an advertisement through the supplied
+private paths, and canonical request bytes reach the signing seam. The direct
+custody tests also exercise parent/leaf replacement, refusal, restart, and
+cleanup. This fixture is test-only; it adds no release-helper bootstrap bypass
+and does not prove real bridge cryptography, Acurast connectivity, or peer sync.
+
+The tool image also builds static AArch64 linux-user QEMU 9.2.0 from the
+upstream release archive, SHA-256
+`f859f0bc65e1f533d040bbe8c92bcfecee5af2c921a6687c652fb44d089bd894`.
+Its detached archive signature was verified with the release-manager key
+`CEACC9E15534EBABB82D3FA03353C9CEF108B584`, named by qemu.org/download.
+Bookworm QEMU 7.2 returns EINVAL for the supervisor's existing
+PR_GET_CHILD_SUBREAPER/PR_SET_CHILD_SUBREAPER calls; upstream 9.2 implements
+both. This emulator companion lets the offline fixture exercise the real
+process authority and child handoff. It does not change the deployed helper's
+syscall policy, the PRoot base, the pinned guest image, or the fault profiles.

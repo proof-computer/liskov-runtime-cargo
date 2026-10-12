@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 1 ]]; then
-  echo "usage: scripts/smoke-qemu-proot.sh <aarch64-helper>" >&2
+if [[ $# -lt 1 || $# -gt 2 ]]; then
+  echo "usage: scripts/smoke-qemu-proot.sh <aarch64-helper> [aarch64-lib-test-executable]" >&2
   exit 2
 fi
 
@@ -58,4 +58,22 @@ fi
 if [[ -e "${customer_marker}" ]]; then
   echo "customer command ran before signed contact" >&2
   exit 1
+fi
+
+# Separate source/ABI handoff proof: the existing library test binary uses
+# offline Bridge/HTTP seams, never a production bootstrap bypass. The release
+# binary above still proves its version and fail-closed first-contact boundary.
+if [[ $# -eq 2 ]]; then
+  fixture=$(realpath "$2")
+  repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+  for profile in processor-like netlink-denied; do
+    "${repository_root}/scripts/run-qemu-proot-runtime.sh" \
+      --profile "$profile" --workspace "$(dirname "$fixture")" -- \
+      /usr/bin/env TMPDIR=/data/user/0/liskov-11fh-processor/cache \
+      LISKOV_GUEST_DIRECT_FIXTURE=1 "/workspace/$(basename "$fixture")" \
+      --exact supervisor::tests::guest_direct_handoff::guest_private_startup_handoff_and_signed_advertisement --nocapture --test-threads=1
+    "${repository_root}/scripts/run-qemu-proot-runtime.sh" \
+      --profile "$profile" --workspace "$(dirname "$fixture")" -- \
+      "/workspace/$(basename "$fixture")" discovery::direct --nocapture --test-threads=1
+  done
 fi
