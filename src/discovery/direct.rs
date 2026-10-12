@@ -12,6 +12,7 @@ use std::{
 };
 
 use super::MAX_DISCOVERY_BYTES;
+use crate::job_identity::directory_job_key;
 mod private_parent;
 
 pub const ADVERTISEMENT_FILE_ENV: &str = "LISKOV_PEER_ADVERTISEMENT_FILE";
@@ -530,6 +531,11 @@ fn validate_snapshot(
     if snapshot["schema"] != "liskov.discovery.v2" {
         return Err(DiscoveryFailure::Unsupported);
     }
+    let self_job = directory_job_key(job_id).ok_or(DiscoveryFailure::Invalid)?;
+    let caller_job = snapshot["self"]["jobId"]
+        .as_str()
+        .and_then(directory_job_key)
+        .ok_or(DiscoveryFailure::Invalid)?;
     if !exact_keys(
         snapshot,
         &[
@@ -543,7 +549,7 @@ fn validate_snapshot(
         ],
     ) || !exact_keys(&snapshot["self"], &["jobId", "runtimeInstanceId"])
         || snapshot["applicationUid"] != application_uid
-        || snapshot["self"]["jobId"] != job_id
+        || caller_job != self_job
         || snapshot["self"]["runtimeInstanceId"] != runtime_instance_id
         || !valid_text(&snapshot["revision"])
     {
@@ -571,6 +577,10 @@ fn validate_snapshot(
     let mut runtimes = BTreeSet::new();
     let mut revision_peers = Vec::with_capacity(peers.len());
     for peer in peers {
+        let peer_job = peer["jobId"]
+            .as_str()
+            .and_then(directory_job_key)
+            .ok_or(DiscoveryFailure::Invalid)?;
         if !exact_keys(
             peer,
             &[
@@ -583,21 +593,18 @@ fn validate_snapshot(
                 "observedAtMs",
                 "validUntilMs",
             ],
-        ) || !valid_text(&peer["jobId"])
-            || !valid_text(&peer["runtimeInstanceId"])
+        ) || !valid_text(&peer["runtimeInstanceId"])
             || !peer["service"].as_str().is_some_and(valid_service)
             || peer["provider"] != "direct_ipv6"
             || !peer["tlsFingerprint"]
                 .as_str()
                 .is_some_and(valid_fingerprint)
-            || peer["jobId"] == job_id
+            || peer_job == self_job
             || peer["runtimeInstanceId"] == runtime_instance_id
         {
             return Err(DiscoveryFailure::Invalid);
         }
-        if !jobs.insert(peer["jobId"].as_str().unwrap())
-            || !runtimes.insert(peer["runtimeInstanceId"].as_str().unwrap())
-        {
+        if !jobs.insert(peer_job) || !runtimes.insert(peer["runtimeInstanceId"].as_str().unwrap()) {
             return Err(DiscoveryFailure::Invalid);
         }
         let peer_observed = peer["observedAtMs"]
@@ -858,6 +865,134 @@ mod tests {
             .collect();
         let bytes = serde_json::to_vec(&peers).unwrap();
         snapshot["revision"] = format!("sha256:{}", hex::encode(Sha256::digest(bytes))).into();
+    }
+
+    fn canonical_job(sequence: u64) -> String {
+        json!([{"name":"Acurast","values":[[[60,112,152,122,254,3,80,110,
+            122,87,47,90,244,48,144,130,32,189,150,6,223,46,17,118,
+            23,79,165,212,83,90,23,2]]]}, sequence])
+        .to_string()
+    }
+
+    fn native_job(sequence: u64) -> String {
+        json!({"origin":{"kind":"Acurast", "source":
+            "0x3c70987afe03506e7a572f5af430908220bd9606df2e1176174fa5d4535a1702"},
+            "id":sequence.to_string()})
+        .to_string()
+    }
+
+    #[test]
+    fn canonical_directory_binds_real_job_aliases_without_changing_wire_bytes() {
+        let now = unix_time_ms();
+        let canonical = canonical_job(280_998);
+        let native = native_job(280_998);
+        for (caller, bootstrap) in [(&canonical, &native), (&native, &canonical)] {
+            let file = DirectPeerDiscovery::create(
+                &std::env::temp_dir(),
+                "app",
+                bootstrap,
+                "incarnation",
+                false,
+            )
+            .unwrap();
+            file.begin_child().unwrap();
+            write_advertisement(&file, &advertisement());
+            let request = file.request_attrs(&mut json!({}));
+            let mut directory = snapshot(now);
+            directory["self"]["jobId"] = caller.clone().into();
+            directory["peers"][0]["jobId"] = canonical_job(281_041).into();
+            set_revision(&mut directory);
+            let expected = serialize_directory(&directory).unwrap();
+            file.accept_response(
+                request,
+                &serde_json::to_vec(&json!({"ok":true,"discovery":directory})).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(fs::read(file.directory_path()).unwrap(), expected);
+        }
+        let mut directory = snapshot(now);
+        directory["self"]["jobId"] = canonical.clone().into();
+        for different in [native_job(280_999), native.replace("3c7098", "3d7098")] {
+            assert_eq!(
+                validate_snapshot(&directory, "app", &different, "incarnation", now),
+                Err(DiscoveryFailure::Invalid)
+            );
+        }
+    }
+
+    #[test]
+    fn semantic_self_and_duplicate_job_aliases_refuse_with_valid_revisions() {
+        let now = unix_time_ms();
+        let bootstrap = native_job(280_998);
+        let mut directory = snapshot(now);
+        directory["self"]["jobId"] = canonical_job(280_998).into();
+        directory["peers"][0]["jobId"] = native_job(280_998).into();
+        set_revision(&mut directory);
+        assert_eq!(
+            validate_snapshot(&directory, "app", &bootstrap, "incarnation", now),
+            Err(DiscoveryFailure::Invalid)
+        );
+        directory["peers"][0]["jobId"] = canonical_job(281_041).into();
+        let mut second = directory["peers"][0].clone();
+        second["jobId"] = native_job(281_041).into();
+        second["runtimeInstanceId"] = "different-incarnation".into();
+        directory["peers"].as_array_mut().unwrap().push(second);
+        set_revision(&mut directory);
+        assert_eq!(
+            validate_snapshot(&directory, "app", &bootstrap, "incarnation", now),
+            Err(DiscoveryFailure::Invalid)
+        );
+        directory["peers"][1]["jobId"] = native_job(281_042).into();
+        set_revision(&mut directory);
+        assert!(validate_snapshot(&directory, "app", &bootstrap, "incarnation", now).is_ok());
+        // Normalized identity keys must never substitute for original wire strings
+        // when checking the owner's revision.
+        directory["peers"][0]["jobId"] = native_job(281_041).into();
+        assert_eq!(
+            validate_snapshot(&directory, "app", &bootstrap, "incarnation", now),
+            Err(DiscoveryFailure::Invalid)
+        );
+    }
+
+    #[test]
+    fn malformed_and_oversized_job_references_refuse_on_each_identity_axis() {
+        let now = unix_time_ms();
+        let mut conflict: Value = serde_json::from_str(&native_job(280_998)).unwrap();
+        conflict["sequence"] = 280_999.into();
+        for invalid in [
+            String::new(),
+            "x".repeat(513),
+            "[".into(),
+            " {bad".into(),
+            canonical_job(9_007_199_254_740_992),
+            native_job(9_007_199_254_740_992),
+            conflict.to_string(),
+            native_job(280_998).replace("3c7098", "nothex"),
+            r#"[{"name":"Acurast","values":[[[1,2,3]]]},280998]"#.into(),
+        ] {
+            let mut directory = snapshot(now);
+            directory["self"]["jobId"] = invalid.clone().into();
+            assert_eq!(
+                validate_snapshot(&directory, "app", &invalid, "incarnation", now),
+                Err(DiscoveryFailure::Invalid)
+            );
+            directory["self"]["jobId"] = "self".into();
+            directory["peers"][0]["jobId"] = invalid.into();
+            set_revision(&mut directory);
+            assert_eq!(
+                validate_snapshot(&directory, "app", "self", "incarnation", now),
+                Err(DiscoveryFailure::Invalid)
+            );
+        }
+        for sequence in [0, 9_007_199_254_740_991] {
+            let mut directory = snapshot(now);
+            directory["self"]["jobId"] = canonical_job(sequence).into();
+            assert!(
+                validate_snapshot(&directory, "app", &native_job(sequence), "incarnation", now)
+                    .is_ok()
+            );
+        }
+        assert!(validate_snapshot(&snapshot(now), "app", "self", "incarnation", now).is_ok());
     }
 
     #[test]
