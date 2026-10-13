@@ -16,6 +16,38 @@ pub trait HttpClient: Send + Sync {
     fn post(&self, url: &str, body: &[u8]) -> Result<HttpResponse, HttpError>;
 }
 
+/// Offline payload transport seam for the artifact-serving owner to implement.
+/// The envelope is the exact owner-v1 JSON; its eventual HTTP carrier is not
+/// specified by the owner vectors. Implementations must use HTTPS, disable
+/// redirects/decompression and bound connect/read time and response headers.
+/// A single call is a single attempt: adapters must never replay the envelope.
+/// No runtime producer or speculative header format is enabled here.
+pub trait PayloadHttpClient: Send + Sync {
+    fn get(
+        &self,
+        fixed_origin_url: &str,
+        envelope: &[u8],
+        range_header: Option<&str>,
+    ) -> Result<PayloadHttpResponse, PayloadHttpError>;
+}
+
+pub enum PayloadHttpError {
+    Transport,
+    Rejected,
+}
+
+/// Parsed bounded headers and an unbuffered raw entity stream. The serving
+/// adapter must reject duplicate/ambiguous headers. No body is read for errors.
+pub struct PayloadHttpResponse {
+    pub status: u16,
+    pub content_length: Option<u64>,
+    pub content_range: Option<String>,
+    pub content_encoding: Option<String>,
+    pub descriptor_digest: String,
+    pub artifact_digest: String,
+    pub body: Box<dyn Read + Send>,
+}
+
 #[derive(Debug)]
 pub struct UreqHttpClient {
     agent: ureq::Agent,
