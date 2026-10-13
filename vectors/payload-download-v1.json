@@ -1,0 +1,1264 @@
+{
+  "provenance": "BKLG-20261013-bw93; Python cryptography Ed25519; RFC8032 test seed; independently checked by Node crypto",
+  "testOnlySeedHex": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+  "publicKeyHex": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+  "expectedBinding": {
+    "organisationId": "org-fixture",
+    "applicationUid": "app-0123456789abcdef0123456789abcdef",
+    "job": {
+      "originKind": "acurast",
+      "originKey": "0x1111111111111111111111111111111111111111111111111111111111111111",
+      "sequence": "340282366920938463463374607431768211455"
+    },
+    "processorId": "processor-fixture",
+    "runtimeInstanceId": "incarnation-fixture",
+    "artifactDigest": "sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+    "launch": {
+      "launchId": "launch-fixture",
+      "policyDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    "workload": null,
+    "authorizationExpiresAtMs": 1700000060000
+  },
+  "valid": [
+    {
+      "name": "whole-launch",
+      "envelope": {
+        "request": {
+          "domain": "proof.liskov.payload-download.v1",
+          "method": "GET",
+          "requestTarget": "/v1/payloads/sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "range": {
+            "mode": "whole"
+          },
+          "artifactDigest": "sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "organisationId": "org-fixture",
+          "applicationUid": "app-0123456789abcdef0123456789abcdef",
+          "job": {
+            "originKind": "acurast",
+            "originKey": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "sequence": "340282366920938463463374607431768211455"
+          },
+          "processorId": "processor-fixture",
+          "runtimeInstanceId": "incarnation-fixture",
+          "launch": {
+            "launchId": "launch-fixture",
+            "policyDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "workload": null,
+          "issuedAtMs": 1700000000000,
+          "expiresAtMs": 1700000060000,
+          "nonce": "9397aeb449c7a88016b27e6f0c2f7d413e51cf6718cf9fc6881cee150af7e339"
+        },
+        "signature": "d15bb5b7992860fff20c88496cd8527eb3e0be9564872a2c9991d2b264ad52397aa66ce91788e6b1aa85c5b6fab903c0a8db8a9c01be35ab9f153b028cc8df07"
+      },
+      "messageUtf8": "{\"domain\":\"proof.liskov.payload-download.v1\",\"method\":\"GET\",\"requestTarget\":\"/v1/payloads/sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60\",\"range\":{\"mode\":\"whole\"},\"artifactDigest\":\"sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60\",\"organisationId\":\"org-fixture\",\"applicationUid\":\"app-0123456789abcdef0123456789abcdef\",\"job\":{\"originKind\":\"acurast\",\"originKey\":\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"sequence\":\"340282366920938463463374607431768211455\"},\"processorId\":\"processor-fixture\",\"runtimeInstanceId\":\"incarnation-fixture\",\"launch\":{\"launchId\":\"launch-fixture\",\"policyDigest\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\"},\"workload\":null,\"issuedAtMs\":1700000000000,\"expiresAtMs\":1700000060000,\"nonce\":\"9397aeb449c7a88016b27e6f0c2f7d413e51cf6718cf9fc6881cee150af7e339\"}",
+      "messageDigest": "sha256:beb16d5b2f3bdd592d1e87b40de0e5ba40f523155cbf98472dee3f69aed8755c"
+    },
+    {
+      "name": "single-range-launch",
+      "envelope": {
+        "request": {
+          "domain": "proof.liskov.payload-download.v1",
+          "method": "GET",
+          "requestTarget": "/v1/payloads/sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "range": {
+            "mode": "bytes",
+            "start": 0,
+            "endInclusive": 15
+          },
+          "artifactDigest": "sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "organisationId": "org-fixture",
+          "applicationUid": "app-0123456789abcdef0123456789abcdef",
+          "job": {
+            "originKind": "acurast",
+            "originKey": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "sequence": "340282366920938463463374607431768211455"
+          },
+          "processorId": "processor-fixture",
+          "runtimeInstanceId": "incarnation-fixture",
+          "launch": {
+            "launchId": "launch-fixture",
+            "policyDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "workload": null,
+          "issuedAtMs": 1700000000000,
+          "expiresAtMs": 1700000060000,
+          "nonce": "8321c8e409b55c21485d8466c2d243b0fe7487c3cd4bfbdefd95a17c338a2abb"
+        },
+        "signature": "9b30a536afcae8e3c8b6e75b2f944f8572d00e85e7c84017db90bb42c8bcb9faf2864d18e6ef50c35e465413f67f6a870aca45eea1b0f7aeecec3cb8fbd1860f"
+      },
+      "messageUtf8": "{\"domain\":\"proof.liskov.payload-download.v1\",\"method\":\"GET\",\"requestTarget\":\"/v1/payloads/sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60\",\"range\":{\"mode\":\"bytes\",\"start\":0,\"endInclusive\":15},\"artifactDigest\":\"sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60\",\"organisationId\":\"org-fixture\",\"applicationUid\":\"app-0123456789abcdef0123456789abcdef\",\"job\":{\"originKind\":\"acurast\",\"originKey\":\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"sequence\":\"340282366920938463463374607431768211455\"},\"processorId\":\"processor-fixture\",\"runtimeInstanceId\":\"incarnation-fixture\",\"launch\":{\"launchId\":\"launch-fixture\",\"policyDigest\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\"},\"workload\":null,\"issuedAtMs\":1700000000000,\"expiresAtMs\":1700000060000,\"nonce\":\"8321c8e409b55c21485d8466c2d243b0fe7487c3cd4bfbdefd95a17c338a2abb\"}",
+      "messageDigest": "sha256:f2f11dbcd9fbb819ebfdc0f849ea2d18fca121aa85fece0177707413ad9df221"
+    },
+    {
+      "name": "single-range-workload",
+      "envelope": {
+        "request": {
+          "domain": "proof.liskov.payload-download.v1",
+          "method": "GET",
+          "requestTarget": "/v1/payloads/sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "range": {
+            "mode": "bytes",
+            "start": 16,
+            "endInclusive": 31
+          },
+          "artifactDigest": "sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "organisationId": "org-fixture",
+          "applicationUid": "app-0123456789abcdef0123456789abcdef",
+          "job": {
+            "originKind": "acurast",
+            "originKey": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "sequence": "340282366920938463463374607431768211455"
+          },
+          "processorId": "processor-fixture",
+          "runtimeInstanceId": "incarnation-fixture",
+          "launch": {
+            "launchId": "launch-fixture",
+            "policyDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "workload": {
+            "authorizationId": "update-fixture",
+            "revisionDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+            "policyDigest": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+          },
+          "issuedAtMs": 1700000000000,
+          "expiresAtMs": 1700000060000,
+          "nonce": "fc34318c16935178f6514f947311d3f93502c49bfd814b87ead80946209bbb09"
+        },
+        "signature": "80075bf3b60847ba1ac4e64d9e71a804749fe4007d6d39fc191fdad7a1dedcc0f43fc1b6d0a29a671024b827462475e31477dbff060eba36bc2fc6a98aeb8509"
+      },
+      "messageUtf8": "{\"domain\":\"proof.liskov.payload-download.v1\",\"method\":\"GET\",\"requestTarget\":\"/v1/payloads/sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60\",\"range\":{\"mode\":\"bytes\",\"start\":16,\"endInclusive\":31},\"artifactDigest\":\"sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60\",\"organisationId\":\"org-fixture\",\"applicationUid\":\"app-0123456789abcdef0123456789abcdef\",\"job\":{\"originKind\":\"acurast\",\"originKey\":\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"sequence\":\"340282366920938463463374607431768211455\"},\"processorId\":\"processor-fixture\",\"runtimeInstanceId\":\"incarnation-fixture\",\"launch\":{\"launchId\":\"launch-fixture\",\"policyDigest\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\"},\"workload\":{\"authorizationId\":\"update-fixture\",\"revisionDigest\":\"sha256:4444444444444444444444444444444444444444444444444444444444444444\",\"policyDigest\":\"sha256:5555555555555555555555555555555555555555555555555555555555555555\"},\"issuedAtMs\":1700000000000,\"expiresAtMs\":1700000060000,\"nonce\":\"fc34318c16935178f6514f947311d3f93502c49bfd814b87ead80946209bbb09\"}",
+      "messageDigest": "sha256:d73c658a980060e959178b164a45c980d0ca48116e62f6ff236e26cffa515fea"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "alter-method",
+      "envelope": {
+        "request": {
+          "domain": "proof.liskov.payload-download.v1",
+          "method": "POST",
+          "requestTarget": "/v1/payloads/sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "range": {
+            "mode": "whole"
+          },
+          "artifactDigest": "sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "organisationId": "org-fixture",
+          "applicationUid": "app-0123456789abcdef0123456789abcdef",
+          "job": {
+            "originKind": "acurast",
+            "originKey": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "sequence": "340282366920938463463374607431768211455"
+          },
+          "processorId": "processor-fixture",
+          "runtimeInstanceId": "incarnation-fixture",
+          "launch": {
+            "launchId": "launch-fixture",
+            "policyDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "workload": null,
+          "issuedAtMs": 1700000000000,
+          "expiresAtMs": 1700000060000,
+          "nonce": "9397aeb449c7a88016b27e6f0c2f7d413e51cf6718cf9fc6881cee150af7e339"
+        },
+        "signature": "d15bb5b7992860fff20c88496cd8527eb3e0be9564872a2c9991d2b264ad52397aa66ce91788e6b1aa85c5b6fab903c0a8db8a9c01be35ab9f153b028cc8df07"
+      },
+      "phase": "parse",
+      "reason": "method_mismatch",
+      "signatureValid": false
+    },
+    {
+      "name": "alter-target",
+      "envelope": {
+        "request": {
+          "domain": "proof.liskov.payload-download.v1",
+          "method": "GET",
+          "requestTarget": "/v1/payloads/sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60?x=1",
+          "range": {
+            "mode": "whole"
+          },
+          "artifactDigest": "sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "organisationId": "org-fixture",
+          "applicationUid": "app-0123456789abcdef0123456789abcdef",
+          "job": {
+            "originKind": "acurast",
+            "originKey": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "sequence": "340282366920938463463374607431768211455"
+          },
+          "processorId": "processor-fixture",
+          "runtimeInstanceId": "incarnation-fixture",
+          "launch": {
+            "launchId": "launch-fixture",
+            "policyDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "workload": null,
+          "issuedAtMs": 1700000000000,
+          "expiresAtMs": 1700000060000,
+          "nonce": "9397aeb449c7a88016b27e6f0c2f7d413e51cf6718cf9fc6881cee150af7e339"
+        },
+        "signature": "d15bb5b7992860fff20c88496cd8527eb3e0be9564872a2c9991d2b264ad52397aa66ce91788e6b1aa85c5b6fab903c0a8db8a9c01be35ab9f153b028cc8df07"
+      },
+      "phase": "parse",
+      "reason": "target_mismatch",
+      "signatureValid": false
+    },
+    {
+      "name": "alter-range",
+      "envelope": {
+        "request": {
+          "domain": "proof.liskov.payload-download.v1",
+          "method": "GET",
+          "requestTarget": "/v1/payloads/sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "range": {
+            "mode": "bytes",
+            "start": 0,
+            "endInclusive": 15
+          },
+          "artifactDigest": "sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "organisationId": "org-fixture",
+          "applicationUid": "app-0123456789abcdef0123456789abcdef",
+          "job": {
+            "originKind": "acurast",
+            "originKey": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "sequence": "340282366920938463463374607431768211455"
+          },
+          "processorId": "processor-fixture",
+          "runtimeInstanceId": "incarnation-fixture",
+          "launch": {
+            "launchId": "launch-fixture",
+            "policyDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "workload": null,
+          "issuedAtMs": 1700000000000,
+          "expiresAtMs": 1700000060000,
+          "nonce": "9397aeb449c7a88016b27e6f0c2f7d413e51cf6718cf9fc6881cee150af7e339"
+        },
+        "signature": "d15bb5b7992860fff20c88496cd8527eb3e0be9564872a2c9991d2b264ad52397aa66ce91788e6b1aa85c5b6fab903c0a8db8a9c01be35ab9f153b028cc8df07"
+      },
+      "phase": "signature",
+      "reason": "invalid_signature",
+      "signatureValid": false
+    },
+    {
+      "name": "whole-range-extra-field",
+      "envelope": {
+        "request": {
+          "domain": "proof.liskov.payload-download.v1",
+          "method": "GET",
+          "requestTarget": "/v1/payloads/sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "range": {
+            "mode": "whole",
+            "start": 0,
+            "endInclusive": 15
+          },
+          "artifactDigest": "sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "organisationId": "org-fixture",
+          "applicationUid": "app-0123456789abcdef0123456789abcdef",
+          "job": {
+            "originKind": "acurast",
+            "originKey": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "sequence": "340282366920938463463374607431768211455"
+          },
+          "processorId": "processor-fixture",
+          "runtimeInstanceId": "incarnation-fixture",
+          "launch": {
+            "launchId": "launch-fixture",
+            "policyDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "workload": null,
+          "issuedAtMs": 1700000000000,
+          "expiresAtMs": 1700000060000,
+          "nonce": "9397aeb449c7a88016b27e6f0c2f7d413e51cf6718cf9fc6881cee150af7e339"
+        },
+        "signature": "d15bb5b7992860fff20c88496cd8527eb3e0be9564872a2c9991d2b264ad52397aa66ce91788e6b1aa85c5b6fab903c0a8db8a9c01be35ab9f153b028cc8df07"
+      },
+      "phase": "parse",
+      "reason": "malformed_envelope",
+      "signatureValid": false
+    },
+    {
+      "name": "inverted-range",
+      "envelope": {
+        "request": {
+          "domain": "proof.liskov.payload-download.v1",
+          "method": "GET",
+          "requestTarget": "/v1/payloads/sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "range": {
+            "mode": "bytes",
+            "start": 5,
+            "endInclusive": 4
+          },
+          "artifactDigest": "sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "organisationId": "org-fixture",
+          "applicationUid": "app-0123456789abcdef0123456789abcdef",
+          "job": {
+            "originKind": "acurast",
+            "originKey": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "sequence": "340282366920938463463374607431768211455"
+          },
+          "processorId": "processor-fixture",
+          "runtimeInstanceId": "incarnation-fixture",
+          "launch": {
+            "launchId": "launch-fixture",
+            "policyDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "workload": null,
+          "issuedAtMs": 1700000000000,
+          "expiresAtMs": 1700000060000,
+          "nonce": "9397aeb449c7a88016b27e6f0c2f7d413e51cf6718cf9fc6881cee150af7e339"
+        },
+        "signature": "d15bb5b7992860fff20c88496cd8527eb3e0be9564872a2c9991d2b264ad52397aa66ce91788e6b1aa85c5b6fab903c0a8db8a9c01be35ab9f153b028cc8df07"
+      },
+      "phase": "parse",
+      "reason": "invalid_range",
+      "signatureValid": false
+    },
+    {
+      "name": "wrong-app",
+      "envelope": {
+        "request": {
+          "domain": "proof.liskov.payload-download.v1",
+          "method": "GET",
+          "requestTarget": "/v1/payloads/sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "range": {
+            "mode": "whole"
+          },
+          "artifactDigest": "sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "organisationId": "org-fixture",
+          "applicationUid": "app-other",
+          "job": {
+            "originKind": "acurast",
+            "originKey": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "sequence": "340282366920938463463374607431768211455"
+          },
+          "processorId": "processor-fixture",
+          "runtimeInstanceId": "incarnation-fixture",
+          "launch": {
+            "launchId": "launch-fixture",
+            "policyDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "workload": null,
+          "issuedAtMs": 1700000000000,
+          "expiresAtMs": 1700000060000,
+          "nonce": "9397aeb449c7a88016b27e6f0c2f7d413e51cf6718cf9fc6881cee150af7e339"
+        },
+        "signature": "d15bb5b7992860fff20c88496cd8527eb3e0be9564872a2c9991d2b264ad52397aa66ce91788e6b1aa85c5b6fab903c0a8db8a9c01be35ab9f153b028cc8df07"
+      },
+      "phase": "binding",
+      "reason": "wrong_application",
+      "signatureValid": false
+    },
+    {
+      "name": "wrong-org",
+      "envelope": {
+        "request": {
+          "domain": "proof.liskov.payload-download.v1",
+          "method": "GET",
+          "requestTarget": "/v1/payloads/sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "range": {
+            "mode": "whole"
+          },
+          "artifactDigest": "sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "organisationId": "org-other",
+          "applicationUid": "app-0123456789abcdef0123456789abcdef",
+          "job": {
+            "originKind": "acurast",
+            "originKey": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "sequence": "340282366920938463463374607431768211455"
+          },
+          "processorId": "processor-fixture",
+          "runtimeInstanceId": "incarnation-fixture",
+          "launch": {
+            "launchId": "launch-fixture",
+            "policyDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "workload": null,
+          "issuedAtMs": 1700000000000,
+          "expiresAtMs": 1700000060000,
+          "nonce": "9397aeb449c7a88016b27e6f0c2f7d413e51cf6718cf9fc6881cee150af7e339"
+        },
+        "signature": "d15bb5b7992860fff20c88496cd8527eb3e0be9564872a2c9991d2b264ad52397aa66ce91788e6b1aa85c5b6fab903c0a8db8a9c01be35ab9f153b028cc8df07"
+      },
+      "phase": "binding",
+      "reason": "wrong_application",
+      "signatureValid": false
+    },
+    {
+      "name": "wrong-job",
+      "envelope": {
+        "request": {
+          "domain": "proof.liskov.payload-download.v1",
+          "method": "GET",
+          "requestTarget": "/v1/payloads/sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "range": {
+            "mode": "whole"
+          },
+          "artifactDigest": "sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "organisationId": "org-fixture",
+          "applicationUid": "app-0123456789abcdef0123456789abcdef",
+          "job": {
+            "originKind": "acurast",
+            "originKey": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "sequence": "0"
+          },
+          "processorId": "processor-fixture",
+          "runtimeInstanceId": "incarnation-fixture",
+          "launch": {
+            "launchId": "launch-fixture",
+            "policyDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "workload": null,
+          "issuedAtMs": 1700000000000,
+          "expiresAtMs": 1700000060000,
+          "nonce": "9397aeb449c7a88016b27e6f0c2f7d413e51cf6718cf9fc6881cee150af7e339"
+        },
+        "signature": "d15bb5b7992860fff20c88496cd8527eb3e0be9564872a2c9991d2b264ad52397aa66ce91788e6b1aa85c5b6fab903c0a8db8a9c01be35ab9f153b028cc8df07"
+      },
+      "phase": "binding",
+      "reason": "wrong_job",
+      "signatureValid": false
+    },
+    {
+      "name": "wrong-processor",
+      "envelope": {
+        "request": {
+          "domain": "proof.liskov.payload-download.v1",
+          "method": "GET",
+          "requestTarget": "/v1/payloads/sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "range": {
+            "mode": "whole"
+          },
+          "artifactDigest": "sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "organisationId": "org-fixture",
+          "applicationUid": "app-0123456789abcdef0123456789abcdef",
+          "job": {
+            "originKind": "acurast",
+            "originKey": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "sequence": "340282366920938463463374607431768211455"
+          },
+          "processorId": "processor-other",
+          "runtimeInstanceId": "incarnation-fixture",
+          "launch": {
+            "launchId": "launch-fixture",
+            "policyDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "workload": null,
+          "issuedAtMs": 1700000000000,
+          "expiresAtMs": 1700000060000,
+          "nonce": "9397aeb449c7a88016b27e6f0c2f7d413e51cf6718cf9fc6881cee150af7e339"
+        },
+        "signature": "d15bb5b7992860fff20c88496cd8527eb3e0be9564872a2c9991d2b264ad52397aa66ce91788e6b1aa85c5b6fab903c0a8db8a9c01be35ab9f153b028cc8df07"
+      },
+      "phase": "binding",
+      "reason": "wrong_job",
+      "signatureValid": false
+    },
+    {
+      "name": "wrong-incarnation",
+      "envelope": {
+        "request": {
+          "domain": "proof.liskov.payload-download.v1",
+          "method": "GET",
+          "requestTarget": "/v1/payloads/sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "range": {
+            "mode": "whole"
+          },
+          "artifactDigest": "sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "organisationId": "org-fixture",
+          "applicationUid": "app-0123456789abcdef0123456789abcdef",
+          "job": {
+            "originKind": "acurast",
+            "originKey": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "sequence": "340282366920938463463374607431768211455"
+          },
+          "processorId": "processor-fixture",
+          "runtimeInstanceId": "incarnation-other",
+          "launch": {
+            "launchId": "launch-fixture",
+            "policyDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "workload": null,
+          "issuedAtMs": 1700000000000,
+          "expiresAtMs": 1700000060000,
+          "nonce": "9397aeb449c7a88016b27e6f0c2f7d413e51cf6718cf9fc6881cee150af7e339"
+        },
+        "signature": "d15bb5b7992860fff20c88496cd8527eb3e0be9564872a2c9991d2b264ad52397aa66ce91788e6b1aa85c5b6fab903c0a8db8a9c01be35ab9f153b028cc8df07"
+      },
+      "phase": "binding",
+      "reason": "wrong_incarnation",
+      "signatureValid": false
+    },
+    {
+      "name": "wrong-launch",
+      "envelope": {
+        "request": {
+          "domain": "proof.liskov.payload-download.v1",
+          "method": "GET",
+          "requestTarget": "/v1/payloads/sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "range": {
+            "mode": "whole"
+          },
+          "artifactDigest": "sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "organisationId": "org-fixture",
+          "applicationUid": "app-0123456789abcdef0123456789abcdef",
+          "job": {
+            "originKind": "acurast",
+            "originKey": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "sequence": "340282366920938463463374607431768211455"
+          },
+          "processorId": "processor-fixture",
+          "runtimeInstanceId": "incarnation-fixture",
+          "launch": {
+            "launchId": "launch-other",
+            "policyDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "workload": null,
+          "issuedAtMs": 1700000000000,
+          "expiresAtMs": 1700000060000,
+          "nonce": "9397aeb449c7a88016b27e6f0c2f7d413e51cf6718cf9fc6881cee150af7e339"
+        },
+        "signature": "d15bb5b7992860fff20c88496cd8527eb3e0be9564872a2c9991d2b264ad52397aa66ce91788e6b1aa85c5b6fab903c0a8db8a9c01be35ab9f153b028cc8df07"
+      },
+      "phase": "binding",
+      "reason": "wrong_launch",
+      "signatureValid": false
+    },
+    {
+      "name": "wrong-workload",
+      "envelope": {
+        "request": {
+          "domain": "proof.liskov.payload-download.v1",
+          "method": "GET",
+          "requestTarget": "/v1/payloads/sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "range": {
+            "mode": "whole"
+          },
+          "artifactDigest": "sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "organisationId": "org-fixture",
+          "applicationUid": "app-0123456789abcdef0123456789abcdef",
+          "job": {
+            "originKind": "acurast",
+            "originKey": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "sequence": "340282366920938463463374607431768211455"
+          },
+          "processorId": "processor-fixture",
+          "runtimeInstanceId": "incarnation-fixture",
+          "launch": {
+            "launchId": "launch-fixture",
+            "policyDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "workload": {
+            "authorizationId": "update-fixture",
+            "revisionDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+            "policyDigest": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+          },
+          "issuedAtMs": 1700000000000,
+          "expiresAtMs": 1700000060000,
+          "nonce": "9397aeb449c7a88016b27e6f0c2f7d413e51cf6718cf9fc6881cee150af7e339"
+        },
+        "signature": "d15bb5b7992860fff20c88496cd8527eb3e0be9564872a2c9991d2b264ad52397aa66ce91788e6b1aa85c5b6fab903c0a8db8a9c01be35ab9f153b028cc8df07"
+      },
+      "phase": "binding",
+      "reason": "wrong_workload",
+      "signatureValid": false
+    },
+    {
+      "name": "empty-nonce",
+      "envelope": {
+        "request": {
+          "domain": "proof.liskov.payload-download.v1",
+          "method": "GET",
+          "requestTarget": "/v1/payloads/sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "range": {
+            "mode": "whole"
+          },
+          "artifactDigest": "sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "organisationId": "org-fixture",
+          "applicationUid": "app-0123456789abcdef0123456789abcdef",
+          "job": {
+            "originKind": "acurast",
+            "originKey": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "sequence": "340282366920938463463374607431768211455"
+          },
+          "processorId": "processor-fixture",
+          "runtimeInstanceId": "incarnation-fixture",
+          "launch": {
+            "launchId": "launch-fixture",
+            "policyDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "workload": null,
+          "issuedAtMs": 1700000000000,
+          "expiresAtMs": 1700000060000,
+          "nonce": ""
+        },
+        "signature": "d15bb5b7992860fff20c88496cd8527eb3e0be9564872a2c9991d2b264ad52397aa66ce91788e6b1aa85c5b6fab903c0a8db8a9c01be35ab9f153b028cc8df07"
+      },
+      "phase": "parse",
+      "reason": "invalid_nonce",
+      "signatureValid": false
+    },
+    {
+      "name": "uppercase-nonce",
+      "envelope": {
+        "request": {
+          "domain": "proof.liskov.payload-download.v1",
+          "method": "GET",
+          "requestTarget": "/v1/payloads/sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "range": {
+            "mode": "whole"
+          },
+          "artifactDigest": "sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "organisationId": "org-fixture",
+          "applicationUid": "app-0123456789abcdef0123456789abcdef",
+          "job": {
+            "originKind": "acurast",
+            "originKey": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "sequence": "340282366920938463463374607431768211455"
+          },
+          "processorId": "processor-fixture",
+          "runtimeInstanceId": "incarnation-fixture",
+          "launch": {
+            "launchId": "launch-fixture",
+            "policyDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "workload": null,
+          "issuedAtMs": 1700000000000,
+          "expiresAtMs": 1700000060000,
+          "nonce": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        },
+        "signature": "d15bb5b7992860fff20c88496cd8527eb3e0be9564872a2c9991d2b264ad52397aa66ce91788e6b1aa85c5b6fab903c0a8db8a9c01be35ab9f153b028cc8df07"
+      },
+      "phase": "parse",
+      "reason": "invalid_nonce",
+      "signatureValid": false
+    },
+    {
+      "name": "negative-time",
+      "envelope": {
+        "request": {
+          "domain": "proof.liskov.payload-download.v1",
+          "method": "GET",
+          "requestTarget": "/v1/payloads/sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "range": {
+            "mode": "whole"
+          },
+          "artifactDigest": "sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "organisationId": "org-fixture",
+          "applicationUid": "app-0123456789abcdef0123456789abcdef",
+          "job": {
+            "originKind": "acurast",
+            "originKey": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "sequence": "340282366920938463463374607431768211455"
+          },
+          "processorId": "processor-fixture",
+          "runtimeInstanceId": "incarnation-fixture",
+          "launch": {
+            "launchId": "launch-fixture",
+            "policyDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "workload": null,
+          "issuedAtMs": -1,
+          "expiresAtMs": 1700000060000,
+          "nonce": "9397aeb449c7a88016b27e6f0c2f7d413e51cf6718cf9fc6881cee150af7e339"
+        },
+        "signature": "d15bb5b7992860fff20c88496cd8527eb3e0be9564872a2c9991d2b264ad52397aa66ce91788e6b1aa85c5b6fab903c0a8db8a9c01be35ab9f153b028cc8df07"
+      },
+      "phase": "parse",
+      "reason": "invalid_time",
+      "signatureValid": false
+    },
+    {
+      "name": "span-over-60s",
+      "envelope": {
+        "request": {
+          "domain": "proof.liskov.payload-download.v1",
+          "method": "GET",
+          "requestTarget": "/v1/payloads/sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "range": {
+            "mode": "whole"
+          },
+          "artifactDigest": "sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "organisationId": "org-fixture",
+          "applicationUid": "app-0123456789abcdef0123456789abcdef",
+          "job": {
+            "originKind": "acurast",
+            "originKey": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "sequence": "340282366920938463463374607431768211455"
+          },
+          "processorId": "processor-fixture",
+          "runtimeInstanceId": "incarnation-fixture",
+          "launch": {
+            "launchId": "launch-fixture",
+            "policyDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "workload": null,
+          "issuedAtMs": 1700000000000,
+          "expiresAtMs": 1700000060001,
+          "nonce": "9397aeb449c7a88016b27e6f0c2f7d413e51cf6718cf9fc6881cee150af7e339"
+        },
+        "signature": "d15bb5b7992860fff20c88496cd8527eb3e0be9564872a2c9991d2b264ad52397aa66ce91788e6b1aa85c5b6fab903c0a8db8a9c01be35ab9f153b028cc8df07"
+      },
+      "phase": "parse",
+      "reason": "invalid_time",
+      "signatureValid": false
+    },
+    {
+      "name": "zero-span",
+      "envelope": {
+        "request": {
+          "domain": "proof.liskov.payload-download.v1",
+          "method": "GET",
+          "requestTarget": "/v1/payloads/sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "range": {
+            "mode": "whole"
+          },
+          "artifactDigest": "sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "organisationId": "org-fixture",
+          "applicationUid": "app-0123456789abcdef0123456789abcdef",
+          "job": {
+            "originKind": "acurast",
+            "originKey": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "sequence": "340282366920938463463374607431768211455"
+          },
+          "processorId": "processor-fixture",
+          "runtimeInstanceId": "incarnation-fixture",
+          "launch": {
+            "launchId": "launch-fixture",
+            "policyDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "workload": null,
+          "issuedAtMs": 1700000000000,
+          "expiresAtMs": 1700000000000,
+          "nonce": "9397aeb449c7a88016b27e6f0c2f7d413e51cf6718cf9fc6881cee150af7e339"
+        },
+        "signature": "d15bb5b7992860fff20c88496cd8527eb3e0be9564872a2c9991d2b264ad52397aa66ce91788e6b1aa85c5b6fab903c0a8db8a9c01be35ab9f153b028cc8df07"
+      },
+      "phase": "parse",
+      "reason": "invalid_time",
+      "signatureValid": false
+    },
+    {
+      "name": "unsafe-time",
+      "envelope": {
+        "request": {
+          "domain": "proof.liskov.payload-download.v1",
+          "method": "GET",
+          "requestTarget": "/v1/payloads/sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "range": {
+            "mode": "whole"
+          },
+          "artifactDigest": "sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "organisationId": "org-fixture",
+          "applicationUid": "app-0123456789abcdef0123456789abcdef",
+          "job": {
+            "originKind": "acurast",
+            "originKey": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "sequence": "340282366920938463463374607431768211455"
+          },
+          "processorId": "processor-fixture",
+          "runtimeInstanceId": "incarnation-fixture",
+          "launch": {
+            "launchId": "launch-fixture",
+            "policyDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "workload": null,
+          "issuedAtMs": 1700000000000,
+          "expiresAtMs": 9007199254740992,
+          "nonce": "9397aeb449c7a88016b27e6f0c2f7d413e51cf6718cf9fc6881cee150af7e339"
+        },
+        "signature": "d15bb5b7992860fff20c88496cd8527eb3e0be9564872a2c9991d2b264ad52397aa66ce91788e6b1aa85c5b6fab903c0a8db8a9c01be35ab9f153b028cc8df07"
+      },
+      "phase": "parse",
+      "reason": "invalid_time",
+      "signatureValid": false
+    },
+    {
+      "name": "timestamp-overflow",
+      "envelope": {
+        "request": {
+          "domain": "proof.liskov.payload-download.v1",
+          "method": "GET",
+          "requestTarget": "/v1/payloads/sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "range": {
+            "mode": "whole"
+          },
+          "artifactDigest": "sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "organisationId": "org-fixture",
+          "applicationUid": "app-0123456789abcdef0123456789abcdef",
+          "job": {
+            "originKind": "acurast",
+            "originKey": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "sequence": "340282366920938463463374607431768211455"
+          },
+          "processorId": "processor-fixture",
+          "runtimeInstanceId": "incarnation-fixture",
+          "launch": {
+            "launchId": "launch-fixture",
+            "policyDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "workload": null,
+          "issuedAtMs": -9223372036854775808,
+          "expiresAtMs": 1700000060000,
+          "nonce": "9397aeb449c7a88016b27e6f0c2f7d413e51cf6718cf9fc6881cee150af7e339"
+        },
+        "signature": "d15bb5b7992860fff20c88496cd8527eb3e0be9564872a2c9991d2b264ad52397aa66ce91788e6b1aa85c5b6fab903c0a8db8a9c01be35ab9f153b028cc8df07"
+      },
+      "phase": "parse",
+      "reason": "overflow",
+      "signatureValid": false
+    },
+    {
+      "name": "range-overflow",
+      "envelope": {
+        "request": {
+          "domain": "proof.liskov.payload-download.v1",
+          "method": "GET",
+          "requestTarget": "/v1/payloads/sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "range": {
+            "mode": "bytes",
+            "start": 0,
+            "endInclusive": 18446744073709551615
+          },
+          "artifactDigest": "sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "organisationId": "org-fixture",
+          "applicationUid": "app-0123456789abcdef0123456789abcdef",
+          "job": {
+            "originKind": "acurast",
+            "originKey": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "sequence": "340282366920938463463374607431768211455"
+          },
+          "processorId": "processor-fixture",
+          "runtimeInstanceId": "incarnation-fixture",
+          "launch": {
+            "launchId": "launch-fixture",
+            "policyDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "workload": null,
+          "issuedAtMs": 1700000000000,
+          "expiresAtMs": 1700000060000,
+          "nonce": "9397aeb449c7a88016b27e6f0c2f7d413e51cf6718cf9fc6881cee150af7e339"
+        },
+        "signature": "d15bb5b7992860fff20c88496cd8527eb3e0be9564872a2c9991d2b264ad52397aa66ce91788e6b1aa85c5b6fab903c0a8db8a9c01be35ab9f153b028cc8df07"
+      },
+      "phase": "parse",
+      "reason": "overflow",
+      "signatureValid": false
+    },
+    {
+      "name": "unsafe-range",
+      "envelope": {
+        "request": {
+          "domain": "proof.liskov.payload-download.v1",
+          "method": "GET",
+          "requestTarget": "/v1/payloads/sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "range": {
+            "mode": "bytes",
+            "start": 0,
+            "endInclusive": 9007199254740992
+          },
+          "artifactDigest": "sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "organisationId": "org-fixture",
+          "applicationUid": "app-0123456789abcdef0123456789abcdef",
+          "job": {
+            "originKind": "acurast",
+            "originKey": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "sequence": "340282366920938463463374607431768211455"
+          },
+          "processorId": "processor-fixture",
+          "runtimeInstanceId": "incarnation-fixture",
+          "launch": {
+            "launchId": "launch-fixture",
+            "policyDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "workload": null,
+          "issuedAtMs": 1700000000000,
+          "expiresAtMs": 1700000060000,
+          "nonce": "9397aeb449c7a88016b27e6f0c2f7d413e51cf6718cf9fc6881cee150af7e339"
+        },
+        "signature": "d15bb5b7992860fff20c88496cd8527eb3e0be9564872a2c9991d2b264ad52397aa66ce91788e6b1aa85c5b6fab903c0a8db8a9c01be35ab9f153b028cc8df07"
+      },
+      "phase": "parse",
+      "reason": "invalid_range",
+      "signatureValid": false
+    },
+    {
+      "name": "noncanonical-job",
+      "envelope": {
+        "request": {
+          "domain": "proof.liskov.payload-download.v1",
+          "method": "GET",
+          "requestTarget": "/v1/payloads/sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "range": {
+            "mode": "whole"
+          },
+          "artifactDigest": "sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "organisationId": "org-fixture",
+          "applicationUid": "app-0123456789abcdef0123456789abcdef",
+          "job": {
+            "originKind": "acurast",
+            "originKey": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "sequence": "340282366920938463463374607431768211456"
+          },
+          "processorId": "processor-fixture",
+          "runtimeInstanceId": "incarnation-fixture",
+          "launch": {
+            "launchId": "launch-fixture",
+            "policyDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "workload": null,
+          "issuedAtMs": 1700000000000,
+          "expiresAtMs": 1700000060000,
+          "nonce": "9397aeb449c7a88016b27e6f0c2f7d413e51cf6718cf9fc6881cee150af7e339"
+        },
+        "signature": "d15bb5b7992860fff20c88496cd8527eb3e0be9564872a2c9991d2b264ad52397aa66ce91788e6b1aa85c5b6fab903c0a8db8a9c01be35ab9f153b028cc8df07"
+      },
+      "phase": "parse",
+      "reason": "invalid_job_reference",
+      "signatureValid": false
+    },
+    {
+      "name": "job-overflow",
+      "envelope": {
+        "request": {
+          "domain": "proof.liskov.payload-download.v1",
+          "method": "GET",
+          "requestTarget": "/v1/payloads/sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "range": {
+            "mode": "whole"
+          },
+          "artifactDigest": "sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "organisationId": "org-fixture",
+          "applicationUid": "app-0123456789abcdef0123456789abcdef",
+          "job": {
+            "originKind": "acurast",
+            "originKey": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "sequence": "340282366920938463463374607431768211456"
+          },
+          "processorId": "processor-fixture",
+          "runtimeInstanceId": "incarnation-fixture",
+          "launch": {
+            "launchId": "launch-fixture",
+            "policyDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "workload": null,
+          "issuedAtMs": 1700000000000,
+          "expiresAtMs": 1700000060000,
+          "nonce": "9397aeb449c7a88016b27e6f0c2f7d413e51cf6718cf9fc6881cee150af7e339"
+        },
+        "signature": "d15bb5b7992860fff20c88496cd8527eb3e0be9564872a2c9991d2b264ad52397aa66ce91788e6b1aa85c5b6fab903c0a8db8a9c01be35ab9f153b028cc8df07"
+      },
+      "phase": "parse",
+      "reason": "invalid_job_reference",
+      "signatureValid": false
+    },
+    {
+      "name": "wrong-artifact",
+      "envelope": {
+        "request": {
+          "domain": "proof.liskov.payload-download.v1",
+          "method": "GET",
+          "requestTarget": "/v1/payloads/sha256:6666666666666666666666666666666666666666666666666666666666666666",
+          "range": {
+            "mode": "whole"
+          },
+          "artifactDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+          "organisationId": "org-fixture",
+          "applicationUid": "app-0123456789abcdef0123456789abcdef",
+          "job": {
+            "originKind": "acurast",
+            "originKey": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "sequence": "340282366920938463463374607431768211455"
+          },
+          "processorId": "processor-fixture",
+          "runtimeInstanceId": "incarnation-fixture",
+          "launch": {
+            "launchId": "launch-fixture",
+            "policyDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "workload": null,
+          "issuedAtMs": 1700000000000,
+          "expiresAtMs": 1700000060000,
+          "nonce": "9397aeb449c7a88016b27e6f0c2f7d413e51cf6718cf9fc6881cee150af7e339"
+        },
+        "signature": "d15bb5b7992860fff20c88496cd8527eb3e0be9564872a2c9991d2b264ad52397aa66ce91788e6b1aa85c5b6fab903c0a8db8a9c01be35ab9f153b028cc8df07"
+      },
+      "phase": "binding",
+      "reason": "wrong_artifact",
+      "signatureValid": false
+    },
+    {
+      "name": "transport-method",
+      "envelope": {
+        "request": {
+          "domain": "proof.liskov.payload-download.v1",
+          "method": "GET",
+          "requestTarget": "/v1/payloads/sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "range": {
+            "mode": "whole"
+          },
+          "artifactDigest": "sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "organisationId": "org-fixture",
+          "applicationUid": "app-0123456789abcdef0123456789abcdef",
+          "job": {
+            "originKind": "acurast",
+            "originKey": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "sequence": "340282366920938463463374607431768211455"
+          },
+          "processorId": "processor-fixture",
+          "runtimeInstanceId": "incarnation-fixture",
+          "launch": {
+            "launchId": "launch-fixture",
+            "policyDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "workload": null,
+          "issuedAtMs": 1700000000000,
+          "expiresAtMs": 1700000060000,
+          "nonce": "9397aeb449c7a88016b27e6f0c2f7d413e51cf6718cf9fc6881cee150af7e339"
+        },
+        "signature": "d15bb5b7992860fff20c88496cd8527eb3e0be9564872a2c9991d2b264ad52397aa66ce91788e6b1aa85c5b6fab903c0a8db8a9c01be35ab9f153b028cc8df07"
+      },
+      "phase": "transport",
+      "reason": "method_mismatch",
+      "signatureValid": true,
+      "method": "HEAD",
+      "target": "/v1/payloads/sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+      "rangeHeader": null,
+      "nowMs": 1700000000000
+    },
+    {
+      "name": "transport-target",
+      "envelope": {
+        "request": {
+          "domain": "proof.liskov.payload-download.v1",
+          "method": "GET",
+          "requestTarget": "/v1/payloads/sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "range": {
+            "mode": "whole"
+          },
+          "artifactDigest": "sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "organisationId": "org-fixture",
+          "applicationUid": "app-0123456789abcdef0123456789abcdef",
+          "job": {
+            "originKind": "acurast",
+            "originKey": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "sequence": "340282366920938463463374607431768211455"
+          },
+          "processorId": "processor-fixture",
+          "runtimeInstanceId": "incarnation-fixture",
+          "launch": {
+            "launchId": "launch-fixture",
+            "policyDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "workload": null,
+          "issuedAtMs": 1700000000000,
+          "expiresAtMs": 1700000060000,
+          "nonce": "9397aeb449c7a88016b27e6f0c2f7d413e51cf6718cf9fc6881cee150af7e339"
+        },
+        "signature": "d15bb5b7992860fff20c88496cd8527eb3e0be9564872a2c9991d2b264ad52397aa66ce91788e6b1aa85c5b6fab903c0a8db8a9c01be35ab9f153b028cc8df07"
+      },
+      "phase": "transport",
+      "reason": "target_mismatch",
+      "signatureValid": true,
+      "method": "GET",
+      "target": "/v1/payloads/sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60/",
+      "rangeHeader": null,
+      "nowMs": 1700000000000
+    },
+    {
+      "name": "transport-range",
+      "envelope": {
+        "request": {
+          "domain": "proof.liskov.payload-download.v1",
+          "method": "GET",
+          "requestTarget": "/v1/payloads/sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "range": {
+            "mode": "whole"
+          },
+          "artifactDigest": "sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "organisationId": "org-fixture",
+          "applicationUid": "app-0123456789abcdef0123456789abcdef",
+          "job": {
+            "originKind": "acurast",
+            "originKey": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "sequence": "340282366920938463463374607431768211455"
+          },
+          "processorId": "processor-fixture",
+          "runtimeInstanceId": "incarnation-fixture",
+          "launch": {
+            "launchId": "launch-fixture",
+            "policyDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "workload": null,
+          "issuedAtMs": 1700000000000,
+          "expiresAtMs": 1700000060000,
+          "nonce": "9397aeb449c7a88016b27e6f0c2f7d413e51cf6718cf9fc6881cee150af7e339"
+        },
+        "signature": "d15bb5b7992860fff20c88496cd8527eb3e0be9564872a2c9991d2b264ad52397aa66ce91788e6b1aa85c5b6fab903c0a8db8a9c01be35ab9f153b028cc8df07"
+      },
+      "phase": "transport",
+      "reason": "range_mismatch",
+      "signatureValid": true,
+      "method": "GET",
+      "target": "/v1/payloads/sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+      "rangeHeader": "bytes=0-15",
+      "nowMs": 1700000000000
+    },
+    {
+      "name": "multipart-range",
+      "envelope": {
+        "request": {
+          "domain": "proof.liskov.payload-download.v1",
+          "method": "GET",
+          "requestTarget": "/v1/payloads/sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "range": {
+            "mode": "whole"
+          },
+          "artifactDigest": "sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "organisationId": "org-fixture",
+          "applicationUid": "app-0123456789abcdef0123456789abcdef",
+          "job": {
+            "originKind": "acurast",
+            "originKey": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "sequence": "340282366920938463463374607431768211455"
+          },
+          "processorId": "processor-fixture",
+          "runtimeInstanceId": "incarnation-fixture",
+          "launch": {
+            "launchId": "launch-fixture",
+            "policyDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "workload": null,
+          "issuedAtMs": 1700000000000,
+          "expiresAtMs": 1700000060000,
+          "nonce": "9397aeb449c7a88016b27e6f0c2f7d413e51cf6718cf9fc6881cee150af7e339"
+        },
+        "signature": "d15bb5b7992860fff20c88496cd8527eb3e0be9564872a2c9991d2b264ad52397aa66ce91788e6b1aa85c5b6fab903c0a8db8a9c01be35ab9f153b028cc8df07"
+      },
+      "phase": "transport",
+      "reason": "invalid_range",
+      "signatureValid": true,
+      "method": "GET",
+      "target": "/v1/payloads/sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+      "rangeHeader": "bytes=0-1,3-4",
+      "nowMs": 1700000000000
+    },
+    {
+      "name": "transport-inverted-range",
+      "envelope": {
+        "request": {
+          "domain": "proof.liskov.payload-download.v1",
+          "method": "GET",
+          "requestTarget": "/v1/payloads/sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "range": {
+            "mode": "whole"
+          },
+          "artifactDigest": "sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "organisationId": "org-fixture",
+          "applicationUid": "app-0123456789abcdef0123456789abcdef",
+          "job": {
+            "originKind": "acurast",
+            "originKey": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "sequence": "340282366920938463463374607431768211455"
+          },
+          "processorId": "processor-fixture",
+          "runtimeInstanceId": "incarnation-fixture",
+          "launch": {
+            "launchId": "launch-fixture",
+            "policyDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "workload": null,
+          "issuedAtMs": 1700000000000,
+          "expiresAtMs": 1700000060000,
+          "nonce": "9397aeb449c7a88016b27e6f0c2f7d413e51cf6718cf9fc6881cee150af7e339"
+        },
+        "signature": "d15bb5b7992860fff20c88496cd8527eb3e0be9564872a2c9991d2b264ad52397aa66ce91788e6b1aa85c5b6fab903c0a8db8a9c01be35ab9f153b028cc8df07"
+      },
+      "phase": "transport",
+      "reason": "invalid_range",
+      "signatureValid": true,
+      "method": "GET",
+      "target": "/v1/payloads/sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+      "rangeHeader": "bytes=5-4",
+      "nowMs": 1700000000000
+    },
+    {
+      "name": "not-yet-valid",
+      "envelope": {
+        "request": {
+          "domain": "proof.liskov.payload-download.v1",
+          "method": "GET",
+          "requestTarget": "/v1/payloads/sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "range": {
+            "mode": "whole"
+          },
+          "artifactDigest": "sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "organisationId": "org-fixture",
+          "applicationUid": "app-0123456789abcdef0123456789abcdef",
+          "job": {
+            "originKind": "acurast",
+            "originKey": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "sequence": "340282366920938463463374607431768211455"
+          },
+          "processorId": "processor-fixture",
+          "runtimeInstanceId": "incarnation-fixture",
+          "launch": {
+            "launchId": "launch-fixture",
+            "policyDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "workload": null,
+          "issuedAtMs": 1700000000000,
+          "expiresAtMs": 1700000060000,
+          "nonce": "9397aeb449c7a88016b27e6f0c2f7d413e51cf6718cf9fc6881cee150af7e339"
+        },
+        "signature": "d15bb5b7992860fff20c88496cd8527eb3e0be9564872a2c9991d2b264ad52397aa66ce91788e6b1aa85c5b6fab903c0a8db8a9c01be35ab9f153b028cc8df07"
+      },
+      "phase": "transport",
+      "reason": "not_yet_valid",
+      "signatureValid": true,
+      "method": "GET",
+      "target": "/v1/payloads/sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+      "rangeHeader": null,
+      "nowMs": 1699999999999
+    },
+    {
+      "name": "expired",
+      "envelope": {
+        "request": {
+          "domain": "proof.liskov.payload-download.v1",
+          "method": "GET",
+          "requestTarget": "/v1/payloads/sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "range": {
+            "mode": "whole"
+          },
+          "artifactDigest": "sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+          "organisationId": "org-fixture",
+          "applicationUid": "app-0123456789abcdef0123456789abcdef",
+          "job": {
+            "originKind": "acurast",
+            "originKey": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "sequence": "340282366920938463463374607431768211455"
+          },
+          "processorId": "processor-fixture",
+          "runtimeInstanceId": "incarnation-fixture",
+          "launch": {
+            "launchId": "launch-fixture",
+            "policyDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "workload": null,
+          "issuedAtMs": 1700000000000,
+          "expiresAtMs": 1700000060000,
+          "nonce": "9397aeb449c7a88016b27e6f0c2f7d413e51cf6718cf9fc6881cee150af7e339"
+        },
+        "signature": "d15bb5b7992860fff20c88496cd8527eb3e0be9564872a2c9991d2b264ad52397aa66ce91788e6b1aa85c5b6fab903c0a8db8a9c01be35ab9f153b028cc8df07"
+      },
+      "phase": "transport",
+      "reason": "expired",
+      "signatureValid": true,
+      "method": "GET",
+      "target": "/v1/payloads/sha256:fcc6a000c99ec202381c89f826c219a347e904d2cd20febeea50b26ea84e7b60",
+      "rangeHeader": null,
+      "nowMs": 1700000060000
+    }
+  ]
+}

@@ -17,6 +17,8 @@ pub mod job_secrets;
 pub mod log_config_secret;
 pub mod logging;
 pub mod memory;
+pub mod payload_download;
+pub mod payload_protocol;
 pub mod precontact;
 pub mod probe;
 pub mod processor_facts;
