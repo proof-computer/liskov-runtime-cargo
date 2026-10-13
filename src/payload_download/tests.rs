@@ -80,6 +80,32 @@ impl ContactRuntime for Runtime {
         *self.time.lock().unwrap() += d.as_millis() as u64;
     }
 }
+struct AdvancingClock {
+    runtime: Runtime,
+    calls: Mutex<usize>,
+    advance_at: usize,
+    advanced_time_ms: u64,
+}
+impl ContactRuntime for AdvancingClock {
+    fn unix_time_ms(&self) -> Result<u64, ContactError> {
+        let mut n = self.calls.lock().unwrap();
+        *n += 1;
+        Ok(if *n >= self.advance_at {
+            self.advanced_time_ms
+        } else {
+            1_700_000_000_000
+        })
+    }
+    fn elapsed(&self) -> Duration {
+        self.runtime.elapsed()
+    }
+    fn fill_random(&self, b: &mut [u8]) -> Result<(), ContactError> {
+        self.runtime.fill_random(b)
+    }
+    fn sleep(&self, d: Duration) {
+        self.runtime.sleep(d)
+    }
+}
 #[derive(Default)]
 struct FakeBridge {
     calls: Mutex<Vec<(String, Value)>>,
@@ -118,6 +144,7 @@ impl Bridge for FakeBridge {
 #[derive(Clone, Copy)]
 enum Behavior {
     Complete,
+    Chunked,
     Interrupt,
     Empty,
     Transport,
@@ -144,6 +171,13 @@ impl FakeHttp {
 }
 struct Interrupted {
     bytes: Cursor<Vec<u8>>,
+}
+struct Chunked(Cursor<Vec<u8>>);
+impl Read for Chunked {
+    fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
+        let count = b.len().min(10);
+        self.0.read(&mut b[..count])
+    }
 }
 impl Read for Interrupted {
     fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
@@ -229,6 +263,8 @@ impl PayloadHttpClient for FakeHttp {
             Box::new(Interrupted {
                 bytes: Cursor::new(bytes),
             })
+        } else if matches!(behavior, Behavior::Chunked) {
+            Box::new(Chunked(Cursor::new(bytes)))
         } else {
             Box::new(Cursor::new(bytes))
         };
@@ -453,6 +489,16 @@ fn bridge_sequence_preserves_full_u128_and_rejects_conflicting_or_unsafe_values(
 }
 
 #[test]
+fn owner_production_origin_casing_refuses_until_the_owner_aligns_vectors() {
+    let mut o = offer();
+    o.binding.job.origin_kind = "Acurast".into();
+    assert!(matches!(
+        PayloadContext::negotiate(&bootstrap(), o, 8 * 1024 * 1024, 1_700_000_000_000),
+        Err(PayloadError::Binding)
+    ));
+}
+
+#[test]
 fn transfer_budget_signature_and_clock_failures_never_return_verified_bytes() {
     for attempts in [0, MAX_PAYLOAD_TRANSFER_ATTEMPTS + 1] {
         let mut p = policy();
@@ -484,36 +530,13 @@ fn transfer_budget_signature_and_clock_failures_never_return_verified_bytes() {
         ),
         Err(PayloadDownloadRefusal::InvalidSignature.into())
     );
-    struct AdvancingClock {
-        runtime: Runtime,
-        calls: Mutex<usize>,
-        expire_at: usize,
-    }
-    impl ContactRuntime for AdvancingClock {
-        fn unix_time_ms(&self) -> Result<u64, ContactError> {
-            let mut n = self.calls.lock().unwrap();
-            *n += 1;
-            Ok(if *n >= self.expire_at {
-                1_700_000_060_000
-            } else {
-                1_700_000_000_000
-            })
-        }
-        fn elapsed(&self) -> Duration {
-            self.runtime.elapsed()
-        }
-        fn fill_random(&self, b: &mut [u8]) -> Result<(), ContactError> {
-            self.runtime.fill_random(b)
-        }
-        fn sleep(&self, d: Duration) {
-            self.runtime.sleep(d)
-        }
-    }
-    for expire_at in [3, 4] {
+    // The owner's authorization, rather than an individual request, expires.
+    for advance_at in [3, 4] {
         let clock = AdvancingClock {
             runtime: Runtime::default(),
             calls: Mutex::new(0),
-            expire_at,
+            advance_at,
+            advanced_time_ms: 1_700_000_060_000,
         };
         let mut sink = vec![];
         assert_eq!(
@@ -548,6 +571,105 @@ fn transfer_budget_signature_and_clock_failures_never_return_verified_bytes() {
         ),
         Err(PayloadError::Write)
     );
+}
+
+#[test]
+fn slow_stream_request_expiry_resumes_exact_prefix_with_fresh_nonce() {
+    // The request expires at 60 seconds, but authority lasts another hour.
+    let mut c = context();
+    c.binding.authorization_expires_at_ms += 3_600_000;
+    for (advance_at, offset) in [(3, 0), (4, 10)] {
+        let clock = AdvancingClock {
+            runtime: Runtime::default(),
+            calls: Mutex::new(0),
+            advance_at,
+            advanced_time_ms: 1_700_000_060_000,
+        };
+        let http = FakeHttp::new(vec![Behavior::Chunked, Behavior::Complete]);
+        let mut sink = vec![];
+        let verified = download_payload(
+            &c,
+            &FakeBridge::default(),
+            &http,
+            &clock,
+            &mut sink,
+            policy(),
+        )
+        .unwrap();
+        assert_eq!(sink, ARCHIVE);
+        assert_eq!(verified.size_bytes, ARCHIVE.len() as u64);
+        let requests = http.requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].request.range, PayloadDownloadRangeV1::Whole {});
+        assert_eq!(
+            requests[1].request.range,
+            if offset == 0 {
+                PayloadDownloadRangeV1::Whole {}
+            } else {
+                PayloadDownloadRangeV1::Bytes {
+                    start: offset,
+                    end_inclusive: ARCHIVE.len() as u64 - 1,
+                }
+            }
+        );
+        assert_ne!(requests[0].request.nonce, requests[1].request.nonce);
+        assert_ne!(requests[0].signature, requests[1].signature);
+        assert_eq!(
+            requests[1].request.issued_at_ms,
+            requests[0].request.expires_at_ms
+        );
+        assert!(requests[1].request.expires_at_ms > requests[0].request.expires_at_ms);
+    }
+}
+
+#[test]
+fn complete_entity_at_request_expiry_still_checks_integrity() {
+    let mut c = context();
+    c.binding.authorization_expires_at_ms += 3_600_000;
+    for (behavior, expected) in [
+        (Behavior::Complete, Ok(())),
+        (Behavior::Corrupt, Err(PayloadError::Integrity)),
+    ] {
+        let clock = AdvancingClock {
+            runtime: Runtime::default(),
+            calls: Mutex::new(0),
+            advance_at: 4,
+            advanced_time_ms: 1_700_000_060_000,
+        };
+        let http = FakeHttp::new(vec![behavior]);
+        let result = download_payload(
+            &c,
+            &FakeBridge::default(),
+            &http,
+            &clock,
+            &mut vec![],
+            policy(),
+        );
+        assert_eq!(result.map(|_| ()), expected);
+        assert_eq!(http.requests.lock().unwrap().len(), 1);
+    }
+}
+
+#[test]
+fn expired_stream_attempt_consumes_the_invocation_budget() {
+    let mut c = context();
+    c.binding.authorization_expires_at_ms += 3_600_000;
+    let clock = AdvancingClock {
+        runtime: Runtime::default(),
+        calls: Mutex::new(0),
+        advance_at: 4,
+        advanced_time_ms: 1_700_000_060_000,
+    };
+    let http = FakeHttp::new(vec![Behavior::Chunked]);
+    let mut p = policy();
+    p.max_attempts = 1;
+    let mut sink = vec![];
+    assert_eq!(
+        download_payload(&c, &FakeBridge::default(), &http, &clock, &mut sink, p),
+        Err(PayloadError::Incomplete)
+    );
+    assert_eq!(sink, ARCHIVE[..10]);
+    assert_eq!(http.requests.lock().unwrap().len(), 1);
 }
 
 #[test]

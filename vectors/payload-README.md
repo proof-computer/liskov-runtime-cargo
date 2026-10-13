@@ -118,6 +118,19 @@ non-origin URLs and expired authority. Only the current bridge Acurast
 `kind/source` origin representation is supported by the dormant client; unknown
 representations refuse rather than guessing owner normalization.
 
+Known owner identity mismatch (review lrc-iusd, BKLG-20261013-1iu2): at the
+owner source pin above, `PayloadJobRefV1::from` copies `job.origin_kind`, while
+`slipway-acurast-chain::normalized_runtime_origin` emits `"Acurast"`. The
+download fixture's `expectedBinding.job.originKind` is instead `"acurast"`,
+which this dormant consumer retains. For the same origin key and sequence,
+an owner-produced binding with `"Acurast"` therefore fails negotiation with
+`PayloadError::Binding`. This is a concrete interoperability blocker, not a
+claim that the production normalizer matches the fixture. The liskov-rs
+payload/identity owner must settle the canonical casing and publish consistent
+conversion and vectors before runtime integration. The counterexample is
+escalated in the packet handoff; this consumer does not accept both spellings
+or silently change the signed contract.
+
 The signed envelope's HTTP carrier and response header names are not frozen in
 bw93. `PayloadHttpClient` therefore remains an injectable transport seam until
 the artifact-serving owner publishes that transport; it accepts exact envelope
@@ -134,3 +147,9 @@ the bounded invocation budget never resets. The writer remains the staging
 owner: partial bytes are untrusted, a write/flush failure is surfaced, and only
 `VerifiedPayload` after complete length/digest validation permits that owner to
 continue toward atomic publication. No extraction or process handoff occurs.
+
+If an individual request expires before the complete entity arrives while
+context authorization is still valid, close that stream and resume the exact
+received prefix with a fresh signed request. If the complete entity has arrived,
+request expiry does not discard it: exact length/digest checks still apply.
+Context authorization expiry remains a refusal during either path.

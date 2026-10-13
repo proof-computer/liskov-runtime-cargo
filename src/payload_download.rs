@@ -347,12 +347,22 @@ pub fn download_payload(
                     let mut remaining = size - offset;
                     let mut buffer = [0u8; STREAM_BUFFER_BYTES];
                     while remaining > 0 {
-                        envelope.request.validate_transport(
+                        let now_ms = now(runtime)?;
+                        if now_ms >= context.binding.authorization_expires_at_ms {
+                            return Err(PayloadDownloadRefusal::Expired.into());
+                        }
+                        match envelope.request.validate_transport(
                             "GET",
                             &envelope.request.request_target,
                             range_header.as_deref(),
-                            now(runtime)?,
-                        )?;
+                            now_ms,
+                        ) {
+                            Ok(()) => {}
+                            // Retain this invocation's prefix and sign a fresh
+                            // closed range while the context still authorizes it.
+                            Err(PayloadDownloadRefusal::Expired) => break,
+                            Err(error) => return Err(error.into()),
+                        }
                         if runtime.elapsed().saturating_sub(started) >= policy.max_elapsed {
                             return Err(PayloadError::Incomplete);
                         }
@@ -376,12 +386,22 @@ pub fn download_payload(
                             Ok(_) => return Err(PayloadError::Response),
                             Err(_) => return Err(PayloadError::Incomplete),
                         }
-                        envelope.request.validate_transport(
+                        let now_ms = now(runtime)?;
+                        if now_ms >= context.binding.authorization_expires_at_ms {
+                            return Err(PayloadDownloadRefusal::Expired.into());
+                        }
+                        match envelope.request.validate_transport(
                             "GET",
                             &envelope.request.request_target,
                             range_header.as_deref(),
-                            now(runtime)?,
-                        )?;
+                            now_ms,
+                        ) {
+                            // The complete entity needs no further range. The
+                            // owner's request expiry is an admission boundary;
+                            // final length/digest and context expiry still apply.
+                            Ok(()) | Err(PayloadDownloadRefusal::Expired) => {}
+                            Err(error) => return Err(error.into()),
+                        }
                         if format!("sha256:{}", hex::encode(hasher.finalize()))
                             != context.binding.artifact_digest
                         {
