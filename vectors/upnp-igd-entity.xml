@@ -1,0 +1,3 @@
+<?xml version="1.0"?>
+<!DOCTYPE s:Envelope [<!ENTITY leak "secret">]>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><s:Fault><detail><errorCode>&leak;</errorCode></detail></s:Fault></s:Body></s:Envelope>

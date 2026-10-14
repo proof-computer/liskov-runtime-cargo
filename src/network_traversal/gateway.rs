@@ -24,6 +24,9 @@ pub const ROUTE_TABLE_MAX_RECORDS: usize = 128;
 pub const CONTROL_MAX_BYTES: usize = 1100;
 pub const CONTROL_LOCATION_MAX_BYTES: usize = 512;
 pub const ROUTER_CONTROL_PORT: u16 = 5351;
+/// One SOAP action, its HTTP framing, and the matching response. This is
+/// larger than a PCP datagram and smaller than a device description.
+pub const UPNP_SOAP_MAX_BYTES: usize = 4096;
 
 const INTERFACE_NAME_MAX: usize = 15;
 const RTF_GATEWAY: u32 = 0x0002;
@@ -689,6 +692,40 @@ pub fn exchange_with_gateway(
     Ok(response[..received].to_vec())
 }
 
+/// SOAP bytes for the descriptor's control URL. The destination is the
+/// selected gateway or the call fails before `transport` is used. Redirects
+/// are not followed: this function exchanges one buffer and returns it.
+pub(crate) fn exchange_upnp_soap(
+    gateway: &SelectedGateway,
+    location: &str,
+    request: &[u8],
+    transport: &mut dyn ControlTransport,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Vec<u8>, ControlRefusal> {
+    if request.is_empty() {
+        return Err(ControlRefusal::Unsupported);
+    }
+    if request.len() > UPNP_SOAP_MAX_BYTES {
+        return Err(ControlRefusal::Oversize);
+    }
+    // Already cancelled: do not hand the request to the transport.
+    if cancelled() {
+        return Err(ControlRefusal::Cancelled);
+    }
+    let destination = control_destination(gateway, RouterProtocol::UpnpIgd, Some(location))?;
+    let mut response = [0u8; UPNP_SOAP_MAX_BYTES];
+    let received = transport.exchange(destination, request, &mut response)?;
+    // A completed read is kept even if cancellation became true while the
+    // gateway was answering. Dropping that body would hide an overlong grant.
+    // Callers check `cancelled` again before the next mutation.
+    // A full buffer is treated as truncated. A complete SOAP reply fits under
+    // the cap, so filling it is not a successful read.
+    if received >= UPNP_SOAP_MAX_BYTES {
+        return Err(ControlRefusal::Bounded);
+    }
+    Ok(response[..received].to_vec())
+}
+
 fn control_destination(
     gateway: &SelectedGateway,
     protocol: RouterProtocol,
@@ -1340,6 +1377,62 @@ eth0\t00000000\t0100A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0
             RouterProtocol::from(TraversalRouterProtocol::UpnpIgd),
             RouterProtocol::UpnpIgd
         );
+    }
+
+    #[test]
+    fn upnp_soap_exchange_stays_on_the_selected_gateway_and_under_the_cap() {
+        let gateway = selected(discover_loaded(
+            &[route(
+                Ipv4Addr::UNSPECIFIED,
+                0,
+                Ipv4Addr::new(192, 0, 2, 1),
+                true,
+                1,
+                "eth0",
+            )],
+            &never,
+        ));
+        let mut transport = RecordingTransport {
+            calls: Vec::new(),
+            response: b"ok".to_vec(),
+            fail: None,
+        };
+        let response = exchange_upnp_soap(
+            &gateway,
+            "http://192.0.2.1:52869/ctl",
+            b"<e/>",
+            &mut transport,
+            &never,
+        )
+        .unwrap();
+        assert_eq!(response, b"ok");
+        assert_eq!(
+            transport.calls[0].0,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 52869)
+        );
+        transport.calls.clear();
+        assert_eq!(
+            exchange_upnp_soap(
+                &gateway,
+                "http://198.51.100.9/ctl",
+                b"<e/>",
+                &mut transport,
+                &never,
+            ),
+            Err(ControlRefusal::WrongTarget)
+        );
+        assert!(transport.calls.is_empty());
+        assert_eq!(
+            exchange_upnp_soap(
+                &gateway,
+                "http://192.0.2.1/ctl",
+                &vec![1; UPNP_SOAP_MAX_BYTES + 1],
+                &mut transport,
+                &never,
+            ),
+            Err(ControlRefusal::Oversize)
+        );
+        assert!(transport.calls.is_empty());
     }
 
     struct RecordingTransport {

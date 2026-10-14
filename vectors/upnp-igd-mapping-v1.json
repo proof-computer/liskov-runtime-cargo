@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "soapMaxBytes": 4096,
+  "xmlMaxDepth": 16,
+  "requestedLeaseSec": 60,
+  "maximumLeaseSec": 120,
+  "highPortMin": 1024,
+  "absentError": 714,
+  "conflictError": 718,
+  "permanentOnlyError": 725,
+  "actions": [
+    "GetSpecificPortMappingEntry",
+    "AddPortMapping",
+    "DeletePortMapping"
+  ]
+}
