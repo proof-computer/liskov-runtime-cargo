@@ -1,17 +1,20 @@
-//! Dormant ADR-0234 traversal grant decoder and result codec.
+//! Dormant ADR-0234 traversal grant decoder, result codec, and gateway seam.
 //!
-//! Issuance stays with the API. This module checks the published bytes and
-//! reserves collector time. It does not discover a gateway, open an experiment
-//! socket, resolve DNS, or attach a traversal block to a live submission.
+//! Issuance stays with the API. Grant checks reserve collector time and do not
+//! discover a gateway, open an experiment socket, resolve DNS, or attach a
+//! traversal block to a live submission. Gateway selection and router-control
+//! adapters live in `gateway` and run only when a caller invokes them.
 
 mod auth;
 mod descriptor;
+mod gateway;
 mod proof;
 mod reserve;
 mod result;
 
 pub use auth::*;
 pub use descriptor::*;
+pub use gateway::*;
 pub use proof::*;
 pub use reserve::*;
 pub use result::*;

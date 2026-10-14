@@ -75,5 +75,11 @@ if [[ $# -eq 2 ]]; then
     "${repository_root}/scripts/run-qemu-proot-runtime.sh" \
       --profile "$profile" --workspace "$(dirname "$fixture")" -- \
       "/workspace/$(basename "$fixture")" discovery::direct --nocapture --test-threads=1
+    # Unprotected companion (ADR-0159): the gateway syscall proof has to run
+    # inside both emulator profiles. The packet scope names the Rust module
+    # and the C probe, not this script.
+    "${repository_root}/scripts/run-qemu-proot-runtime.sh" \
+      --profile "$profile" --workspace "$(dirname "$fixture")" -- \
+      "/workspace/$(basename "$fixture")" network_traversal::gateway --nocapture --test-threads=1
   done
 fi
