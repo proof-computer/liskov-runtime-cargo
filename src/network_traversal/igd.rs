@@ -4,8 +4,12 @@
 //! query. A caller has to ask. The descriptor keeps the gateway-local control
 //! target and the service kind. It does not keep a UDN, serial, service id, or
 //! the raw advertisement. `Debug` redacts the gateway address. Replies and
-//! documents are capped by bytes, depth, and the caller's deadline. A missing
-//! route or a missing UDP primitive is [`IgdDiscovery::Unsupported`].
+//! documents are capped by bytes, depth, and the caller's deadline. An SSDP
+//! datagram from any address other than the selected gateway is dropped: the
+//! drop is not a refusal, and it does not count toward the reply cap or the
+//! byte bound. The HTTP exchange has one budget for the connect, the write,
+//! and every read. A missing route or a missing UDP primitive is
+//! [`IgdDiscovery::Unsupported`].
 
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream, UdpSocket};
@@ -129,6 +133,7 @@ pub enum IgdIoError {
 pub trait IgdSearch {
     fn search(
         &mut self,
+        gateway: Ipv4Addr,
         destination: SocketAddr,
         request: &[u8],
         cancelled: &dyn Fn() -> bool,
@@ -153,12 +158,14 @@ pub struct HostSsdpSearch {
 impl IgdSearch for HostSsdpSearch {
     fn search(
         &mut self,
+        gateway: Ipv4Addr,
         destination: SocketAddr,
         request: &[u8],
         cancelled: &dyn Fn() -> bool,
         deadline_exceeded: &dyn Fn() -> bool,
     ) -> Result<Vec<Vec<u8>>, IgdIoError> {
         exchange_ssdp(
+            gateway,
             destination,
             self.interface_index,
             request,
@@ -242,6 +249,7 @@ pub fn discover_igd(
     }
     let destination = SocketAddr::new(IpAddr::V4(IGD_SSDP_ADDRESS), IGD_SSDP_PORT);
     let replies = match search.search(
+        gateway.gateway(),
         destination,
         SSDP_MSEARCH.as_bytes(),
         cancelled,
@@ -961,6 +969,7 @@ fn decode_text(raw: &str, output: &mut String, discard: bool) -> Result<(), IgdR
 }
 
 fn exchange_ssdp(
+    gateway: Ipv4Addr,
     destination: SocketAddr,
     interface_index: u32,
     request: &[u8],
@@ -999,6 +1008,9 @@ fn exchange_ssdp(
             return Err(IgdIoError::Deadline);
         }
         match socket.recv_from(&mut buffer) {
+            // A datagram from any other address is dropped before the reply cap
+            // and the byte bound. The drop is not a refusal.
+            Ok((_, source)) if source.ip() != IpAddr::V4(gateway) => continue,
             Ok((0, _)) => continue,
             Ok((length, _)) if length > IGD_SSDP_MAX_BYTES => return Err(IgdIoError::Bounded),
             Ok((length, _)) => replies.push(buffer[..length].to_vec()),
@@ -1042,6 +1054,13 @@ fn bind_multicast_interface(socket: &UdpSocket, interface_index: u32) -> Result<
     }
 }
 
+fn budget_left(started: Instant) -> Result<Duration, IgdIoError> {
+    match IGD_HTTP_BUDGET.checked_sub(started.elapsed()) {
+        Some(left) if !left.is_zero() => Ok(left),
+        _ => Err(IgdIoError::Deadline),
+    }
+}
+
 fn bounded_http_get(
     socket: SocketAddr,
     host: &str,
@@ -1065,22 +1084,35 @@ fn bounded_http_get(
     {
         return Err(IgdIoError::Malformed);
     }
-    let mut stream = TcpStream::connect_timeout(&socket, IGD_HTTP_BUDGET)
+    let started = Instant::now();
+    let mut stream = match TcpStream::connect_timeout(&socket, budget_left(started)?) {
+        Ok(stream) => stream,
+        Err(error) if error.kind() == std::io::ErrorKind::TimedOut => {
+            return Err(IgdIoError::Deadline);
+        }
+        Err(_) => return Err(IgdIoError::Unavailable),
+    };
+    let left = budget_left(started)?;
+    stream
+        .set_read_timeout(Some(left))
         .map_err(|_| IgdIoError::Unavailable)?;
     stream
-        .set_read_timeout(Some(IGD_HTTP_BUDGET))
-        .map_err(|_| IgdIoError::Unavailable)?;
-    stream
-        .set_write_timeout(Some(IGD_HTTP_BUDGET))
+        .set_write_timeout(Some(left))
         .map_err(|_| IgdIoError::Unavailable)?;
     let request =
         format!("GET {path_and_query} HTTP/1.0\r\nHost: {host}\r\nConnection: close\r\n\r\n");
     if request.len() > CONTROL_MAX_BYTES {
         return Err(IgdIoError::Bounded);
     }
-    stream
-        .write_all(request.as_bytes())
-        .map_err(|_| IgdIoError::Unavailable)?;
+    stream.write_all(request.as_bytes()).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::TimedOut
+            || error.kind() == std::io::ErrorKind::WouldBlock
+        {
+            IgdIoError::Deadline
+        } else {
+            IgdIoError::Unavailable
+        }
+    })?;
     let mut raw = Vec::new();
     let mut chunk = [0u8; 1024];
     let limit = 8 * 1024 + IGD_XML_MAX_BYTES;
@@ -1091,6 +1123,10 @@ fn bounded_http_get(
         if deadline_exceeded() {
             return Err(IgdIoError::Deadline);
         }
+        let left = budget_left(started)?;
+        stream
+            .set_read_timeout(Some(left))
+            .map_err(|_| IgdIoError::Unavailable)?;
         match stream.read(&mut chunk) {
             Ok(0) => break,
             Ok(length) => {
@@ -1207,6 +1243,7 @@ mod tests {
 
     struct ScriptedSearch {
         result: Result<Vec<Vec<u8>>, IgdIoError>,
+        gateway: Option<Ipv4Addr>,
         destination: Option<SocketAddr>,
         request: Vec<u8>,
         calls: usize,
@@ -1215,12 +1252,14 @@ mod tests {
     impl IgdSearch for ScriptedSearch {
         fn search(
             &mut self,
+            gateway: Ipv4Addr,
             destination: SocketAddr,
             request: &[u8],
             _cancelled: &dyn Fn() -> bool,
             _deadline_exceeded: &dyn Fn() -> bool,
         ) -> Result<Vec<Vec<u8>>, IgdIoError> {
             self.calls = self.calls.saturating_add(1);
+            self.gateway = Some(gateway);
             self.destination = Some(destination);
             self.request = request.to_vec();
             self.result.clone()
@@ -1248,6 +1287,7 @@ mod tests {
     fn search_of(result: Result<Vec<Vec<u8>>, IgdIoError>) -> ScriptedSearch {
         ScriptedSearch {
             result,
+            gateway: None,
             destination: None,
             request: Vec::new(),
             calls: 0,
@@ -1321,6 +1361,7 @@ mod tests {
             descriptor.control_target(),
             "http://192.0.2.1:5000/ctl/IPConn"
         );
+        assert_eq!(search.gateway, Some(Ipv4Addr::new(192, 0, 2, 1)));
         assert_eq!(
             search.destination,
             Some(SocketAddr::new(IpAddr::V4(IGD_SSDP_ADDRESS), IGD_SSDP_PORT))
@@ -1369,6 +1410,12 @@ mod tests {
             IgdDiscovery::Refused(IgdRefusal::Deadline)
         );
         assert_eq!(search.calls, 0);
+        let mut search = search_of(Ok(vec![]));
+        assert_eq!(
+            discover_igd(&gateway, &mut search, &mut documents, &never, &never),
+            IgdDiscovery::NotAdvertised
+        );
+        assert!(documents.calls.is_empty());
     }
 
     #[test]
@@ -1606,6 +1653,7 @@ mod tests {
         });
         let started = Instant::now();
         let replies = exchange_ssdp(
+            Ipv4Addr::LOCALHOST,
             address,
             0,
             SSDP_MSEARCH.as_bytes(),
@@ -1620,6 +1668,7 @@ mod tests {
 
         assert_eq!(
             exchange_ssdp(
+                Ipv4Addr::LOCALHOST,
                 SocketAddr::from((Ipv4Addr::LOCALHOST, 9)),
                 0,
                 SSDP_MSEARCH.as_bytes(),
@@ -1629,5 +1678,95 @@ mod tests {
             ),
             Err(IgdIoError::Cancelled)
         );
+    }
+
+    #[test]
+    fn foreign_ssdp_replies_are_ignored_and_the_gateway_reply_is_kept() {
+        let gateway_socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let gateway_address = gateway_socket.local_addr().unwrap();
+        let attacker = UdpSocket::bind((Ipv4Addr::new(127, 0, 0, 2), 0)).unwrap();
+        let good = b"HTTP/1.1 200 OK\r\nLOCATION: http://127.0.0.1:5000/rootDesc.xml\r\nST: urn:schemas-upnp-org:device:InternetGatewayDevice:1\r\n\r\n"
+            .to_vec();
+        let reply = good.clone();
+        let server = thread::spawn(move || {
+            gateway_socket
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut buffer = [0u8; 2048];
+            let (length, from) = gateway_socket.recv_from(&mut buffer).unwrap();
+            assert!(buffer[..length].starts_with(b"M-SEARCH"));
+            let oversized = vec![b'x'; IGD_SSDP_MAX_BYTES + 1];
+            attacker.send_to(&oversized, from).unwrap();
+            let junk = b"HTTP/1.1 200 OK\r\nLOCATION: http://192.0.2.77/evil\r\nST: urn:schemas-upnp-org:device:InternetGatewayDevice:1\r\n\r\n";
+            for _ in 0..IGD_SSDP_MAX_REPLIES {
+                attacker.send_to(junk, from).unwrap();
+            }
+            thread::sleep(Duration::from_millis(150));
+            gateway_socket.send_to(&reply, from).unwrap();
+        });
+        let started = Instant::now();
+        let replies = exchange_ssdp(
+            Ipv4Addr::LOCALHOST,
+            gateway_address,
+            0,
+            SSDP_MSEARCH.as_bytes(),
+            IGD_SEARCH_BUDGET,
+            &never,
+            &never,
+        )
+        .unwrap();
+        assert_eq!(replies, vec![good]);
+        assert!(started.elapsed() < Duration::from_millis(800));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn a_silent_ssdp_window_returns_no_replies() {
+        let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let address = socket.local_addr().unwrap();
+        let started = Instant::now();
+        let replies = exchange_ssdp(
+            Ipv4Addr::LOCALHOST,
+            address,
+            0,
+            SSDP_MSEARCH.as_bytes(),
+            Duration::from_millis(80),
+            &never,
+            &never,
+        )
+        .unwrap();
+        assert!(replies.is_empty());
+        assert!(started.elapsed() < Duration::from_millis(400));
+        drop(socket);
+    }
+
+    #[test]
+    fn http_budget_is_the_whole_exchange() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_write_timeout(Some(Duration::from_millis(200)))
+                .unwrap();
+            let mut request = [0u8; 256];
+            let _ = stream.read(&mut request);
+            let until = Instant::now() + IGD_HTTP_BUDGET + Duration::from_millis(800);
+            while Instant::now() < until {
+                if stream.write_all(b"x").is_err() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(150));
+            }
+        });
+        let started = Instant::now();
+        let result = bounded_http_get(address, "127.0.0.1", "/rootDesc.xml", &never, &never);
+        let elapsed = started.elapsed();
+        assert_eq!(result, Err(IgdIoError::Deadline));
+        assert!(
+            elapsed < IGD_HTTP_BUDGET + Duration::from_millis(500),
+            "http exchange ran for {elapsed:?}"
+        );
+        server.join().unwrap();
     }
 }
