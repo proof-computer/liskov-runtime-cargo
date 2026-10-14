@@ -6,11 +6,210 @@
 #include <linux/netlink.h>
 #include <netinet/in.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
+
+#define ROUTE_MAX_RECORDS 128
+#define ROUTE_MAX_BYTES (16 * 1024)
+
+enum route_result {
+    ROUTE_SELECTED = 0,
+    ROUTE_UNSUPPORTED = 1,
+    ROUTE_INVALID = 2,
+    ROUTE_CANCELLED = 3,
+    ROUTE_BOUNDED = 4,
+};
+
+struct fixture_route {
+    uint32_t destination;
+    uint8_t prefix_len;
+    uint32_t gateway;
+    int has_gateway;
+    uint32_t metric;
+    uint32_t interface_index;
+};
+
+static int gateway_acceptable(uint32_t gateway) {
+    uint32_t first = (gateway >> 24) & 0xffu;
+    if (gateway == 0 || gateway == 0xffffffffu) {
+        return 0;
+    }
+    if (first == 127 || first >= 224) {
+        return 0;
+    }
+    return 1;
+}
+
+/* Same rules as src/network_traversal/gateway.rs. Fixtures are in memory:
+ * this probe does not read the host route table, scan a subnet, or take a
+ * router credential. */
+static enum route_result select_routes(
+    const struct fixture_route *routes,
+    size_t count,
+    int cancelled,
+    uint32_t *selected
+) {
+    size_t index;
+    int saw_invalid = 0;
+    int ambiguous = 0;
+    int have_best = 0;
+    struct fixture_route best;
+    memset(&best, 0, sizeof(best));
+    if (cancelled) {
+        return ROUTE_CANCELLED;
+    }
+    if (count > ROUTE_MAX_RECORDS) {
+        return ROUTE_BOUNDED;
+    }
+    for (index = 0; index < count; index += 1) {
+        const struct fixture_route *route = &routes[index];
+        if (route->destination != 0 || route->prefix_len != 0 || !route->has_gateway) {
+            continue;
+        }
+        if (!gateway_acceptable(route->gateway)) {
+            saw_invalid = 1;
+            continue;
+        }
+        if (!have_best || route->metric < best.metric) {
+            best = *route;
+            have_best = 1;
+            ambiguous = 0;
+        } else if (route->metric == best.metric && route->gateway != best.gateway) {
+            ambiguous = 1;
+        } else if (route->metric == best.metric &&
+                   route->gateway == best.gateway &&
+                   route->interface_index < best.interface_index) {
+            best = *route;
+        }
+    }
+    if (ambiguous) {
+        return ROUTE_UNSUPPORTED;
+    }
+    if (have_best) {
+        *selected = best.gateway;
+        return ROUTE_SELECTED;
+    }
+    return saw_invalid ? ROUTE_INVALID : ROUTE_UNSUPPORTED;
+}
+
+static int expect_route(
+    const char *name,
+    enum route_result got,
+    enum route_result want,
+    uint32_t selected,
+    uint32_t want_gateway
+) {
+    if (got != want || (want == ROUTE_SELECTED && selected != want_gateway)) {
+        fprintf(stderr, "route fixture %s failed\n", name);
+        return -1;
+    }
+    return 0;
+}
+
+static int route_fixtures(void) {
+    struct fixture_route on_link = {
+        .destination = 0x0a010200u,
+        .prefix_len = 24,
+        .gateway = 0,
+        .has_gateway = 0,
+        .metric = 0,
+        .interface_index = 1,
+    };
+    struct fixture_route defaults[3];
+    struct fixture_route tie[2];
+    struct fixture_route invalid;
+    struct fixture_route too_many[ROUTE_MAX_RECORDS + 1];
+    uint32_t selected = 0;
+    size_t index;
+
+    if (expect_route("missing", select_routes(NULL, 0, 0, &selected), ROUTE_UNSUPPORTED, selected, 0) != 0) {
+        return -1;
+    }
+    selected = 0xffffffffu;
+    if (expect_route(
+            "on-link",
+            select_routes(&on_link, 1, 0, &selected),
+            ROUTE_UNSUPPORTED,
+            0,
+            0) != 0 ||
+        selected == 0x0a010201u) {
+        fprintf(stderr, "route fixture on-link invented a gateway\n");
+        return -1;
+    }
+    memset(defaults, 0, sizeof(defaults));
+    defaults[0] = on_link;
+    defaults[1] = (struct fixture_route){
+        .destination = 0,
+        .prefix_len = 0,
+        .gateway = 0xc0a80002u,
+        .has_gateway = 1,
+        .metric = 200,
+        .interface_index = 2,
+    };
+    defaults[2] = (struct fixture_route){
+        .destination = 0,
+        .prefix_len = 0,
+        .gateway = 0xc0a80001u,
+        .has_gateway = 1,
+        .metric = 100,
+        .interface_index = 1,
+    };
+    selected = 0;
+    if (expect_route(
+            "multiple",
+            select_routes(defaults, 3, 0, &selected),
+            ROUTE_SELECTED,
+            selected,
+            0xc0a80001u) != 0) {
+        return -1;
+    }
+    tie[0] = defaults[2];
+    tie[1] = defaults[1];
+    tie[1].metric = 100;
+    if (expect_route(
+            "tie",
+            select_routes(tie, 2, 0, &selected),
+            ROUTE_UNSUPPORTED,
+            0,
+            0) != 0) {
+        return -1;
+    }
+    invalid = defaults[2];
+    invalid.gateway = 0;
+    if (expect_route(
+            "invalid",
+            select_routes(&invalid, 1, 0, &selected),
+            ROUTE_INVALID,
+            0,
+            0) != 0) {
+        return -1;
+    }
+    if (expect_route(
+            "cancelled",
+            select_routes(defaults, 3, 1, &selected),
+            ROUTE_CANCELLED,
+            0,
+            0) != 0) {
+        return -1;
+    }
+    for (index = 0; index < ROUTE_MAX_RECORDS + 1; index += 1) {
+        too_many[index] = defaults[2];
+        too_many[index].metric = (uint32_t)index;
+    }
+    if (expect_route(
+            "bounded-records",
+            select_routes(too_many, ROUTE_MAX_RECORDS + 1, 0, &selected),
+            ROUTE_BOUNDED,
+            0,
+            0) != 0) {
+        return -1;
+    }
+    return 0;
+}
 
 static int fail(const char *message) {
     fprintf(stderr, "network probe failed: %s\n", message);
@@ -151,9 +350,12 @@ int main(int argc, char **argv) {
     if (strcmp(argv[2], "shim-off") == 0 && interfaces != 1) {
         return fail("getifaddrs without the shim did not expose a non-loopback interface");
     }
+    if (route_fixtures() != 0) {
+        return fail("route fixtures");
+    }
 
     printf("self-test passed: uid=0 cwd=/root low-port=denied "
-           "af_inet=tcp-loopback af_netlink=%s getifaddrs=%s\n",
+           "af_inet=tcp-loopback af_netlink=%s getifaddrs=%s route-fixtures=ok\n",
            strcmp(argv[1], "netlink-eperm") == 0 ? "eperm" : "open",
            strcmp(argv[2], "shim-on") == 0 ? "loopback-only" : "host-visible");
     return 0;
