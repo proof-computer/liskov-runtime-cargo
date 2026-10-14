@@ -496,20 +496,11 @@ where
     effect.epoch = Some(parsed.epoch);
     effect.granted_lifetime_sec = Some(parsed.lifetime);
     effect.assigned_port = Some(parsed.assigned_port);
-    if rebooted(parts.previous_epoch, parsed.epoch) {
-        effect.gateway_rebooted = true;
-        effect.outcome = TraversalOutcome::ExpiryUnknown;
-        effect.cleanup = TraversalCleanup::ExpiryUnknown;
-        effect.refusal = Some(MappingRefusal::Rebooted);
-        effect.handle = Some(correlated_handle(
-            parts,
-            parsed.assigned_port,
-            parsed.lifetime,
-            parsed.epoch,
-            false,
-        ));
-        return effect;
-    }
+    // Classify the result before the epoch. An explicit error did not create a
+    // mapping, even when the gateway epoch moved. A finite success after an
+    // epoch drop is not adopted. An overlong grant still reaches adopt_or_refuse
+    // so an exclusive reservation can delete it.
+    let gateway_rebooted = rebooted(parts.previous_epoch, parsed.epoch);
     if !parsed.version_ok || !parsed.opcode_ok {
         effect.refusal = Some(MappingRefusal::ProtocolUnsupported);
         effect.error = Some(TraversalErrorClass::InvalidResponse);
@@ -520,31 +511,65 @@ where
             effect.outcome = TraversalOutcome::Failed;
             effect.cleanup = TraversalCleanup::NotCreated;
         }
+        effect.gateway_rebooted = gateway_rebooted;
         return effect;
     }
     match class(&parsed) {
-        ServerClass::Denied => explicit(
-            effect,
-            MappingRefusal::Denied,
-            TraversalErrorClass::TokenRefused,
-        ),
-        ServerClass::Unsupported => explicit(
-            effect,
-            MappingRefusal::ProtocolUnsupported,
-            TraversalErrorClass::InvalidResponse,
-        ),
-        ServerClass::Conflict => explicit(
-            effect,
-            MappingRefusal::Conflict,
-            TraversalErrorClass::MappingConflict,
-        ),
-        ServerClass::Failed => explicit(
-            effect,
-            MappingRefusal::Denied,
-            TraversalErrorClass::InvalidResponse,
-        ),
+        ServerClass::Denied => {
+            let mut effect = explicit(
+                effect,
+                MappingRefusal::Denied,
+                TraversalErrorClass::TokenRefused,
+            );
+            effect.gateway_rebooted = gateway_rebooted;
+            effect
+        }
+        ServerClass::Unsupported => {
+            let mut effect = explicit(
+                effect,
+                MappingRefusal::ProtocolUnsupported,
+                TraversalErrorClass::InvalidResponse,
+            );
+            effect.gateway_rebooted = gateway_rebooted;
+            effect
+        }
+        ServerClass::Conflict => {
+            let mut effect = explicit(
+                effect,
+                MappingRefusal::Conflict,
+                TraversalErrorClass::MappingConflict,
+            );
+            effect.gateway_rebooted = gateway_rebooted;
+            effect
+        }
+        ServerClass::Failed => {
+            let mut effect = explicit(
+                effect,
+                MappingRefusal::Denied,
+                TraversalErrorClass::InvalidResponse,
+            );
+            effect.gateway_rebooted = gateway_rebooted;
+            effect
+        }
         ServerClass::Success => {
-            adopt_or_refuse(effect, parts, parsed, gateway, transport, cancelled)
+            let finite = (1..=parts.ceiling).contains(&parsed.lifetime);
+            if gateway_rebooted && finite && parsed.assigned_port != 0 {
+                effect.gateway_rebooted = true;
+                effect.outcome = TraversalOutcome::ExpiryUnknown;
+                effect.cleanup = TraversalCleanup::ExpiryUnknown;
+                effect.refusal = Some(MappingRefusal::Rebooted);
+                effect.handle = Some(correlated_handle(
+                    parts,
+                    parsed.assigned_port,
+                    parsed.lifetime,
+                    parsed.epoch,
+                    false,
+                ));
+                return effect;
+            }
+            let mut effect = adopt_or_refuse(effect, parts, parsed, gateway, transport, cancelled);
+            effect.gateway_rebooted = gateway_rebooted;
+            effect
         }
     }
 }
@@ -565,14 +590,16 @@ fn adopt_or_refuse(
         return effect;
     }
     let finite = (1..=parts.ceiling).contains(&parsed.lifetime);
-    if !finite || parsed.assigned_port == 0 {
-        if parsed.assigned_port == 0 && finite {
-            return explicit(
-                effect,
-                MappingRefusal::Conflict,
-                TraversalErrorClass::MappingConflict,
-            );
-        }
+    // A success code with a finite lifetime and external port 0 contradicts itself.
+    if parsed.assigned_port == 0 && finite {
+        effect.outcome = TraversalOutcome::CreationOutcomeUnknown;
+        effect.cleanup = TraversalCleanup::ExpiryUnknown;
+        effect.refusal = Some(MappingRefusal::Malformed);
+        effect.error = Some(TraversalErrorClass::InvalidResponse);
+        effect.handle = None;
+        return effect;
+    }
+    if !finite {
         let authorized = parts.reservation_authorizes_delete;
         let handle = correlated_handle(
             parts,
@@ -641,16 +668,15 @@ fn send_delete(
         effect.error = Some(TraversalErrorClass::LeaseRefused);
     }
     if cancelled() {
-        effect.outcome = if already_sent == 0 {
-            TraversalOutcome::Failed
+        let finite_lease = (1..=MAPPING_MAXIMUM_LEASE_SEC).contains(&handle.granted_lifetime_sec);
+        // No delete was sent. A known finite grant is still waiting to expire.
+        if already_sent == 0 && finite_lease {
+            effect.outcome = TraversalOutcome::Failed;
+            effect.cleanup = TraversalCleanup::LeaseExpiryPending;
         } else {
-            TraversalOutcome::ExpiryUnknown
-        };
-        effect.cleanup = if already_sent == 0 {
-            TraversalCleanup::NotCreated
-        } else {
-            TraversalCleanup::ExpiryUnknown
-        };
+            effect.outcome = TraversalOutcome::ExpiryUnknown;
+            effect.cleanup = TraversalCleanup::ExpiryUnknown;
+        }
         effect.refusal = Some(MappingRefusal::Cancelled);
         return effect;
     }
@@ -714,11 +740,9 @@ fn send_delete(
         RouterProtocol::UpnpIgd => ServerClass::Failed,
     };
     effect.epoch = Some(parsed.epoch);
-    if class == ServerClass::Success
-        && (parsed.lifetime == 0
-            || parsed.assigned_port == handle.external_port
-            || parsed.assigned_port == 0)
-    {
+    // Confirmed deletion is a success reply whose lifetime is zero. A success
+    // that still carries a lifetime refreshed or ignored the delete.
+    if class == ServerClass::Success && parsed.lifetime == 0 {
         effect.cleanup = TraversalCleanup::ConfirmedDeleted;
         if effect.refusal.is_none() {
             effect.outcome = TraversalOutcome::Succeeded;
@@ -746,7 +770,8 @@ fn delete_packet(handle: &OwnedMappingHandle) -> Vec<u8> {
         RouterProtocol::NatPmp => encode_natpmp(
             handle.port_protocol.natpmp(),
             handle.internal_port,
-            handle.external_port,
+            // RFC 6886 §3.4: the suggested external port MUST be zero on delete.
+            0,
             0,
         )
         .to_vec(),
@@ -822,7 +847,8 @@ fn decode_pcp(bytes: &[u8]) -> Result<Parsed, DecodeFault> {
     Ok(Parsed {
         version_ok: bytes[0] == PCP_VERSION,
         opcode_ok: bytes[1] == PCP_MAP_OPCODE | PCP_RESPONSE_BIT,
-        result: u16::from(bytes[2]),
+        // RFC 6887 §7.2 response header: version, R+opcode, reserved, result.
+        result: u16::from(bytes[3]),
         lifetime: u32_at(bytes, 4),
         epoch: u32_at(bytes, 8),
         protocol: bytes[36],
@@ -1106,7 +1132,7 @@ mod tests {
         let mut packet = vec![0u8; PCP_MAP_PACKET_BYTES];
         packet[0] = PCP_VERSION;
         packet[1] = PCP_MAP_OPCODE | PCP_RESPONSE_BIT;
-        packet[2] = result;
+        packet[3] = result;
         packet[4..8].copy_from_slice(&lifetime.to_be_bytes());
         packet[8..12].copy_from_slice(&epoch.to_be_bytes());
         packet[24..36].copy_from_slice(&nonce);
@@ -1443,6 +1469,7 @@ mod tests {
             handle.external_port()
         );
         assert_eq!(lifetime_of(RouterProtocol::NatPmp, &failed.sent[0].1), 0);
+        assert_eq!(&failed.sent[0].1[6..8], &[0, 0]);
         assert_gateway_only(&failed, &gateway);
 
         let mut pcp_created = Fake::new(vec![Ok(pcp_response(0, 60, 10, 40_000, 40_000, nonce()))]);
@@ -1473,6 +1500,116 @@ mod tests {
         assert_eq!(lifetime_of(RouterProtocol::NatPmp, &fake.sent[0].1), 60);
         assert_eq!(lifetime_of(RouterProtocol::NatPmp, &fake.sent[1].1), 0);
         assert_eq!(effect.handle.unwrap().external_port(), 50_000);
+    }
+
+    #[test]
+    fn rfc_pcp_not_authorized_is_not_a_grant() {
+        let gateway = gateway();
+        let mut packet = [0u8; PCP_MAP_PACKET_BYTES];
+        packet[0] = 2;
+        packet[1] = 0x81;
+        packet[2] = 0;
+        packet[3] = 2;
+        packet[4..8].copy_from_slice(&30u32.to_be_bytes());
+        packet[8..12].copy_from_slice(&10u32.to_be_bytes());
+        packet[24..36].copy_from_slice(&nonce());
+        packet[36] = 17;
+        packet[40..42].copy_from_slice(&40_000u16.to_be_bytes());
+        packet[42..44].copy_from_slice(&40_000u16.to_be_bytes());
+        packet[44..60].copy_from_slice(&ipv4_mapped(Ipv4Addr::new(198, 51, 100, 20)));
+        let mut fake = Fake::new(vec![Ok(packet.to_vec())]);
+        let effect = map_pcp(&gateway, &pcp(None, None), &mut fake, &never);
+        assert_eq!(effect.refusal, Some(MappingRefusal::Denied));
+        assert_eq!(effect.outcome, TraversalOutcome::Failed);
+        assert_eq!(effect.cleanup, TraversalCleanup::NotCreated);
+        assert!(effect.handle.is_none());
+        assert_eq!(fake.sent.len(), 1);
+    }
+
+    #[test]
+    fn a_success_reply_that_keeps_a_lifetime_is_not_confirmed_deleted() {
+        let gateway = gateway();
+        let mut created = Fake::new(vec![Ok(pcp_response(0, 60, 10, 40_000, 40_000, nonce()))]);
+        let created = map_pcp(&gateway, &pcp(None, None), &mut created, &never);
+        let handle = created.handle.unwrap();
+        let mut refreshed = Fake::new(vec![Ok(pcp_response(
+            0,
+            60,
+            10,
+            40_000,
+            handle.external_port(),
+            nonce(),
+        ))]);
+        let deleted =
+            delete_owned_mapping(&gateway, &handle, None, Some(10), &mut refreshed, &never);
+        assert_eq!(deleted.cleanup, TraversalCleanup::DeleteFailed);
+        assert_ne!(deleted.cleanup, TraversalCleanup::ConfirmedDeleted);
+        assert_eq!(deleted.error, Some(TraversalErrorClass::CleanupFailed));
+        assert_eq!(
+            deleted.handle.unwrap().external_port(),
+            handle.external_port()
+        );
+    }
+
+    #[test]
+    fn cancelling_an_explicit_delete_keeps_a_finite_grant() {
+        let gateway = gateway();
+        let mut created = Fake::new(vec![Ok(pcp_response(0, 60, 10, 40_000, 40_000, nonce()))]);
+        let created = map_pcp(&gateway, &pcp(None, None), &mut created, &never);
+        let handle = created.handle.unwrap();
+        let mut fake = Fake::new(vec![]);
+        let deleted = delete_owned_mapping(&gateway, &handle, None, Some(10), &mut fake, &|| true);
+        assert!(fake.sent.is_empty());
+        assert_eq!(deleted.cleanup, TraversalCleanup::LeaseExpiryPending);
+        assert_eq!(deleted.refusal, Some(MappingRefusal::Cancelled));
+        assert_eq!(deleted.handle.unwrap().external_port(), 40_000);
+        assert_ne!(deleted.cleanup, TraversalCleanup::NotCreated);
+    }
+
+    #[test]
+    fn a_rebooted_gateway_still_deletes_an_overlong_reserved_grant() {
+        let gateway = gateway();
+        let reservation = reservation_for(&gateway);
+        let mut fake = Fake::new(vec![
+            Ok(pcp_response(0, u32::MAX, 3, 40_000, 40_000, nonce())),
+            Ok(pcp_response(0, 0, 4, 40_000, 0, nonce())),
+        ]);
+        let effect = map_pcp(
+            &gateway,
+            &pcp(Some(&reservation), Some(50)),
+            &mut fake,
+            &never,
+        );
+        assert!(effect.gateway_rebooted);
+        assert_eq!(effect.outcome, TraversalOutcome::UnsupportedFiniteLease);
+        assert_eq!(effect.cleanup, TraversalCleanup::ConfirmedDeleted);
+        assert_eq!(fake.sent.len(), 2);
+        assert_eq!(lifetime_of(RouterProtocol::Pcp, &fake.sent[1].1), 0);
+    }
+
+    #[test]
+    fn a_rebooted_gateway_error_is_not_created() {
+        let gateway = gateway();
+        let mut fake = Fake::new(vec![Ok(pcp_response(2, 30, 3, 40_000, 40_000, nonce()))]);
+        let effect = map_pcp(&gateway, &pcp(None, Some(50)), &mut fake, &never);
+        assert!(effect.gateway_rebooted);
+        assert_eq!(effect.refusal, Some(MappingRefusal::Denied));
+        assert_eq!(effect.outcome, TraversalOutcome::Failed);
+        assert_eq!(effect.cleanup, TraversalCleanup::NotCreated);
+        assert!(effect.handle.is_none());
+        assert_eq!(fake.sent.len(), 1);
+    }
+
+    #[test]
+    fn a_finite_success_with_port_zero_is_untrustworthy() {
+        let gateway = gateway();
+        let mut fake = Fake::new(vec![Ok(pcp_response(0, 60, 10, 40_000, 0, nonce()))]);
+        let effect = map_pcp(&gateway, &pcp(None, None), &mut fake, &never);
+        assert_eq!(effect.outcome, TraversalOutcome::CreationOutcomeUnknown);
+        assert_eq!(effect.cleanup, TraversalCleanup::ExpiryUnknown);
+        assert_eq!(effect.refusal, Some(MappingRefusal::Malformed));
+        assert!(effect.handle.is_none());
+        assert_eq!(fake.sent.len(), 1);
     }
 
     #[test]
