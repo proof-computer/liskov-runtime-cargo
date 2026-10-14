@@ -45,3 +45,4 @@ pub mod inbound_reachability;
 pub mod inbound_reachability_contract;
 pub mod network_sample;
 pub mod network_sample_contract;
+pub mod network_traversal;

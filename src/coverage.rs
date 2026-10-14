@@ -67,6 +67,8 @@ pub struct CoverageResultV1 {
     pub network_sample: Option<crate::network_sample_contract::NetworkSampleV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inbound_reachability: Option<crate::inbound_reachability_contract::InboundReachabilityV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_traversal: Option<Box<crate::network_traversal::NetworkTraversalV1>>,
     pub normalized_metric_digest: String,
     pub challenge: String,
     pub replay_subject: String,
@@ -153,6 +155,8 @@ struct CoverageFactAuthorization {
     submit_url: String,
     #[serde(default)]
     network_prober_url: Option<String>,
+    #[serde(default)]
+    network_traversal: Option<crate::network_traversal::TraversalCapabilityV1>,
 }
 
 impl CoverageFactAuthorization {
@@ -232,6 +236,16 @@ pub fn take_coverage_authorization(
             .network_prober_url
             .as_deref()
             .is_some_and(|u| u != crate::network_sample_contract::NETWORK_PROBER_URL)
+        || authorization
+            .network_traversal
+            .as_ref()
+            .is_some_and(|grant| {
+                !crate::network_traversal::grant_structure_ok(
+                    grant,
+                    &authorization.artifact_digest,
+                    &crate::network_traversal::DORMANT_HELPER,
+                )
+            })
     {
         return None;
     }
@@ -304,6 +318,8 @@ pub struct CoverageProducerDependencies<'a> {
     pub delivery: &'a dyn ResultDelivery,
     pub android: &'a dyn AndroidFactCollector,
     pub execution: &'a dyn ExecutionFactCollector,
+    pub traversal_effects: &'a dyn crate::network_traversal::TraversalEffects,
+    pub traversal_helper: &'a crate::network_traversal::TraversalHelperIdentity,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -387,6 +403,8 @@ pub(crate) fn detached_coverage_task(
             delivery: &delivery,
             android: &android,
             execution: &execution,
+            traversal_effects: &crate::network_traversal::NopTraversalEffects,
+            traversal_helper: &crate::network_traversal::DORMANT_HELPER,
         };
         let outcome = run_coverage_producer(
             &activation.authorization,
@@ -419,6 +437,26 @@ pub(crate) fn run_coverage_producer(
     if !authorization.valid_at(now_ms) {
         return CoverageProducerOutcome::AuthorizationExpired;
     }
+    let traversal =
+        crate::network_traversal::reserve_traversal(&crate::network_traversal::ReserveInput {
+            grant: authorization.network_traversal.as_ref(),
+            now_ms,
+            job_expires_at_ms: authorization.expires_at_ms,
+            artifact_digest: &authorization.artifact_digest,
+            helper: dependencies.traversal_helper,
+            effects: dependencies.traversal_effects,
+        });
+    // A bad, unbound, expired, or unknown grant never reaches discovery,
+    // sockets, DNS, signing, or submission. Insufficient time skips the
+    // collector and still allows the existing coverage delivery.
+    if matches!(
+        traversal,
+        crate::network_traversal::ReserveOutcome::Refused(_)
+    ) {
+        return CoverageProducerOutcome::AuthorizationExpired;
+    }
+    let traversal_only =
+        authorization.network_traversal.is_some() && authorization.network_prober_url.is_none();
 
     // A backwards clock step between the two wall stamps clamps to a
     // zero-duration observation rather than an unrepresentable one.
@@ -474,11 +512,18 @@ pub(crate) fn run_coverage_producer(
         hardware_digest = Some(digest);
     }
 
-    let network = authorization.network_prober_url.as_deref().and_then(|url| {
+    let network = if traversal_only {
+        None
+    } else {
+        authorization.network_prober_url.as_deref()
+    }
+    .and_then(|url| {
         let sampler = dependencies.network?;
         let started = dependencies.clock.now_ms()?;
         // Leave the existing two bounded delivery attempts outside the sample.
-        if authorization.expires_at_ms.saturating_sub(started) < 40_000 {
+        if authorization.expires_at_ms.saturating_sub(started)
+            < crate::network_traversal::EXISTING_DELIVERY_RESERVE_MS
+        {
             return Some(crate::network_sample::NetworkSampleOutput {
                 sample: crate::network_sample::skipped_sample(started),
                 inbound: None,
@@ -535,6 +580,7 @@ pub(crate) fn run_coverage_producer(
         outcomes,
         network_sample,
         inbound_reachability,
+        network_traversal: None,
         normalized_metric_digest,
         challenge: authorization.challenge.clone(),
         replay_subject: authorization.replay_subject.clone(),
@@ -908,6 +954,8 @@ mod tests {
                 delivery: &delivery,
                 android: &android,
                 execution: &execution,
+                traversal_effects: &crate::network_traversal::NopTraversalEffects,
+                traversal_helper: &crate::network_traversal::DORMANT_HELPER,
             },
         );
         assert_eq!(outcome, CoverageProducerOutcome::Submitted);
@@ -1024,6 +1072,8 @@ mod tests {
                 delivery: &delivery,
                 android: &android,
                 execution: &execution,
+                traversal_effects: &crate::network_traversal::NopTraversalEffects,
+                traversal_helper: &crate::network_traversal::DORMANT_HELPER,
             },
         );
         assert_eq!(outcome, CoverageProducerOutcome::Submitted);
@@ -1064,6 +1114,8 @@ mod tests {
                 delivery: &delivery,
                 android: &android,
                 execution: &execution,
+                traversal_effects: &crate::network_traversal::NopTraversalEffects,
+                traversal_helper: &crate::network_traversal::DORMANT_HELPER,
             },
         );
         assert_eq!(outcome, CoverageProducerOutcome::Submitted);
@@ -1095,6 +1147,8 @@ mod tests {
                 delivery: &delivery,
                 android: &android,
                 execution: &execution,
+                traversal_effects: &crate::network_traversal::NopTraversalEffects,
+                traversal_helper: &crate::network_traversal::DORMANT_HELPER,
             },
         );
         assert_eq!(outcome, CoverageProducerOutcome::AuthorizationExpired);
@@ -1123,6 +1177,8 @@ mod tests {
                 delivery: &delivery,
                 android: &android,
                 execution: &execution,
+                traversal_effects: &crate::network_traversal::NopTraversalEffects,
+                traversal_helper: &crate::network_traversal::DORMANT_HELPER,
             },
         );
         assert_eq!(outcome, CoverageProducerOutcome::AuthorizationExpired);
@@ -1148,6 +1204,8 @@ mod tests {
                 delivery: &delivery,
                 android: &android,
                 execution: &execution,
+                traversal_effects: &crate::network_traversal::NopTraversalEffects,
+                traversal_helper: &crate::network_traversal::DORMANT_HELPER,
             },
         );
         assert_eq!(outcome, CoverageProducerOutcome::SigningFailed);
@@ -1172,6 +1230,8 @@ mod tests {
                 delivery: &delivery,
                 android: &android,
                 execution: &execution,
+                traversal_effects: &crate::network_traversal::NopTraversalEffects,
+                traversal_helper: &crate::network_traversal::DORMANT_HELPER,
             },
         );
         assert_eq!(outcome, CoverageProducerOutcome::DeliveryFailed);
@@ -1202,6 +1262,8 @@ mod tests {
                 delivery: &delivery,
                 android: &android,
                 execution: &execution,
+                traversal_effects: &crate::network_traversal::NopTraversalEffects,
+                traversal_helper: &crate::network_traversal::DORMANT_HELPER,
             },
         );
         assert_eq!(outcome, CoverageProducerOutcome::AuthorizationExpired);
@@ -1330,5 +1392,241 @@ mod tests {
                 );
             }
         }
+    }
+
+    struct CountingSampler(AtomicUsize);
+
+    impl crate::network_sample::NetworkSampler for CountingSampler {
+        fn sample(
+            &self,
+            _url: &str,
+            _challenge: &str,
+            started_at_ms: u64,
+            _signer: &dyn FactSigner,
+        ) -> crate::network_sample::NetworkSampleOutput {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            crate::network_sample::NetworkSampleOutput {
+                sample: crate::network_sample::skipped_sample(started_at_ms),
+                inbound: None,
+            }
+        }
+    }
+
+    struct EffectProbe {
+        calls: AtomicUsize,
+        cancelled: bool,
+    }
+
+    impl crate::network_traversal::TraversalEffects for EffectProbe {
+        fn discover(&self) {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+        }
+        fn open_socket(&self) {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+        }
+        fn resolve_name(&self, _host: &str) {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+        }
+        fn sign(&self, _message: &[u8]) {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+        }
+        fn submit(&self, _body: &[u8]) {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+        }
+        fn cancelled(&self) -> bool {
+            self.cancelled
+        }
+    }
+
+    fn bound_observe_grant(expires_at_ms: u64, deadline_ms: u64) -> Value {
+        let vectors: Value =
+            serde_json::from_str(include_str!("../vectors/network-traversal-v1.json")).unwrap();
+        let mut descriptor = vectors["descriptors"][0]["descriptor"].clone();
+        descriptor["helperVersion"] = json!(crate::network_traversal::DORMANT_HELPER.version);
+        descriptor["helperDigest"] = json!(crate::network_traversal::DORMANT_HELPER.digest);
+        descriptor["artifactDigest"] = json!(format!("sha256:{}", "b".repeat(64)));
+        descriptor["issuedAtMs"] = json!(NOW - 1_000);
+        descriptor["expiresAtMs"] = json!(expires_at_ms);
+        descriptor["deadlineMs"] = json!(deadline_ms);
+        let parsed: crate::network_traversal::TraversalDescriptorV1 =
+            serde_json::from_value(descriptor.clone()).unwrap();
+        parsed.validate().unwrap();
+        json!({
+            "domain": crate::network_traversal::TRAVERSAL_CAPABILITY_DOMAIN,
+            "descriptor": descriptor,
+            "mac": "11".repeat(32),
+        })
+    }
+
+    #[test]
+    fn absent_grant_keeps_the_bandwidth_ladder_and_the_old_envelope() {
+        let mut block = minted_block();
+        block["networkProberUrl"] = json!(crate::network_sample_contract::NETWORK_PROBER_URL);
+        let sampler = CountingSampler(AtomicUsize::new(0));
+        let effects = EffectProbe {
+            calls: AtomicUsize::new(0),
+            cancelled: false,
+        };
+        let coverage = taken(block).expect("existing authorization");
+        let clock = FixedClock(NOW);
+        let signer = RecordingSigner::succeeding();
+        let delivery = RecordingDelivery::new(true);
+        let android = FakeAndroid::default();
+        let execution = FakeExecution::default();
+        let outcome = run_coverage_producer(
+            &coverage,
+            observation(),
+            &CoverageProducerDependencies {
+                network: Some(&sampler),
+                clock: &clock,
+                signer: &signer,
+                delivery: &delivery,
+                android: &android,
+                execution: &execution,
+                traversal_effects: &effects,
+                traversal_helper: &crate::network_traversal::DORMANT_HELPER,
+            },
+        );
+        assert_eq!(outcome, CoverageProducerOutcome::Submitted);
+        assert_eq!(sampler.0.load(Ordering::SeqCst), 1);
+        assert_eq!(effects.calls.load(Ordering::SeqCst), 0);
+        let body = &delivery.attempts.lock().unwrap()[0].1;
+        let submitted: Value = serde_json::from_slice(body).unwrap();
+        assert!(submitted.get("networkTraversal").is_none());
+    }
+
+    #[test]
+    fn bad_grant_never_starts_the_producer() {
+        let reject = |grant: Value| {
+            let mut block = minted_block();
+            block["networkTraversal"] = grant;
+            assert!(taken(block).is_none());
+        };
+        let mut wrong_helper = bound_observe_grant(NOW + 119_000, NOW + 50_000);
+        wrong_helper["descriptor"]["helperVersion"] = json!("other-helper");
+        reject(wrong_helper);
+        let mut wrong_scope = bound_observe_grant(NOW + 119_000, NOW + 50_000);
+        wrong_scope["descriptor"]["operations"] = json!(["map_pcp"]);
+        reject(wrong_scope);
+        let mut unknown_mode = bound_observe_grant(NOW + 119_000, NOW + 50_000);
+        unknown_mode["descriptor"]["mode"] = json!("auto_mapping");
+        reject(unknown_mode);
+        let mut bad_mac = bound_observe_grant(NOW + 119_000, NOW + 50_000);
+        bad_mac["mac"] = json!("abcd");
+        reject(bad_mac);
+    }
+
+    #[test]
+    fn expired_grant_signs_nothing_and_touches_no_seam() {
+        let mut block = minted_block();
+        block["networkTraversal"] = bound_observe_grant(NOW, NOW);
+        let sampler = CountingSampler(AtomicUsize::new(0));
+        let effects = EffectProbe {
+            calls: AtomicUsize::new(0),
+            cancelled: false,
+        };
+        let coverage = taken(block).expect("structure holds; the clock refuses it");
+        let clock = FixedClock(NOW);
+        let signer = RecordingSigner::succeeding();
+        let delivery = RecordingDelivery::new(true);
+        let android = FakeAndroid::default();
+        let execution = FakeExecution::default();
+        let outcome = run_coverage_producer(
+            &coverage,
+            observation(),
+            &CoverageProducerDependencies {
+                network: Some(&sampler),
+                clock: &clock,
+                signer: &signer,
+                delivery: &delivery,
+                android: &android,
+                execution: &execution,
+                traversal_effects: &effects,
+                traversal_helper: &crate::network_traversal::DORMANT_HELPER,
+            },
+        );
+        assert_eq!(outcome, CoverageProducerOutcome::AuthorizationExpired);
+        assert_eq!(sampler.0.load(Ordering::SeqCst), 0);
+        assert_eq!(effects.calls.load(Ordering::SeqCst), 0);
+        assert!(signer.messages.lock().unwrap().is_empty());
+        assert!(delivery.attempts.lock().unwrap().is_empty());
+        assert_eq!(android.0.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn traversal_only_profile_reserves_time_without_the_bandwidth_ladder() {
+        let mut block = minted_block();
+        block["networkTraversal"] = bound_observe_grant(NOW + 119_000, NOW + 50_000);
+        let sampler = CountingSampler(AtomicUsize::new(0));
+        let effects = EffectProbe {
+            calls: AtomicUsize::new(0),
+            cancelled: false,
+        };
+        let coverage = taken(block).expect("bound grant");
+        let clock = FixedClock(NOW);
+        let signer = RecordingSigner::succeeding();
+        let delivery = RecordingDelivery::new(false);
+        let android = FakeAndroid::default();
+        let execution = FakeExecution::default();
+        let outcome = run_coverage_producer(
+            &coverage,
+            observation(),
+            &CoverageProducerDependencies {
+                network: Some(&sampler),
+                clock: &clock,
+                signer: &signer,
+                delivery: &delivery,
+                android: &android,
+                execution: &execution,
+                traversal_effects: &effects,
+                traversal_helper: &crate::network_traversal::DORMANT_HELPER,
+            },
+        );
+        assert_eq!(outcome, CoverageProducerOutcome::DeliveryFailed);
+        assert_eq!(sampler.0.load(Ordering::SeqCst), 0);
+        assert_eq!(effects.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(signer.messages.lock().unwrap().len(), 1);
+        let attempts = delivery.attempts.lock().unwrap();
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(attempts[0].1, attempts[1].1);
+        let submitted: Value = serde_json::from_slice(&attempts[0].1).unwrap();
+        assert!(submitted.get("networkTraversal").is_none());
+        assert!(submitted.get("networkSample").is_none());
+    }
+
+    #[test]
+    fn short_job_skips_the_collector_and_still_delivers_coverage() {
+        let mut block = minted_block();
+        block["expiresAtMs"] = json!(NOW + 50_000);
+        block["networkTraversal"] = bound_observe_grant(NOW + 119_000, NOW + 50_000);
+        let sampler = CountingSampler(AtomicUsize::new(0));
+        let effects = EffectProbe {
+            calls: AtomicUsize::new(0),
+            cancelled: false,
+        };
+        let coverage = taken(block).expect("short job still admits the grant");
+        let clock = FixedClock(NOW);
+        let signer = RecordingSigner::succeeding();
+        let delivery = RecordingDelivery::new(true);
+        let android = FakeAndroid::default();
+        let execution = FakeExecution::default();
+        let outcome = run_coverage_producer(
+            &coverage,
+            observation(),
+            &CoverageProducerDependencies {
+                network: Some(&sampler),
+                clock: &clock,
+                signer: &signer,
+                delivery: &delivery,
+                android: &android,
+                execution: &execution,
+                traversal_effects: &effects,
+                traversal_helper: &crate::network_traversal::DORMANT_HELPER,
+            },
+        );
+        assert_eq!(outcome, CoverageProducerOutcome::Submitted);
+        assert_eq!(sampler.0.load(Ordering::SeqCst), 0);
+        assert_eq!(effects.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(signer.messages.lock().unwrap().len(), 1);
     }
 }

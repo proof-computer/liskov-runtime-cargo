@@ -1,0 +1,1821 @@
+{
+  "version": 1,
+  "testOnlyMacKeyHex": "0707070707070707070707070707070707070707070707070707070707070707",
+  "testOnlyDeviceSignatures": "Shape-only fixtures; consumers verify real runtime signatures over canonicalDeviceSigningPayload. Prober MAC does not verify device signatures.",
+  "canonicalization": "UTF-8 compact recursively key-sorted JSON; explicit nulls; integer milliseconds; MAC domain with trailing zero byte followed by canonical payload.",
+  "descriptors": [
+    {
+      "name": "observe",
+      "descriptor": {
+        "version": 1,
+        "runId": "01010101010101010101010101010101",
+        "mode": "observe",
+        "claimAuthorityDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "profileVersion": "traversal-observe-1",
+        "catalogVersion": "traversal-catalog-1",
+        "artifactDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "helperVersion": "cargo-helper-traversal-1",
+        "helperDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "endpointSetRevision": "a-p-a-q-b-p-1",
+        "issuedAtMs": 1775000000000,
+        "expiresAtMs": 1775000120000,
+        "deadlineMs": 1775000060000,
+        "operations": [
+          "discover_gateway",
+          "observe_mapping",
+          "observe_filtering",
+          "baseline_tcp",
+          "baseline_udp"
+        ],
+        "budgets": {
+          "experimentMs": 30000,
+          "cleanupReserveMs": 5000,
+          "outboundDatagrams": 64,
+          "datagramBytes": 512,
+          "controlRequests": 12,
+          "externalDialbacks": 4,
+          "relayBytesPerDirection": 0,
+          "concurrentMappingLeases": 0,
+          "cleanupDatagrams": 0,
+          "cleanupControlRequests": 0
+        },
+        "mapping": null,
+        "pair": null,
+        "participantRole": null
+      },
+      "canonicalDescriptor": "{\"artifactDigest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"budgets\":{\"cleanupControlRequests\":0,\"cleanupDatagrams\":0,\"cleanupReserveMs\":5000,\"concurrentMappingLeases\":0,\"controlRequests\":12,\"datagramBytes\":512,\"experimentMs\":30000,\"externalDialbacks\":4,\"outboundDatagrams\":64,\"relayBytesPerDirection\":0},\"catalogVersion\":\"traversal-catalog-1\",\"claimAuthorityDigest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"deadlineMs\":1775000060000,\"endpointSetRevision\":\"a-p-a-q-b-p-1\",\"expiresAtMs\":1775000120000,\"helperDigest\":\"sha256:3333333333333333333333333333333333333333333333333333333333333333\",\"helperVersion\":\"cargo-helper-traversal-1\",\"issuedAtMs\":1775000000000,\"mapping\":null,\"mode\":\"observe\",\"operations\":[\"discover_gateway\",\"observe_mapping\",\"observe_filtering\",\"baseline_tcp\",\"baseline_udp\"],\"pair\":null,\"participantRole\":null,\"profileVersion\":\"traversal-observe-1\",\"runId\":\"01010101010101010101010101010101\",\"version\":1}",
+      "descriptorDigest": "sha256:f7e65486dc0f3c5881a4d281bce1411a4f1ca33f619193713ebdfe0d06516511",
+      "canonicalCapability": "{\"descriptor\":{\"artifactDigest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"budgets\":{\"cleanupControlRequests\":0,\"cleanupDatagrams\":0,\"cleanupReserveMs\":5000,\"concurrentMappingLeases\":0,\"controlRequests\":12,\"datagramBytes\":512,\"experimentMs\":30000,\"externalDialbacks\":4,\"outboundDatagrams\":64,\"relayBytesPerDirection\":0},\"catalogVersion\":\"traversal-catalog-1\",\"claimAuthorityDigest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"deadlineMs\":1775000060000,\"endpointSetRevision\":\"a-p-a-q-b-p-1\",\"expiresAtMs\":1775000120000,\"helperDigest\":\"sha256:3333333333333333333333333333333333333333333333333333333333333333\",\"helperVersion\":\"cargo-helper-traversal-1\",\"issuedAtMs\":1775000000000,\"mapping\":null,\"mode\":\"observe\",\"operations\":[\"discover_gateway\",\"observe_mapping\",\"observe_filtering\",\"baseline_tcp\",\"baseline_udp\"],\"pair\":null,\"participantRole\":null,\"profileVersion\":\"traversal-observe-1\",\"runId\":\"01010101010101010101010101010101\",\"version\":1},\"domain\":\"proof.liskov.network-traversal-capability.v1\",\"mac\":\"9940e1e1472d08f25fe700247e5173da09eb107a010609c8640b580d936185a5\"}"
+    },
+    {
+      "name": "mapping",
+      "descriptor": {
+        "version": 1,
+        "runId": "01010101010101010101010101010101",
+        "mode": "mapping",
+        "claimAuthorityDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "profileVersion": "traversal-mapping-1",
+        "catalogVersion": "traversal-catalog-1",
+        "artifactDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "helperVersion": "cargo-helper-traversal-1",
+        "helperDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "endpointSetRevision": "a-p-a-q-b-p-1",
+        "issuedAtMs": 1775000000000,
+        "expiresAtMs": 1775000120000,
+        "deadlineMs": 1775000060000,
+        "operations": [
+          "discover_gateway",
+          "baseline_tcp",
+          "baseline_udp",
+          "map_pcp"
+        ],
+        "budgets": {
+          "experimentMs": 30000,
+          "cleanupReserveMs": 5000,
+          "outboundDatagrams": 64,
+          "datagramBytes": 512,
+          "controlRequests": 12,
+          "externalDialbacks": 4,
+          "relayBytesPerDirection": 0,
+          "concurrentMappingLeases": 1,
+          "cleanupDatagrams": 1,
+          "cleanupControlRequests": 1
+        },
+        "mapping": {
+          "consentReference": "owned-network-single-run-1",
+          "processorAllowlistDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+          "exclusiveReservationDigest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+          "priorUncertaintyResolved": true,
+          "finiteExpiryVerified": true,
+          "expiresAtMs": 1775000120000,
+          "protocols": [
+            "pcp"
+          ],
+          "requestedLeaseSec": 60,
+          "maximumLeaseSec": 120
+        },
+        "pair": null,
+        "participantRole": null
+      },
+      "canonicalDescriptor": "{\"artifactDigest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"budgets\":{\"cleanupControlRequests\":1,\"cleanupDatagrams\":1,\"cleanupReserveMs\":5000,\"concurrentMappingLeases\":1,\"controlRequests\":12,\"datagramBytes\":512,\"experimentMs\":30000,\"externalDialbacks\":4,\"outboundDatagrams\":64,\"relayBytesPerDirection\":0},\"catalogVersion\":\"traversal-catalog-1\",\"claimAuthorityDigest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"deadlineMs\":1775000060000,\"endpointSetRevision\":\"a-p-a-q-b-p-1\",\"expiresAtMs\":1775000120000,\"helperDigest\":\"sha256:3333333333333333333333333333333333333333333333333333333333333333\",\"helperVersion\":\"cargo-helper-traversal-1\",\"issuedAtMs\":1775000000000,\"mapping\":{\"consentReference\":\"owned-network-single-run-1\",\"exclusiveReservationDigest\":\"sha256:5555555555555555555555555555555555555555555555555555555555555555\",\"expiresAtMs\":1775000120000,\"finiteExpiryVerified\":true,\"maximumLeaseSec\":120,\"priorUncertaintyResolved\":true,\"processorAllowlistDigest\":\"sha256:4444444444444444444444444444444444444444444444444444444444444444\",\"protocols\":[\"pcp\"],\"requestedLeaseSec\":60},\"mode\":\"mapping\",\"operations\":[\"discover_gateway\",\"baseline_tcp\",\"baseline_udp\",\"map_pcp\"],\"pair\":null,\"participantRole\":null,\"profileVersion\":\"traversal-mapping-1\",\"runId\":\"01010101010101010101010101010101\",\"version\":1}",
+      "descriptorDigest": "sha256:26d98a69ec92499fa72236f5a50595d416ce4f7531fc0393002138fcb5fe4968",
+      "canonicalCapability": "{\"descriptor\":{\"artifactDigest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"budgets\":{\"cleanupControlRequests\":1,\"cleanupDatagrams\":1,\"cleanupReserveMs\":5000,\"concurrentMappingLeases\":1,\"controlRequests\":12,\"datagramBytes\":512,\"experimentMs\":30000,\"externalDialbacks\":4,\"outboundDatagrams\":64,\"relayBytesPerDirection\":0},\"catalogVersion\":\"traversal-catalog-1\",\"claimAuthorityDigest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"deadlineMs\":1775000060000,\"endpointSetRevision\":\"a-p-a-q-b-p-1\",\"expiresAtMs\":1775000120000,\"helperDigest\":\"sha256:3333333333333333333333333333333333333333333333333333333333333333\",\"helperVersion\":\"cargo-helper-traversal-1\",\"issuedAtMs\":1775000000000,\"mapping\":{\"consentReference\":\"owned-network-single-run-1\",\"exclusiveReservationDigest\":\"sha256:5555555555555555555555555555555555555555555555555555555555555555\",\"expiresAtMs\":1775000120000,\"finiteExpiryVerified\":true,\"maximumLeaseSec\":120,\"priorUncertaintyResolved\":true,\"processorAllowlistDigest\":\"sha256:4444444444444444444444444444444444444444444444444444444444444444\",\"protocols\":[\"pcp\"],\"requestedLeaseSec\":60},\"mode\":\"mapping\",\"operations\":[\"discover_gateway\",\"baseline_tcp\",\"baseline_udp\",\"map_pcp\"],\"pair\":null,\"participantRole\":null,\"profileVersion\":\"traversal-mapping-1\",\"runId\":\"01010101010101010101010101010101\",\"version\":1},\"domain\":\"proof.liskov.network-traversal-capability.v1\",\"mac\":\"06766700af2469da7c3f4392ed35547e10b35fad45be9d10976657f4042e8dfc\"}"
+    },
+    {
+      "name": "pair_first",
+      "descriptor": {
+        "version": 1,
+        "runId": "01010101010101010101010101010101",
+        "mode": "pair",
+        "claimAuthorityDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "profileVersion": "traversal-pair-1",
+        "catalogVersion": "traversal-catalog-1",
+        "artifactDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "helperVersion": "cargo-helper-traversal-1",
+        "helperDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "endpointSetRevision": "a-p-a-q-b-p-1",
+        "issuedAtMs": 1775000000000,
+        "expiresAtMs": 1775000120000,
+        "deadlineMs": 1775000060000,
+        "operations": [
+          "register_endpoint",
+          "pair_direct_udp",
+          "pair_relay_control"
+        ],
+        "budgets": {
+          "experimentMs": 30000,
+          "cleanupReserveMs": 5000,
+          "outboundDatagrams": 64,
+          "datagramBytes": 512,
+          "controlRequests": 12,
+          "externalDialbacks": 4,
+          "relayBytesPerDirection": 65536,
+          "concurrentMappingLeases": 0,
+          "cleanupDatagrams": 0,
+          "cleanupControlRequests": 0
+        },
+        "mapping": null,
+        "pair": {
+          "pairId": "02020202020202020202020202020202",
+          "expiresAtMs": 1775000120000,
+          "participants": [
+            {
+              "role": "first",
+              "launchInstanceDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+              "claimAuthorityDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "runtimeSigner": "0x1111111111111111111111111111111111111111111111111111111111111111"
+            },
+            {
+              "role": "second",
+              "launchInstanceDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+              "claimAuthorityDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+              "runtimeSigner": "0x2222222222222222222222222222222222222222222222222222222222222222"
+            }
+          ]
+        },
+        "participantRole": "first"
+      },
+      "canonicalDescriptor": "{\"artifactDigest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"budgets\":{\"cleanupControlRequests\":0,\"cleanupDatagrams\":0,\"cleanupReserveMs\":5000,\"concurrentMappingLeases\":0,\"controlRequests\":12,\"datagramBytes\":512,\"experimentMs\":30000,\"externalDialbacks\":4,\"outboundDatagrams\":64,\"relayBytesPerDirection\":65536},\"catalogVersion\":\"traversal-catalog-1\",\"claimAuthorityDigest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"deadlineMs\":1775000060000,\"endpointSetRevision\":\"a-p-a-q-b-p-1\",\"expiresAtMs\":1775000120000,\"helperDigest\":\"sha256:3333333333333333333333333333333333333333333333333333333333333333\",\"helperVersion\":\"cargo-helper-traversal-1\",\"issuedAtMs\":1775000000000,\"mapping\":null,\"mode\":\"pair\",\"operations\":[\"register_endpoint\",\"pair_direct_udp\",\"pair_relay_control\"],\"pair\":{\"expiresAtMs\":1775000120000,\"pairId\":\"02020202020202020202020202020202\",\"participants\":[{\"claimAuthorityDigest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"launchInstanceDigest\":\"sha256:6666666666666666666666666666666666666666666666666666666666666666\",\"role\":\"first\",\"runtimeSigner\":\"0x1111111111111111111111111111111111111111111111111111111111111111\"},{\"claimAuthorityDigest\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"launchInstanceDigest\":\"sha256:7777777777777777777777777777777777777777777777777777777777777777\",\"role\":\"second\",\"runtimeSigner\":\"0x2222222222222222222222222222222222222222222222222222222222222222\"}]},\"participantRole\":\"first\",\"profileVersion\":\"traversal-pair-1\",\"runId\":\"01010101010101010101010101010101\",\"version\":1}",
+      "descriptorDigest": "sha256:7303dd901eb49abfbfcee1c281a9ff01572cea6229d1876541ab182a66c630cc",
+      "canonicalCapability": "{\"descriptor\":{\"artifactDigest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"budgets\":{\"cleanupControlRequests\":0,\"cleanupDatagrams\":0,\"cleanupReserveMs\":5000,\"concurrentMappingLeases\":0,\"controlRequests\":12,\"datagramBytes\":512,\"experimentMs\":30000,\"externalDialbacks\":4,\"outboundDatagrams\":64,\"relayBytesPerDirection\":65536},\"catalogVersion\":\"traversal-catalog-1\",\"claimAuthorityDigest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"deadlineMs\":1775000060000,\"endpointSetRevision\":\"a-p-a-q-b-p-1\",\"expiresAtMs\":1775000120000,\"helperDigest\":\"sha256:3333333333333333333333333333333333333333333333333333333333333333\",\"helperVersion\":\"cargo-helper-traversal-1\",\"issuedAtMs\":1775000000000,\"mapping\":null,\"mode\":\"pair\",\"operations\":[\"register_endpoint\",\"pair_direct_udp\",\"pair_relay_control\"],\"pair\":{\"expiresAtMs\":1775000120000,\"pairId\":\"02020202020202020202020202020202\",\"participants\":[{\"claimAuthorityDigest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"launchInstanceDigest\":\"sha256:6666666666666666666666666666666666666666666666666666666666666666\",\"role\":\"first\",\"runtimeSigner\":\"0x1111111111111111111111111111111111111111111111111111111111111111\"},{\"claimAuthorityDigest\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"launchInstanceDigest\":\"sha256:7777777777777777777777777777777777777777777777777777777777777777\",\"role\":\"second\",\"runtimeSigner\":\"0x2222222222222222222222222222222222222222222222222222222222222222\"}]},\"participantRole\":\"first\",\"profileVersion\":\"traversal-pair-1\",\"runId\":\"01010101010101010101010101010101\",\"version\":1},\"domain\":\"proof.liskov.network-traversal-capability.v1\",\"mac\":\"b24fee5885aa6fec9d356c905c50a86e33250c4520a1d532274168835dc983d0\"}"
+    },
+    {
+      "name": "pair_second",
+      "descriptor": {
+        "version": 1,
+        "runId": "01010101010101010101010101010101",
+        "mode": "pair",
+        "claimAuthorityDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "profileVersion": "traversal-pair-1",
+        "catalogVersion": "traversal-catalog-1",
+        "artifactDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "helperVersion": "cargo-helper-traversal-1",
+        "helperDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "endpointSetRevision": "a-p-a-q-b-p-1",
+        "issuedAtMs": 1775000000000,
+        "expiresAtMs": 1775000120000,
+        "deadlineMs": 1775000060000,
+        "operations": [
+          "register_endpoint",
+          "pair_direct_udp",
+          "pair_relay_control"
+        ],
+        "budgets": {
+          "experimentMs": 30000,
+          "cleanupReserveMs": 5000,
+          "outboundDatagrams": 64,
+          "datagramBytes": 512,
+          "controlRequests": 12,
+          "externalDialbacks": 4,
+          "relayBytesPerDirection": 65536,
+          "concurrentMappingLeases": 0,
+          "cleanupDatagrams": 0,
+          "cleanupControlRequests": 0
+        },
+        "mapping": null,
+        "pair": {
+          "pairId": "02020202020202020202020202020202",
+          "expiresAtMs": 1775000120000,
+          "participants": [
+            {
+              "role": "first",
+              "launchInstanceDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+              "claimAuthorityDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "runtimeSigner": "0x1111111111111111111111111111111111111111111111111111111111111111"
+            },
+            {
+              "role": "second",
+              "launchInstanceDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+              "claimAuthorityDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+              "runtimeSigner": "0x2222222222222222222222222222222222222222222222222222222222222222"
+            }
+          ]
+        },
+        "participantRole": "second"
+      },
+      "canonicalDescriptor": "{\"artifactDigest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"budgets\":{\"cleanupControlRequests\":0,\"cleanupDatagrams\":0,\"cleanupReserveMs\":5000,\"concurrentMappingLeases\":0,\"controlRequests\":12,\"datagramBytes\":512,\"experimentMs\":30000,\"externalDialbacks\":4,\"outboundDatagrams\":64,\"relayBytesPerDirection\":65536},\"catalogVersion\":\"traversal-catalog-1\",\"claimAuthorityDigest\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"deadlineMs\":1775000060000,\"endpointSetRevision\":\"a-p-a-q-b-p-1\",\"expiresAtMs\":1775000120000,\"helperDigest\":\"sha256:3333333333333333333333333333333333333333333333333333333333333333\",\"helperVersion\":\"cargo-helper-traversal-1\",\"issuedAtMs\":1775000000000,\"mapping\":null,\"mode\":\"pair\",\"operations\":[\"register_endpoint\",\"pair_direct_udp\",\"pair_relay_control\"],\"pair\":{\"expiresAtMs\":1775000120000,\"pairId\":\"02020202020202020202020202020202\",\"participants\":[{\"claimAuthorityDigest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"launchInstanceDigest\":\"sha256:6666666666666666666666666666666666666666666666666666666666666666\",\"role\":\"first\",\"runtimeSigner\":\"0x1111111111111111111111111111111111111111111111111111111111111111\"},{\"claimAuthorityDigest\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"launchInstanceDigest\":\"sha256:7777777777777777777777777777777777777777777777777777777777777777\",\"role\":\"second\",\"runtimeSigner\":\"0x2222222222222222222222222222222222222222222222222222222222222222\"}]},\"participantRole\":\"second\",\"profileVersion\":\"traversal-pair-1\",\"runId\":\"01010101010101010101010101010101\",\"version\":1}",
+      "descriptorDigest": "sha256:5d30638c432bde2dec96ad09337d6f69898593422dcfadb2cfb1a2aff52d69d1",
+      "canonicalCapability": "{\"descriptor\":{\"artifactDigest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"budgets\":{\"cleanupControlRequests\":0,\"cleanupDatagrams\":0,\"cleanupReserveMs\":5000,\"concurrentMappingLeases\":0,\"controlRequests\":12,\"datagramBytes\":512,\"experimentMs\":30000,\"externalDialbacks\":4,\"outboundDatagrams\":64,\"relayBytesPerDirection\":65536},\"catalogVersion\":\"traversal-catalog-1\",\"claimAuthorityDigest\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"deadlineMs\":1775000060000,\"endpointSetRevision\":\"a-p-a-q-b-p-1\",\"expiresAtMs\":1775000120000,\"helperDigest\":\"sha256:3333333333333333333333333333333333333333333333333333333333333333\",\"helperVersion\":\"cargo-helper-traversal-1\",\"issuedAtMs\":1775000000000,\"mapping\":null,\"mode\":\"pair\",\"operations\":[\"register_endpoint\",\"pair_direct_udp\",\"pair_relay_control\"],\"pair\":{\"expiresAtMs\":1775000120000,\"pairId\":\"02020202020202020202020202020202\",\"participants\":[{\"claimAuthorityDigest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"launchInstanceDigest\":\"sha256:6666666666666666666666666666666666666666666666666666666666666666\",\"role\":\"first\",\"runtimeSigner\":\"0x1111111111111111111111111111111111111111111111111111111111111111\"},{\"claimAuthorityDigest\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"launchInstanceDigest\":\"sha256:7777777777777777777777777777777777777777777777777777777777777777\",\"role\":\"second\",\"runtimeSigner\":\"0x2222222222222222222222222222222222222222222222222222222222222222\"}]},\"participantRole\":\"second\",\"profileVersion\":\"traversal-pair-1\",\"runId\":\"01010101010101010101010101010101\",\"version\":1},\"domain\":\"proof.liskov.network-traversal-capability.v1\",\"mac\":\"33c895d022400592b1fc26d6545fb3d59ae382dfc3e49817a82d9b00758239b8\"}"
+    }
+  ],
+  "proofs": [
+    {
+      "name": "external_baseline",
+      "descriptor": {
+        "version": 1,
+        "runId": "01010101010101010101010101010101",
+        "mode": "observe",
+        "claimAuthorityDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "profileVersion": "traversal-observe-1",
+        "catalogVersion": "traversal-catalog-1",
+        "artifactDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "helperVersion": "cargo-helper-traversal-1",
+        "helperDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "endpointSetRevision": "a-p-a-q-b-p-1",
+        "issuedAtMs": 1775000000000,
+        "expiresAtMs": 1775000120000,
+        "deadlineMs": 1775000060000,
+        "operations": [
+          "discover_gateway",
+          "observe_mapping",
+          "observe_filtering",
+          "baseline_tcp",
+          "baseline_udp"
+        ],
+        "budgets": {
+          "experimentMs": 30000,
+          "cleanupReserveMs": 5000,
+          "outboundDatagrams": 64,
+          "datagramBytes": 512,
+          "controlRequests": 12,
+          "externalDialbacks": 4,
+          "relayBytesPerDirection": 0,
+          "concurrentMappingLeases": 0,
+          "cleanupDatagrams": 0,
+          "cleanupControlRequests": 0
+        },
+        "mapping": null,
+        "pair": null,
+        "participantRole": null
+      },
+      "transcript": {
+        "version": 1,
+        "domain": "proof.liskov.network-traversal-external-path.v1",
+        "descriptorDigest": "sha256:f7e65486dc0f3c5881a4d281bce1411a4f1ca33f619193713ebdfe0d06516511",
+        "runId": "01010101010101010101010101010101",
+        "pairId": null,
+        "participantRole": null,
+        "authority": "external_path",
+        "stage": "baseline",
+        "method": "unassisted",
+        "transport": "tcp",
+        "family": "v4",
+        "challenge": "0909090909090909090909090909090909090909090909090909090909090909",
+        "peerChallenge": null,
+        "expiresAtMs": 1775000120000,
+        "outcome": "succeeded",
+        "elapsedMs": 50,
+        "grantedLeaseSec": null,
+        "cleanup": null,
+        "protocolError": null,
+        "errorClass": null
+      },
+      "canonicalDeviceSigningPayload": "{\"authority\":\"external_path\",\"challenge\":\"0909090909090909090909090909090909090909090909090909090909090909\",\"cleanup\":null,\"descriptorDigest\":\"sha256:f7e65486dc0f3c5881a4d281bce1411a4f1ca33f619193713ebdfe0d06516511\",\"domain\":\"proof.liskov.network-traversal-external-path.v1\",\"elapsedMs\":50,\"errorClass\":null,\"expiresAtMs\":1775000120000,\"family\":\"v4\",\"grantedLeaseSec\":null,\"method\":\"unassisted\",\"outcome\":\"succeeded\",\"pairId\":null,\"participantRole\":null,\"peerChallenge\":null,\"protocolError\":null,\"runId\":\"01010101010101010101010101010101\",\"stage\":\"baseline\",\"transport\":\"tcp\",\"version\":1}",
+      "proof": {
+        "kind": "prober_receipt",
+        "receipt": {
+          "version": 1,
+          "transcript": {
+            "version": 1,
+            "domain": "proof.liskov.network-traversal-external-path.v1",
+            "descriptorDigest": "sha256:f7e65486dc0f3c5881a4d281bce1411a4f1ca33f619193713ebdfe0d06516511",
+            "runId": "01010101010101010101010101010101",
+            "pairId": null,
+            "participantRole": null,
+            "authority": "external_path",
+            "stage": "baseline",
+            "method": "unassisted",
+            "transport": "tcp",
+            "family": "v4",
+            "challenge": "0909090909090909090909090909090909090909090909090909090909090909",
+            "peerChallenge": null,
+            "expiresAtMs": 1775000120000,
+            "outcome": "succeeded",
+            "elapsedMs": 50,
+            "grantedLeaseSec": null,
+            "cleanup": null,
+            "protocolError": null,
+            "errorClass": null
+          },
+          "deviceSignature": "0xabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab",
+          "mac": "6af2722bba36b122947ebe7f06a0bac79bb7b3bc462713f2d8dc42a3a5df2c78"
+        }
+      },
+      "proofDigest": "sha256:13a94307c9b86681eb8a17e03297442e6e7200e0943f1750a2d36192be342129",
+      "canonicalReceiptMacPayload": "{\"deviceSignature\":\"0xabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab\",\"mac\":\"\",\"transcript\":{\"authority\":\"external_path\",\"challenge\":\"0909090909090909090909090909090909090909090909090909090909090909\",\"cleanup\":null,\"descriptorDigest\":\"sha256:f7e65486dc0f3c5881a4d281bce1411a4f1ca33f619193713ebdfe0d06516511\",\"domain\":\"proof.liskov.network-traversal-external-path.v1\",\"elapsedMs\":50,\"errorClass\":null,\"expiresAtMs\":1775000120000,\"family\":\"v4\",\"grantedLeaseSec\":null,\"method\":\"unassisted\",\"outcome\":\"succeeded\",\"pairId\":null,\"participantRole\":null,\"peerChallenge\":null,\"protocolError\":null,\"runId\":\"01010101010101010101010101010101\",\"stage\":\"baseline\",\"transport\":\"tcp\",\"version\":1},\"version\":1}"
+    },
+    {
+      "name": "mapping_behaviour",
+      "descriptor": {
+        "version": 1,
+        "runId": "01010101010101010101010101010101",
+        "mode": "observe",
+        "claimAuthorityDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "profileVersion": "traversal-observe-1",
+        "catalogVersion": "traversal-catalog-1",
+        "artifactDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "helperVersion": "cargo-helper-traversal-1",
+        "helperDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "endpointSetRevision": "a-p-a-q-b-p-1",
+        "issuedAtMs": 1775000000000,
+        "expiresAtMs": 1775000120000,
+        "deadlineMs": 1775000060000,
+        "operations": [
+          "discover_gateway",
+          "observe_mapping",
+          "observe_filtering",
+          "baseline_tcp",
+          "baseline_udp"
+        ],
+        "budgets": {
+          "experimentMs": 30000,
+          "cleanupReserveMs": 5000,
+          "outboundDatagrams": 64,
+          "datagramBytes": 512,
+          "controlRequests": 12,
+          "externalDialbacks": 4,
+          "relayBytesPerDirection": 0,
+          "concurrentMappingLeases": 0,
+          "cleanupDatagrams": 0,
+          "cleanupControlRequests": 0
+        },
+        "mapping": null,
+        "pair": null,
+        "participantRole": null
+      },
+      "transcript": {
+        "version": 1,
+        "domain": "proof.liskov.network-traversal-observed-behaviour.v1",
+        "descriptorDigest": "sha256:f7e65486dc0f3c5881a4d281bce1411a4f1ca33f619193713ebdfe0d06516511",
+        "runId": "01010101010101010101010101010101",
+        "pairId": null,
+        "participantRole": null,
+        "authority": "prober_observed_behaviour",
+        "stage": "mapping_behaviour",
+        "method": "udp_mapping",
+        "transport": "udp",
+        "family": "v4",
+        "challenge": "0909090909090909090909090909090909090909090909090909090909090909",
+        "peerChallenge": null,
+        "expiresAtMs": 1775000120000,
+        "outcome": "endpoint_independent",
+        "elapsedMs": 50,
+        "grantedLeaseSec": null,
+        "cleanup": null,
+        "protocolError": null,
+        "errorClass": null
+      },
+      "canonicalDeviceSigningPayload": "{\"authority\":\"prober_observed_behaviour\",\"challenge\":\"0909090909090909090909090909090909090909090909090909090909090909\",\"cleanup\":null,\"descriptorDigest\":\"sha256:f7e65486dc0f3c5881a4d281bce1411a4f1ca33f619193713ebdfe0d06516511\",\"domain\":\"proof.liskov.network-traversal-observed-behaviour.v1\",\"elapsedMs\":50,\"errorClass\":null,\"expiresAtMs\":1775000120000,\"family\":\"v4\",\"grantedLeaseSec\":null,\"method\":\"udp_mapping\",\"outcome\":\"endpoint_independent\",\"pairId\":null,\"participantRole\":null,\"peerChallenge\":null,\"protocolError\":null,\"runId\":\"01010101010101010101010101010101\",\"stage\":\"mapping_behaviour\",\"transport\":\"udp\",\"version\":1}",
+      "proof": {
+        "kind": "prober_receipt",
+        "receipt": {
+          "version": 1,
+          "transcript": {
+            "version": 1,
+            "domain": "proof.liskov.network-traversal-observed-behaviour.v1",
+            "descriptorDigest": "sha256:f7e65486dc0f3c5881a4d281bce1411a4f1ca33f619193713ebdfe0d06516511",
+            "runId": "01010101010101010101010101010101",
+            "pairId": null,
+            "participantRole": null,
+            "authority": "prober_observed_behaviour",
+            "stage": "mapping_behaviour",
+            "method": "udp_mapping",
+            "transport": "udp",
+            "family": "v4",
+            "challenge": "0909090909090909090909090909090909090909090909090909090909090909",
+            "peerChallenge": null,
+            "expiresAtMs": 1775000120000,
+            "outcome": "endpoint_independent",
+            "elapsedMs": 50,
+            "grantedLeaseSec": null,
+            "cleanup": null,
+            "protocolError": null,
+            "errorClass": null
+          },
+          "deviceSignature": "0xabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab",
+          "mac": "33397cd36c9a2355453f8d5eeaf72753c11adfa28e459d11493993a8e1de2bbc"
+        }
+      },
+      "proofDigest": "sha256:5f0c3e64a778e4141d530f3714254511c6585a33466aa729a7425bcd59e4b09f",
+      "canonicalReceiptMacPayload": "{\"deviceSignature\":\"0xabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab\",\"mac\":\"\",\"transcript\":{\"authority\":\"prober_observed_behaviour\",\"challenge\":\"0909090909090909090909090909090909090909090909090909090909090909\",\"cleanup\":null,\"descriptorDigest\":\"sha256:f7e65486dc0f3c5881a4d281bce1411a4f1ca33f619193713ebdfe0d06516511\",\"domain\":\"proof.liskov.network-traversal-observed-behaviour.v1\",\"elapsedMs\":50,\"errorClass\":null,\"expiresAtMs\":1775000120000,\"family\":\"v4\",\"grantedLeaseSec\":null,\"method\":\"udp_mapping\",\"outcome\":\"endpoint_independent\",\"pairId\":null,\"participantRole\":null,\"peerChallenge\":null,\"protocolError\":null,\"runId\":\"01010101010101010101010101010101\",\"stage\":\"mapping_behaviour\",\"transport\":\"udp\",\"version\":1},\"version\":1}"
+    },
+    {
+      "name": "device_router_create",
+      "descriptor": {
+        "version": 1,
+        "runId": "01010101010101010101010101010101",
+        "mode": "mapping",
+        "claimAuthorityDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "profileVersion": "traversal-mapping-1",
+        "catalogVersion": "traversal-catalog-1",
+        "artifactDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "helperVersion": "cargo-helper-traversal-1",
+        "helperDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "endpointSetRevision": "a-p-a-q-b-p-1",
+        "issuedAtMs": 1775000000000,
+        "expiresAtMs": 1775000120000,
+        "deadlineMs": 1775000060000,
+        "operations": [
+          "discover_gateway",
+          "baseline_tcp",
+          "baseline_udp",
+          "map_pcp"
+        ],
+        "budgets": {
+          "experimentMs": 30000,
+          "cleanupReserveMs": 5000,
+          "outboundDatagrams": 64,
+          "datagramBytes": 512,
+          "controlRequests": 12,
+          "externalDialbacks": 4,
+          "relayBytesPerDirection": 0,
+          "concurrentMappingLeases": 1,
+          "cleanupDatagrams": 1,
+          "cleanupControlRequests": 1
+        },
+        "mapping": {
+          "consentReference": "owned-network-single-run-1",
+          "processorAllowlistDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+          "exclusiveReservationDigest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+          "priorUncertaintyResolved": true,
+          "finiteExpiryVerified": true,
+          "expiresAtMs": 1775000120000,
+          "protocols": [
+            "pcp"
+          ],
+          "requestedLeaseSec": 60,
+          "maximumLeaseSec": 120
+        },
+        "pair": null,
+        "participantRole": null
+      },
+      "transcript": {
+        "version": 1,
+        "domain": "proof.liskov.network-traversal-device-router.v1",
+        "descriptorDigest": "sha256:26d98a69ec92499fa72236f5a50595d416ce4f7531fc0393002138fcb5fe4968",
+        "runId": "01010101010101010101010101010101",
+        "pairId": null,
+        "participantRole": null,
+        "authority": "device_reported_router",
+        "stage": "mapping_create",
+        "method": "pcp",
+        "transport": "router_control",
+        "family": "v4",
+        "challenge": "0909090909090909090909090909090909090909090909090909090909090909",
+        "peerChallenge": null,
+        "expiresAtMs": 1775000120000,
+        "outcome": "succeeded",
+        "elapsedMs": 50,
+        "grantedLeaseSec": 60,
+        "cleanup": null,
+        "protocolError": null,
+        "errorClass": null
+      },
+      "canonicalDeviceSigningPayload": "{\"authority\":\"device_reported_router\",\"challenge\":\"0909090909090909090909090909090909090909090909090909090909090909\",\"cleanup\":null,\"descriptorDigest\":\"sha256:26d98a69ec92499fa72236f5a50595d416ce4f7531fc0393002138fcb5fe4968\",\"domain\":\"proof.liskov.network-traversal-device-router.v1\",\"elapsedMs\":50,\"errorClass\":null,\"expiresAtMs\":1775000120000,\"family\":\"v4\",\"grantedLeaseSec\":60,\"method\":\"pcp\",\"outcome\":\"succeeded\",\"pairId\":null,\"participantRole\":null,\"peerChallenge\":null,\"protocolError\":null,\"runId\":\"01010101010101010101010101010101\",\"stage\":\"mapping_create\",\"transport\":\"router_control\",\"version\":1}",
+      "proof": {
+        "kind": "device_signature",
+        "transcript": {
+          "version": 1,
+          "domain": "proof.liskov.network-traversal-device-router.v1",
+          "descriptorDigest": "sha256:26d98a69ec92499fa72236f5a50595d416ce4f7531fc0393002138fcb5fe4968",
+          "runId": "01010101010101010101010101010101",
+          "pairId": null,
+          "participantRole": null,
+          "authority": "device_reported_router",
+          "stage": "mapping_create",
+          "method": "pcp",
+          "transport": "router_control",
+          "family": "v4",
+          "challenge": "0909090909090909090909090909090909090909090909090909090909090909",
+          "peerChallenge": null,
+          "expiresAtMs": 1775000120000,
+          "outcome": "succeeded",
+          "elapsedMs": 50,
+          "grantedLeaseSec": 60,
+          "cleanup": null,
+          "protocolError": null,
+          "errorClass": null
+        },
+        "signature": "0xabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab"
+      },
+      "proofDigest": "sha256:b99c4a455182cd60ec4c4fc64caf1fb9e53b0be54626cae93ee9f945cc06635c"
+    },
+    {
+      "name": "external_mapped_path",
+      "descriptor": {
+        "version": 1,
+        "runId": "01010101010101010101010101010101",
+        "mode": "mapping",
+        "claimAuthorityDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "profileVersion": "traversal-mapping-1",
+        "catalogVersion": "traversal-catalog-1",
+        "artifactDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "helperVersion": "cargo-helper-traversal-1",
+        "helperDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "endpointSetRevision": "a-p-a-q-b-p-1",
+        "issuedAtMs": 1775000000000,
+        "expiresAtMs": 1775000120000,
+        "deadlineMs": 1775000060000,
+        "operations": [
+          "discover_gateway",
+          "baseline_tcp",
+          "baseline_udp",
+          "map_pcp"
+        ],
+        "budgets": {
+          "experimentMs": 30000,
+          "cleanupReserveMs": 5000,
+          "outboundDatagrams": 64,
+          "datagramBytes": 512,
+          "controlRequests": 12,
+          "externalDialbacks": 4,
+          "relayBytesPerDirection": 0,
+          "concurrentMappingLeases": 1,
+          "cleanupDatagrams": 1,
+          "cleanupControlRequests": 1
+        },
+        "mapping": {
+          "consentReference": "owned-network-single-run-1",
+          "processorAllowlistDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+          "exclusiveReservationDigest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+          "priorUncertaintyResolved": true,
+          "finiteExpiryVerified": true,
+          "expiresAtMs": 1775000120000,
+          "protocols": [
+            "pcp"
+          ],
+          "requestedLeaseSec": 60,
+          "maximumLeaseSec": 120
+        },
+        "pair": null,
+        "participantRole": null
+      },
+      "transcript": {
+        "version": 1,
+        "domain": "proof.liskov.network-traversal-external-path.v1",
+        "descriptorDigest": "sha256:26d98a69ec92499fa72236f5a50595d416ce4f7531fc0393002138fcb5fe4968",
+        "runId": "01010101010101010101010101010101",
+        "pairId": null,
+        "participantRole": null,
+        "authority": "external_path",
+        "stage": "mapping_verify",
+        "method": "pcp",
+        "transport": "udp",
+        "family": "v4",
+        "challenge": "0909090909090909090909090909090909090909090909090909090909090909",
+        "peerChallenge": null,
+        "expiresAtMs": 1775000120000,
+        "outcome": "succeeded",
+        "elapsedMs": 50,
+        "grantedLeaseSec": null,
+        "cleanup": null,
+        "protocolError": null,
+        "errorClass": null
+      },
+      "canonicalDeviceSigningPayload": "{\"authority\":\"external_path\",\"challenge\":\"0909090909090909090909090909090909090909090909090909090909090909\",\"cleanup\":null,\"descriptorDigest\":\"sha256:26d98a69ec92499fa72236f5a50595d416ce4f7531fc0393002138fcb5fe4968\",\"domain\":\"proof.liskov.network-traversal-external-path.v1\",\"elapsedMs\":50,\"errorClass\":null,\"expiresAtMs\":1775000120000,\"family\":\"v4\",\"grantedLeaseSec\":null,\"method\":\"pcp\",\"outcome\":\"succeeded\",\"pairId\":null,\"participantRole\":null,\"peerChallenge\":null,\"protocolError\":null,\"runId\":\"01010101010101010101010101010101\",\"stage\":\"mapping_verify\",\"transport\":\"udp\",\"version\":1}",
+      "proof": {
+        "kind": "prober_receipt",
+        "receipt": {
+          "version": 1,
+          "transcript": {
+            "version": 1,
+            "domain": "proof.liskov.network-traversal-external-path.v1",
+            "descriptorDigest": "sha256:26d98a69ec92499fa72236f5a50595d416ce4f7531fc0393002138fcb5fe4968",
+            "runId": "01010101010101010101010101010101",
+            "pairId": null,
+            "participantRole": null,
+            "authority": "external_path",
+            "stage": "mapping_verify",
+            "method": "pcp",
+            "transport": "udp",
+            "family": "v4",
+            "challenge": "0909090909090909090909090909090909090909090909090909090909090909",
+            "peerChallenge": null,
+            "expiresAtMs": 1775000120000,
+            "outcome": "succeeded",
+            "elapsedMs": 50,
+            "grantedLeaseSec": null,
+            "cleanup": null,
+            "protocolError": null,
+            "errorClass": null
+          },
+          "deviceSignature": "0xabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab",
+          "mac": "25d675bdf41e1fb9e9c2d5565e9006e6a4d29ffeff486c7dfa515117168bcde4"
+        }
+      },
+      "proofDigest": "sha256:bf385459f3410ae9f8aacf59e6a301a5ca396987a4d719a89b00e5921add6d76",
+      "canonicalReceiptMacPayload": "{\"deviceSignature\":\"0xabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab\",\"mac\":\"\",\"transcript\":{\"authority\":\"external_path\",\"challenge\":\"0909090909090909090909090909090909090909090909090909090909090909\",\"cleanup\":null,\"descriptorDigest\":\"sha256:26d98a69ec92499fa72236f5a50595d416ce4f7531fc0393002138fcb5fe4968\",\"domain\":\"proof.liskov.network-traversal-external-path.v1\",\"elapsedMs\":50,\"errorClass\":null,\"expiresAtMs\":1775000120000,\"family\":\"v4\",\"grantedLeaseSec\":null,\"method\":\"pcp\",\"outcome\":\"succeeded\",\"pairId\":null,\"participantRole\":null,\"peerChallenge\":null,\"protocolError\":null,\"runId\":\"01010101010101010101010101010101\",\"stage\":\"mapping_verify\",\"transport\":\"udp\",\"version\":1},\"version\":1}"
+    },
+    {
+      "name": "device_router_cleanup",
+      "descriptor": {
+        "version": 1,
+        "runId": "01010101010101010101010101010101",
+        "mode": "mapping",
+        "claimAuthorityDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "profileVersion": "traversal-mapping-1",
+        "catalogVersion": "traversal-catalog-1",
+        "artifactDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "helperVersion": "cargo-helper-traversal-1",
+        "helperDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "endpointSetRevision": "a-p-a-q-b-p-1",
+        "issuedAtMs": 1775000000000,
+        "expiresAtMs": 1775000120000,
+        "deadlineMs": 1775000060000,
+        "operations": [
+          "discover_gateway",
+          "baseline_tcp",
+          "baseline_udp",
+          "map_pcp"
+        ],
+        "budgets": {
+          "experimentMs": 30000,
+          "cleanupReserveMs": 5000,
+          "outboundDatagrams": 64,
+          "datagramBytes": 512,
+          "controlRequests": 12,
+          "externalDialbacks": 4,
+          "relayBytesPerDirection": 0,
+          "concurrentMappingLeases": 1,
+          "cleanupDatagrams": 1,
+          "cleanupControlRequests": 1
+        },
+        "mapping": {
+          "consentReference": "owned-network-single-run-1",
+          "processorAllowlistDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+          "exclusiveReservationDigest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+          "priorUncertaintyResolved": true,
+          "finiteExpiryVerified": true,
+          "expiresAtMs": 1775000120000,
+          "protocols": [
+            "pcp"
+          ],
+          "requestedLeaseSec": 60,
+          "maximumLeaseSec": 120
+        },
+        "pair": null,
+        "participantRole": null
+      },
+      "transcript": {
+        "version": 1,
+        "domain": "proof.liskov.network-traversal-device-router.v1",
+        "descriptorDigest": "sha256:26d98a69ec92499fa72236f5a50595d416ce4f7531fc0393002138fcb5fe4968",
+        "runId": "01010101010101010101010101010101",
+        "pairId": null,
+        "participantRole": null,
+        "authority": "device_reported_router",
+        "stage": "mapping_cleanup",
+        "method": "pcp",
+        "transport": "router_control",
+        "family": "v4",
+        "challenge": "0909090909090909090909090909090909090909090909090909090909090909",
+        "peerChallenge": null,
+        "expiresAtMs": 1775000120000,
+        "outcome": "succeeded",
+        "elapsedMs": 50,
+        "grantedLeaseSec": 60,
+        "cleanup": "confirmed_deleted",
+        "protocolError": null,
+        "errorClass": null
+      },
+      "canonicalDeviceSigningPayload": "{\"authority\":\"device_reported_router\",\"challenge\":\"0909090909090909090909090909090909090909090909090909090909090909\",\"cleanup\":\"confirmed_deleted\",\"descriptorDigest\":\"sha256:26d98a69ec92499fa72236f5a50595d416ce4f7531fc0393002138fcb5fe4968\",\"domain\":\"proof.liskov.network-traversal-device-router.v1\",\"elapsedMs\":50,\"errorClass\":null,\"expiresAtMs\":1775000120000,\"family\":\"v4\",\"grantedLeaseSec\":60,\"method\":\"pcp\",\"outcome\":\"succeeded\",\"pairId\":null,\"participantRole\":null,\"peerChallenge\":null,\"protocolError\":null,\"runId\":\"01010101010101010101010101010101\",\"stage\":\"mapping_cleanup\",\"transport\":\"router_control\",\"version\":1}",
+      "proof": {
+        "kind": "device_signature",
+        "transcript": {
+          "version": 1,
+          "domain": "proof.liskov.network-traversal-device-router.v1",
+          "descriptorDigest": "sha256:26d98a69ec92499fa72236f5a50595d416ce4f7531fc0393002138fcb5fe4968",
+          "runId": "01010101010101010101010101010101",
+          "pairId": null,
+          "participantRole": null,
+          "authority": "device_reported_router",
+          "stage": "mapping_cleanup",
+          "method": "pcp",
+          "transport": "router_control",
+          "family": "v4",
+          "challenge": "0909090909090909090909090909090909090909090909090909090909090909",
+          "peerChallenge": null,
+          "expiresAtMs": 1775000120000,
+          "outcome": "succeeded",
+          "elapsedMs": 50,
+          "grantedLeaseSec": 60,
+          "cleanup": "confirmed_deleted",
+          "protocolError": null,
+          "errorClass": null
+        },
+        "signature": "0xabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab"
+      },
+      "proofDigest": "sha256:03bf539fac904b3d20ee992cd318543b61c1af24bf7ad367fc249999c54d5401"
+    },
+    {
+      "name": "first_registration",
+      "descriptor": {
+        "version": 1,
+        "runId": "01010101010101010101010101010101",
+        "mode": "pair",
+        "claimAuthorityDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "profileVersion": "traversal-pair-1",
+        "catalogVersion": "traversal-catalog-1",
+        "artifactDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "helperVersion": "cargo-helper-traversal-1",
+        "helperDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "endpointSetRevision": "a-p-a-q-b-p-1",
+        "issuedAtMs": 1775000000000,
+        "expiresAtMs": 1775000120000,
+        "deadlineMs": 1775000060000,
+        "operations": [
+          "register_endpoint",
+          "pair_direct_udp",
+          "pair_relay_control"
+        ],
+        "budgets": {
+          "experimentMs": 30000,
+          "cleanupReserveMs": 5000,
+          "outboundDatagrams": 64,
+          "datagramBytes": 512,
+          "controlRequests": 12,
+          "externalDialbacks": 4,
+          "relayBytesPerDirection": 65536,
+          "concurrentMappingLeases": 0,
+          "cleanupDatagrams": 0,
+          "cleanupControlRequests": 0
+        },
+        "mapping": null,
+        "pair": {
+          "pairId": "02020202020202020202020202020202",
+          "expiresAtMs": 1775000120000,
+          "participants": [
+            {
+              "role": "first",
+              "launchInstanceDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+              "claimAuthorityDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "runtimeSigner": "0x1111111111111111111111111111111111111111111111111111111111111111"
+            },
+            {
+              "role": "second",
+              "launchInstanceDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+              "claimAuthorityDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+              "runtimeSigner": "0x2222222222222222222222222222222222222222222222222222222222222222"
+            }
+          ]
+        },
+        "participantRole": "first"
+      },
+      "transcript": {
+        "version": 1,
+        "domain": "proof.liskov.network-traversal-endpoint-registration.v1",
+        "descriptorDigest": "sha256:7303dd901eb49abfbfcee1c281a9ff01572cea6229d1876541ab182a66c630cc",
+        "runId": "01010101010101010101010101010101",
+        "pairId": "02020202020202020202020202020202",
+        "participantRole": "first",
+        "authority": "prober_observed_registration",
+        "stage": "endpoint_registration",
+        "method": "pair",
+        "transport": "udp",
+        "family": "v4",
+        "challenge": "0909090909090909090909090909090909090909090909090909090909090909",
+        "peerChallenge": null,
+        "expiresAtMs": 1775000120000,
+        "outcome": "succeeded",
+        "elapsedMs": 50,
+        "grantedLeaseSec": null,
+        "cleanup": null,
+        "protocolError": null,
+        "errorClass": null
+      },
+      "canonicalDeviceSigningPayload": "{\"authority\":\"prober_observed_registration\",\"challenge\":\"0909090909090909090909090909090909090909090909090909090909090909\",\"cleanup\":null,\"descriptorDigest\":\"sha256:7303dd901eb49abfbfcee1c281a9ff01572cea6229d1876541ab182a66c630cc\",\"domain\":\"proof.liskov.network-traversal-endpoint-registration.v1\",\"elapsedMs\":50,\"errorClass\":null,\"expiresAtMs\":1775000120000,\"family\":\"v4\",\"grantedLeaseSec\":null,\"method\":\"pair\",\"outcome\":\"succeeded\",\"pairId\":\"02020202020202020202020202020202\",\"participantRole\":\"first\",\"peerChallenge\":null,\"protocolError\":null,\"runId\":\"01010101010101010101010101010101\",\"stage\":\"endpoint_registration\",\"transport\":\"udp\",\"version\":1}",
+      "proof": {
+        "kind": "prober_receipt",
+        "receipt": {
+          "version": 1,
+          "transcript": {
+            "version": 1,
+            "domain": "proof.liskov.network-traversal-endpoint-registration.v1",
+            "descriptorDigest": "sha256:7303dd901eb49abfbfcee1c281a9ff01572cea6229d1876541ab182a66c630cc",
+            "runId": "01010101010101010101010101010101",
+            "pairId": "02020202020202020202020202020202",
+            "participantRole": "first",
+            "authority": "prober_observed_registration",
+            "stage": "endpoint_registration",
+            "method": "pair",
+            "transport": "udp",
+            "family": "v4",
+            "challenge": "0909090909090909090909090909090909090909090909090909090909090909",
+            "peerChallenge": null,
+            "expiresAtMs": 1775000120000,
+            "outcome": "succeeded",
+            "elapsedMs": 50,
+            "grantedLeaseSec": null,
+            "cleanup": null,
+            "protocolError": null,
+            "errorClass": null
+          },
+          "deviceSignature": "0xabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab",
+          "mac": "fd11b3234bc55913be8b93ca2a1922280d4fdb4e7fe4c27be3ad8176bbba7d28"
+        }
+      },
+      "proofDigest": "sha256:cbf215dda9a71773f5cf279b44fd06be26d02db8be00a293a44a346cca665557",
+      "canonicalReceiptMacPayload": "{\"deviceSignature\":\"0xabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab\",\"mac\":\"\",\"transcript\":{\"authority\":\"prober_observed_registration\",\"challenge\":\"0909090909090909090909090909090909090909090909090909090909090909\",\"cleanup\":null,\"descriptorDigest\":\"sha256:7303dd901eb49abfbfcee1c281a9ff01572cea6229d1876541ab182a66c630cc\",\"domain\":\"proof.liskov.network-traversal-endpoint-registration.v1\",\"elapsedMs\":50,\"errorClass\":null,\"expiresAtMs\":1775000120000,\"family\":\"v4\",\"grantedLeaseSec\":null,\"method\":\"pair\",\"outcome\":\"succeeded\",\"pairId\":\"02020202020202020202020202020202\",\"participantRole\":\"first\",\"peerChallenge\":null,\"protocolError\":null,\"runId\":\"01010101010101010101010101010101\",\"stage\":\"endpoint_registration\",\"transport\":\"udp\",\"version\":1},\"version\":1}"
+    },
+    {
+      "name": "first_direct",
+      "descriptor": {
+        "version": 1,
+        "runId": "01010101010101010101010101010101",
+        "mode": "pair",
+        "claimAuthorityDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "profileVersion": "traversal-pair-1",
+        "catalogVersion": "traversal-catalog-1",
+        "artifactDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "helperVersion": "cargo-helper-traversal-1",
+        "helperDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "endpointSetRevision": "a-p-a-q-b-p-1",
+        "issuedAtMs": 1775000000000,
+        "expiresAtMs": 1775000120000,
+        "deadlineMs": 1775000060000,
+        "operations": [
+          "register_endpoint",
+          "pair_direct_udp",
+          "pair_relay_control"
+        ],
+        "budgets": {
+          "experimentMs": 30000,
+          "cleanupReserveMs": 5000,
+          "outboundDatagrams": 64,
+          "datagramBytes": 512,
+          "controlRequests": 12,
+          "externalDialbacks": 4,
+          "relayBytesPerDirection": 65536,
+          "concurrentMappingLeases": 0,
+          "cleanupDatagrams": 0,
+          "cleanupControlRequests": 0
+        },
+        "mapping": null,
+        "pair": {
+          "pairId": "02020202020202020202020202020202",
+          "expiresAtMs": 1775000120000,
+          "participants": [
+            {
+              "role": "first",
+              "launchInstanceDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+              "claimAuthorityDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "runtimeSigner": "0x1111111111111111111111111111111111111111111111111111111111111111"
+            },
+            {
+              "role": "second",
+              "launchInstanceDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+              "claimAuthorityDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+              "runtimeSigner": "0x2222222222222222222222222222222222222222222222222222222222222222"
+            }
+          ]
+        },
+        "participantRole": "first"
+      },
+      "transcript": {
+        "version": 1,
+        "domain": "proof.liskov.network-traversal-helper-direct.v1",
+        "descriptorDigest": "sha256:7303dd901eb49abfbfcee1c281a9ff01572cea6229d1876541ab182a66c630cc",
+        "runId": "01010101010101010101010101010101",
+        "pairId": "02020202020202020202020202020202",
+        "participantRole": "first",
+        "authority": "helper_observed_peer",
+        "stage": "direct",
+        "method": "pair",
+        "transport": "udp",
+        "family": "v4",
+        "challenge": "0909090909090909090909090909090909090909090909090909090909090909",
+        "peerChallenge": "0808080808080808080808080808080808080808080808080808080808080808",
+        "expiresAtMs": 1775000120000,
+        "outcome": "succeeded",
+        "elapsedMs": 50,
+        "grantedLeaseSec": null,
+        "cleanup": null,
+        "protocolError": null,
+        "errorClass": null
+      },
+      "canonicalDeviceSigningPayload": "{\"authority\":\"helper_observed_peer\",\"challenge\":\"0909090909090909090909090909090909090909090909090909090909090909\",\"cleanup\":null,\"descriptorDigest\":\"sha256:7303dd901eb49abfbfcee1c281a9ff01572cea6229d1876541ab182a66c630cc\",\"domain\":\"proof.liskov.network-traversal-helper-direct.v1\",\"elapsedMs\":50,\"errorClass\":null,\"expiresAtMs\":1775000120000,\"family\":\"v4\",\"grantedLeaseSec\":null,\"method\":\"pair\",\"outcome\":\"succeeded\",\"pairId\":\"02020202020202020202020202020202\",\"participantRole\":\"first\",\"peerChallenge\":\"0808080808080808080808080808080808080808080808080808080808080808\",\"protocolError\":null,\"runId\":\"01010101010101010101010101010101\",\"stage\":\"direct\",\"transport\":\"udp\",\"version\":1}",
+      "proof": {
+        "kind": "device_signature",
+        "transcript": {
+          "version": 1,
+          "domain": "proof.liskov.network-traversal-helper-direct.v1",
+          "descriptorDigest": "sha256:7303dd901eb49abfbfcee1c281a9ff01572cea6229d1876541ab182a66c630cc",
+          "runId": "01010101010101010101010101010101",
+          "pairId": "02020202020202020202020202020202",
+          "participantRole": "first",
+          "authority": "helper_observed_peer",
+          "stage": "direct",
+          "method": "pair",
+          "transport": "udp",
+          "family": "v4",
+          "challenge": "0909090909090909090909090909090909090909090909090909090909090909",
+          "peerChallenge": "0808080808080808080808080808080808080808080808080808080808080808",
+          "expiresAtMs": 1775000120000,
+          "outcome": "succeeded",
+          "elapsedMs": 50,
+          "grantedLeaseSec": null,
+          "cleanup": null,
+          "protocolError": null,
+          "errorClass": null
+        },
+        "signature": "0xabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab"
+      },
+      "proofDigest": "sha256:ba38059098aaf62c9ad89d8c0703075a94d0252a7af7b0caaacc8f93b55d868b"
+    },
+    {
+      "name": "first_relay",
+      "descriptor": {
+        "version": 1,
+        "runId": "01010101010101010101010101010101",
+        "mode": "pair",
+        "claimAuthorityDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "profileVersion": "traversal-pair-1",
+        "catalogVersion": "traversal-catalog-1",
+        "artifactDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "helperVersion": "cargo-helper-traversal-1",
+        "helperDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "endpointSetRevision": "a-p-a-q-b-p-1",
+        "issuedAtMs": 1775000000000,
+        "expiresAtMs": 1775000120000,
+        "deadlineMs": 1775000060000,
+        "operations": [
+          "register_endpoint",
+          "pair_direct_udp",
+          "pair_relay_control"
+        ],
+        "budgets": {
+          "experimentMs": 30000,
+          "cleanupReserveMs": 5000,
+          "outboundDatagrams": 64,
+          "datagramBytes": 512,
+          "controlRequests": 12,
+          "externalDialbacks": 4,
+          "relayBytesPerDirection": 65536,
+          "concurrentMappingLeases": 0,
+          "cleanupDatagrams": 0,
+          "cleanupControlRequests": 0
+        },
+        "mapping": null,
+        "pair": {
+          "pairId": "02020202020202020202020202020202",
+          "expiresAtMs": 1775000120000,
+          "participants": [
+            {
+              "role": "first",
+              "launchInstanceDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+              "claimAuthorityDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "runtimeSigner": "0x1111111111111111111111111111111111111111111111111111111111111111"
+            },
+            {
+              "role": "second",
+              "launchInstanceDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+              "claimAuthorityDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+              "runtimeSigner": "0x2222222222222222222222222222222222222222222222222222222222222222"
+            }
+          ]
+        },
+        "participantRole": "first"
+      },
+      "transcript": {
+        "version": 1,
+        "domain": "proof.liskov.network-traversal-helper-relay.v1",
+        "descriptorDigest": "sha256:7303dd901eb49abfbfcee1c281a9ff01572cea6229d1876541ab182a66c630cc",
+        "runId": "01010101010101010101010101010101",
+        "pairId": "02020202020202020202020202020202",
+        "participantRole": "first",
+        "authority": "helper_observed_peer",
+        "stage": "relay_control",
+        "method": "pair",
+        "transport": "relay_control",
+        "family": "v4",
+        "challenge": "0909090909090909090909090909090909090909090909090909090909090909",
+        "peerChallenge": "0808080808080808080808080808080808080808080808080808080808080808",
+        "expiresAtMs": 1775000120000,
+        "outcome": "succeeded",
+        "elapsedMs": 50,
+        "grantedLeaseSec": null,
+        "cleanup": null,
+        "protocolError": null,
+        "errorClass": null
+      },
+      "canonicalDeviceSigningPayload": "{\"authority\":\"helper_observed_peer\",\"challenge\":\"0909090909090909090909090909090909090909090909090909090909090909\",\"cleanup\":null,\"descriptorDigest\":\"sha256:7303dd901eb49abfbfcee1c281a9ff01572cea6229d1876541ab182a66c630cc\",\"domain\":\"proof.liskov.network-traversal-helper-relay.v1\",\"elapsedMs\":50,\"errorClass\":null,\"expiresAtMs\":1775000120000,\"family\":\"v4\",\"grantedLeaseSec\":null,\"method\":\"pair\",\"outcome\":\"succeeded\",\"pairId\":\"02020202020202020202020202020202\",\"participantRole\":\"first\",\"peerChallenge\":\"0808080808080808080808080808080808080808080808080808080808080808\",\"protocolError\":null,\"runId\":\"01010101010101010101010101010101\",\"stage\":\"relay_control\",\"transport\":\"relay_control\",\"version\":1}",
+      "proof": {
+        "kind": "device_signature",
+        "transcript": {
+          "version": 1,
+          "domain": "proof.liskov.network-traversal-helper-relay.v1",
+          "descriptorDigest": "sha256:7303dd901eb49abfbfcee1c281a9ff01572cea6229d1876541ab182a66c630cc",
+          "runId": "01010101010101010101010101010101",
+          "pairId": "02020202020202020202020202020202",
+          "participantRole": "first",
+          "authority": "helper_observed_peer",
+          "stage": "relay_control",
+          "method": "pair",
+          "transport": "relay_control",
+          "family": "v4",
+          "challenge": "0909090909090909090909090909090909090909090909090909090909090909",
+          "peerChallenge": "0808080808080808080808080808080808080808080808080808080808080808",
+          "expiresAtMs": 1775000120000,
+          "outcome": "succeeded",
+          "elapsedMs": 50,
+          "grantedLeaseSec": null,
+          "cleanup": null,
+          "protocolError": null,
+          "errorClass": null
+        },
+        "signature": "0xabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab"
+      },
+      "proofDigest": "sha256:8e5e24adc2e1bd42b10b18d45c14fbea7f2bac036b438aec1869a8ce9a2dcb29"
+    },
+    {
+      "name": "second_direct",
+      "descriptor": {
+        "version": 1,
+        "runId": "01010101010101010101010101010101",
+        "mode": "pair",
+        "claimAuthorityDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "profileVersion": "traversal-pair-1",
+        "catalogVersion": "traversal-catalog-1",
+        "artifactDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "helperVersion": "cargo-helper-traversal-1",
+        "helperDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "endpointSetRevision": "a-p-a-q-b-p-1",
+        "issuedAtMs": 1775000000000,
+        "expiresAtMs": 1775000120000,
+        "deadlineMs": 1775000060000,
+        "operations": [
+          "register_endpoint",
+          "pair_direct_udp",
+          "pair_relay_control"
+        ],
+        "budgets": {
+          "experimentMs": 30000,
+          "cleanupReserveMs": 5000,
+          "outboundDatagrams": 64,
+          "datagramBytes": 512,
+          "controlRequests": 12,
+          "externalDialbacks": 4,
+          "relayBytesPerDirection": 65536,
+          "concurrentMappingLeases": 0,
+          "cleanupDatagrams": 0,
+          "cleanupControlRequests": 0
+        },
+        "mapping": null,
+        "pair": {
+          "pairId": "02020202020202020202020202020202",
+          "expiresAtMs": 1775000120000,
+          "participants": [
+            {
+              "role": "first",
+              "launchInstanceDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+              "claimAuthorityDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "runtimeSigner": "0x1111111111111111111111111111111111111111111111111111111111111111"
+            },
+            {
+              "role": "second",
+              "launchInstanceDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+              "claimAuthorityDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+              "runtimeSigner": "0x2222222222222222222222222222222222222222222222222222222222222222"
+            }
+          ]
+        },
+        "participantRole": "second"
+      },
+      "transcript": {
+        "version": 1,
+        "domain": "proof.liskov.network-traversal-helper-direct.v1",
+        "descriptorDigest": "sha256:5d30638c432bde2dec96ad09337d6f69898593422dcfadb2cfb1a2aff52d69d1",
+        "runId": "01010101010101010101010101010101",
+        "pairId": "02020202020202020202020202020202",
+        "participantRole": "second",
+        "authority": "helper_observed_peer",
+        "stage": "direct",
+        "method": "pair",
+        "transport": "udp",
+        "family": "v4",
+        "challenge": "0808080808080808080808080808080808080808080808080808080808080808",
+        "peerChallenge": "0909090909090909090909090909090909090909090909090909090909090909",
+        "expiresAtMs": 1775000120000,
+        "outcome": "succeeded",
+        "elapsedMs": 50,
+        "grantedLeaseSec": null,
+        "cleanup": null,
+        "protocolError": null,
+        "errorClass": null
+      },
+      "canonicalDeviceSigningPayload": "{\"authority\":\"helper_observed_peer\",\"challenge\":\"0808080808080808080808080808080808080808080808080808080808080808\",\"cleanup\":null,\"descriptorDigest\":\"sha256:5d30638c432bde2dec96ad09337d6f69898593422dcfadb2cfb1a2aff52d69d1\",\"domain\":\"proof.liskov.network-traversal-helper-direct.v1\",\"elapsedMs\":50,\"errorClass\":null,\"expiresAtMs\":1775000120000,\"family\":\"v4\",\"grantedLeaseSec\":null,\"method\":\"pair\",\"outcome\":\"succeeded\",\"pairId\":\"02020202020202020202020202020202\",\"participantRole\":\"second\",\"peerChallenge\":\"0909090909090909090909090909090909090909090909090909090909090909\",\"protocolError\":null,\"runId\":\"01010101010101010101010101010101\",\"stage\":\"direct\",\"transport\":\"udp\",\"version\":1}",
+      "proof": {
+        "kind": "device_signature",
+        "transcript": {
+          "version": 1,
+          "domain": "proof.liskov.network-traversal-helper-direct.v1",
+          "descriptorDigest": "sha256:5d30638c432bde2dec96ad09337d6f69898593422dcfadb2cfb1a2aff52d69d1",
+          "runId": "01010101010101010101010101010101",
+          "pairId": "02020202020202020202020202020202",
+          "participantRole": "second",
+          "authority": "helper_observed_peer",
+          "stage": "direct",
+          "method": "pair",
+          "transport": "udp",
+          "family": "v4",
+          "challenge": "0808080808080808080808080808080808080808080808080808080808080808",
+          "peerChallenge": "0909090909090909090909090909090909090909090909090909090909090909",
+          "expiresAtMs": 1775000120000,
+          "outcome": "succeeded",
+          "elapsedMs": 50,
+          "grantedLeaseSec": null,
+          "cleanup": null,
+          "protocolError": null,
+          "errorClass": null
+        },
+        "signature": "0xabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab"
+      },
+      "proofDigest": "sha256:32e9999d2b282c7381093554340a42f578b333149863f5fa734e8da3a1b705e0"
+    }
+  ],
+  "results": [
+    {
+      "name": "observe",
+      "descriptor": {
+        "version": 1,
+        "runId": "01010101010101010101010101010101",
+        "mode": "observe",
+        "claimAuthorityDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "profileVersion": "traversal-observe-1",
+        "catalogVersion": "traversal-catalog-1",
+        "artifactDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "helperVersion": "cargo-helper-traversal-1",
+        "helperDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "endpointSetRevision": "a-p-a-q-b-p-1",
+        "issuedAtMs": 1775000000000,
+        "expiresAtMs": 1775000120000,
+        "deadlineMs": 1775000060000,
+        "operations": [
+          "discover_gateway",
+          "observe_mapping",
+          "observe_filtering",
+          "baseline_tcp",
+          "baseline_udp"
+        ],
+        "budgets": {
+          "experimentMs": 30000,
+          "cleanupReserveMs": 5000,
+          "outboundDatagrams": 64,
+          "datagramBytes": 512,
+          "controlRequests": 12,
+          "externalDialbacks": 4,
+          "relayBytesPerDirection": 0,
+          "concurrentMappingLeases": 0,
+          "cleanupDatagrams": 0,
+          "cleanupControlRequests": 0
+        },
+        "mapping": null,
+        "pair": null,
+        "participantRole": null
+      },
+      "networkTraversal": {
+        "version": 1,
+        "descriptorDigest": "sha256:f7e65486dc0f3c5881a4d281bce1411a4f1ca33f619193713ebdfe0d06516511",
+        "runId": "01010101010101010101010101010101",
+        "mode": "observe",
+        "startedAtMs": 1775000001000,
+        "durationMs": 1000,
+        "phases": [
+          {
+            "stage": "baseline",
+            "method": "unassisted",
+            "transport": "tcp",
+            "family": "v4",
+            "authority": "external_path",
+            "outcome": "succeeded",
+            "elapsedMs": 50,
+            "grantedLeaseSec": null,
+            "cleanup": null,
+            "protocolError": null,
+            "errorClass": null,
+            "proofDigest": "sha256:13a94307c9b86681eb8a17e03297442e6e7200e0943f1750a2d36192be342129"
+          },
+          {
+            "stage": "mapping_behaviour",
+            "method": "udp_mapping",
+            "transport": "udp",
+            "family": "v4",
+            "authority": "prober_observed_behaviour",
+            "outcome": "endpoint_independent",
+            "elapsedMs": 50,
+            "grantedLeaseSec": null,
+            "cleanup": null,
+            "protocolError": null,
+            "errorClass": null,
+            "proofDigest": "sha256:5f0c3e64a778e4141d530f3714254511c6585a33466aa729a7425bcd59e4b09f"
+          }
+        ],
+        "proofs": [
+          {
+            "kind": "prober_receipt",
+            "receipt": {
+              "version": 1,
+              "transcript": {
+                "version": 1,
+                "domain": "proof.liskov.network-traversal-external-path.v1",
+                "descriptorDigest": "sha256:f7e65486dc0f3c5881a4d281bce1411a4f1ca33f619193713ebdfe0d06516511",
+                "runId": "01010101010101010101010101010101",
+                "pairId": null,
+                "participantRole": null,
+                "authority": "external_path",
+                "stage": "baseline",
+                "method": "unassisted",
+                "transport": "tcp",
+                "family": "v4",
+                "challenge": "0909090909090909090909090909090909090909090909090909090909090909",
+                "peerChallenge": null,
+                "expiresAtMs": 1775000120000,
+                "outcome": "succeeded",
+                "elapsedMs": 50,
+                "grantedLeaseSec": null,
+                "cleanup": null,
+                "protocolError": null,
+                "errorClass": null
+              },
+              "deviceSignature": "0xabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab",
+              "mac": "6af2722bba36b122947ebe7f06a0bac79bb7b3bc462713f2d8dc42a3a5df2c78"
+            }
+          },
+          {
+            "kind": "prober_receipt",
+            "receipt": {
+              "version": 1,
+              "transcript": {
+                "version": 1,
+                "domain": "proof.liskov.network-traversal-observed-behaviour.v1",
+                "descriptorDigest": "sha256:f7e65486dc0f3c5881a4d281bce1411a4f1ca33f619193713ebdfe0d06516511",
+                "runId": "01010101010101010101010101010101",
+                "pairId": null,
+                "participantRole": null,
+                "authority": "prober_observed_behaviour",
+                "stage": "mapping_behaviour",
+                "method": "udp_mapping",
+                "transport": "udp",
+                "family": "v4",
+                "challenge": "0909090909090909090909090909090909090909090909090909090909090909",
+                "peerChallenge": null,
+                "expiresAtMs": 1775000120000,
+                "outcome": "endpoint_independent",
+                "elapsedMs": 50,
+                "grantedLeaseSec": null,
+                "cleanup": null,
+                "protocolError": null,
+                "errorClass": null
+              },
+              "deviceSignature": "0xabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab",
+              "mac": "33397cd36c9a2355453f8d5eeaf72753c11adfa28e459d11493993a8e1de2bbc"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "mapping",
+      "descriptor": {
+        "version": 1,
+        "runId": "01010101010101010101010101010101",
+        "mode": "mapping",
+        "claimAuthorityDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "profileVersion": "traversal-mapping-1",
+        "catalogVersion": "traversal-catalog-1",
+        "artifactDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "helperVersion": "cargo-helper-traversal-1",
+        "helperDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "endpointSetRevision": "a-p-a-q-b-p-1",
+        "issuedAtMs": 1775000000000,
+        "expiresAtMs": 1775000120000,
+        "deadlineMs": 1775000060000,
+        "operations": [
+          "discover_gateway",
+          "baseline_tcp",
+          "baseline_udp",
+          "map_pcp"
+        ],
+        "budgets": {
+          "experimentMs": 30000,
+          "cleanupReserveMs": 5000,
+          "outboundDatagrams": 64,
+          "datagramBytes": 512,
+          "controlRequests": 12,
+          "externalDialbacks": 4,
+          "relayBytesPerDirection": 0,
+          "concurrentMappingLeases": 1,
+          "cleanupDatagrams": 1,
+          "cleanupControlRequests": 1
+        },
+        "mapping": {
+          "consentReference": "owned-network-single-run-1",
+          "processorAllowlistDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+          "exclusiveReservationDigest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+          "priorUncertaintyResolved": true,
+          "finiteExpiryVerified": true,
+          "expiresAtMs": 1775000120000,
+          "protocols": [
+            "pcp"
+          ],
+          "requestedLeaseSec": 60,
+          "maximumLeaseSec": 120
+        },
+        "pair": null,
+        "participantRole": null
+      },
+      "networkTraversal": {
+        "version": 1,
+        "descriptorDigest": "sha256:26d98a69ec92499fa72236f5a50595d416ce4f7531fc0393002138fcb5fe4968",
+        "runId": "01010101010101010101010101010101",
+        "mode": "mapping",
+        "startedAtMs": 1775000001000,
+        "durationMs": 1000,
+        "phases": [
+          {
+            "stage": "mapping_create",
+            "method": "pcp",
+            "transport": "router_control",
+            "family": "v4",
+            "authority": "device_reported_router",
+            "outcome": "succeeded",
+            "elapsedMs": 50,
+            "grantedLeaseSec": 60,
+            "cleanup": null,
+            "protocolError": null,
+            "errorClass": null,
+            "proofDigest": "sha256:b99c4a455182cd60ec4c4fc64caf1fb9e53b0be54626cae93ee9f945cc06635c"
+          },
+          {
+            "stage": "mapping_verify",
+            "method": "pcp",
+            "transport": "udp",
+            "family": "v4",
+            "authority": "external_path",
+            "outcome": "succeeded",
+            "elapsedMs": 50,
+            "grantedLeaseSec": null,
+            "cleanup": null,
+            "protocolError": null,
+            "errorClass": null,
+            "proofDigest": "sha256:bf385459f3410ae9f8aacf59e6a301a5ca396987a4d719a89b00e5921add6d76"
+          },
+          {
+            "stage": "mapping_cleanup",
+            "method": "pcp",
+            "transport": "router_control",
+            "family": "v4",
+            "authority": "device_reported_router",
+            "outcome": "succeeded",
+            "elapsedMs": 50,
+            "grantedLeaseSec": 60,
+            "cleanup": "confirmed_deleted",
+            "protocolError": null,
+            "errorClass": null,
+            "proofDigest": "sha256:03bf539fac904b3d20ee992cd318543b61c1af24bf7ad367fc249999c54d5401"
+          }
+        ],
+        "proofs": [
+          {
+            "kind": "device_signature",
+            "transcript": {
+              "version": 1,
+              "domain": "proof.liskov.network-traversal-device-router.v1",
+              "descriptorDigest": "sha256:26d98a69ec92499fa72236f5a50595d416ce4f7531fc0393002138fcb5fe4968",
+              "runId": "01010101010101010101010101010101",
+              "pairId": null,
+              "participantRole": null,
+              "authority": "device_reported_router",
+              "stage": "mapping_create",
+              "method": "pcp",
+              "transport": "router_control",
+              "family": "v4",
+              "challenge": "0909090909090909090909090909090909090909090909090909090909090909",
+              "peerChallenge": null,
+              "expiresAtMs": 1775000120000,
+              "outcome": "succeeded",
+              "elapsedMs": 50,
+              "grantedLeaseSec": 60,
+              "cleanup": null,
+              "protocolError": null,
+              "errorClass": null
+            },
+            "signature": "0xabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab"
+          },
+          {
+            "kind": "prober_receipt",
+            "receipt": {
+              "version": 1,
+              "transcript": {
+                "version": 1,
+                "domain": "proof.liskov.network-traversal-external-path.v1",
+                "descriptorDigest": "sha256:26d98a69ec92499fa72236f5a50595d416ce4f7531fc0393002138fcb5fe4968",
+                "runId": "01010101010101010101010101010101",
+                "pairId": null,
+                "participantRole": null,
+                "authority": "external_path",
+                "stage": "mapping_verify",
+                "method": "pcp",
+                "transport": "udp",
+                "family": "v4",
+                "challenge": "0909090909090909090909090909090909090909090909090909090909090909",
+                "peerChallenge": null,
+                "expiresAtMs": 1775000120000,
+                "outcome": "succeeded",
+                "elapsedMs": 50,
+                "grantedLeaseSec": null,
+                "cleanup": null,
+                "protocolError": null,
+                "errorClass": null
+              },
+              "deviceSignature": "0xabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab",
+              "mac": "25d675bdf41e1fb9e9c2d5565e9006e6a4d29ffeff486c7dfa515117168bcde4"
+            }
+          },
+          {
+            "kind": "device_signature",
+            "transcript": {
+              "version": 1,
+              "domain": "proof.liskov.network-traversal-device-router.v1",
+              "descriptorDigest": "sha256:26d98a69ec92499fa72236f5a50595d416ce4f7531fc0393002138fcb5fe4968",
+              "runId": "01010101010101010101010101010101",
+              "pairId": null,
+              "participantRole": null,
+              "authority": "device_reported_router",
+              "stage": "mapping_cleanup",
+              "method": "pcp",
+              "transport": "router_control",
+              "family": "v4",
+              "challenge": "0909090909090909090909090909090909090909090909090909090909090909",
+              "peerChallenge": null,
+              "expiresAtMs": 1775000120000,
+              "outcome": "succeeded",
+              "elapsedMs": 50,
+              "grantedLeaseSec": 60,
+              "cleanup": "confirmed_deleted",
+              "protocolError": null,
+              "errorClass": null
+            },
+            "signature": "0xabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab"
+          }
+        ]
+      }
+    },
+    {
+      "name": "pair",
+      "descriptor": {
+        "version": 1,
+        "runId": "01010101010101010101010101010101",
+        "mode": "pair",
+        "claimAuthorityDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "profileVersion": "traversal-pair-1",
+        "catalogVersion": "traversal-catalog-1",
+        "artifactDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "helperVersion": "cargo-helper-traversal-1",
+        "helperDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "endpointSetRevision": "a-p-a-q-b-p-1",
+        "issuedAtMs": 1775000000000,
+        "expiresAtMs": 1775000120000,
+        "deadlineMs": 1775000060000,
+        "operations": [
+          "register_endpoint",
+          "pair_direct_udp",
+          "pair_relay_control"
+        ],
+        "budgets": {
+          "experimentMs": 30000,
+          "cleanupReserveMs": 5000,
+          "outboundDatagrams": 64,
+          "datagramBytes": 512,
+          "controlRequests": 12,
+          "externalDialbacks": 4,
+          "relayBytesPerDirection": 65536,
+          "concurrentMappingLeases": 0,
+          "cleanupDatagrams": 0,
+          "cleanupControlRequests": 0
+        },
+        "mapping": null,
+        "pair": {
+          "pairId": "02020202020202020202020202020202",
+          "expiresAtMs": 1775000120000,
+          "participants": [
+            {
+              "role": "first",
+              "launchInstanceDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+              "claimAuthorityDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "runtimeSigner": "0x1111111111111111111111111111111111111111111111111111111111111111"
+            },
+            {
+              "role": "second",
+              "launchInstanceDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+              "claimAuthorityDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+              "runtimeSigner": "0x2222222222222222222222222222222222222222222222222222222222222222"
+            }
+          ]
+        },
+        "participantRole": "first"
+      },
+      "networkTraversal": {
+        "version": 1,
+        "descriptorDigest": "sha256:7303dd901eb49abfbfcee1c281a9ff01572cea6229d1876541ab182a66c630cc",
+        "runId": "01010101010101010101010101010101",
+        "mode": "pair",
+        "startedAtMs": 1775000001000,
+        "durationMs": 1000,
+        "phases": [
+          {
+            "stage": "endpoint_registration",
+            "method": "pair",
+            "transport": "udp",
+            "family": "v4",
+            "authority": "prober_observed_registration",
+            "outcome": "succeeded",
+            "elapsedMs": 50,
+            "grantedLeaseSec": null,
+            "cleanup": null,
+            "protocolError": null,
+            "errorClass": null,
+            "proofDigest": "sha256:cbf215dda9a71773f5cf279b44fd06be26d02db8be00a293a44a346cca665557"
+          },
+          {
+            "stage": "direct",
+            "method": "pair",
+            "transport": "udp",
+            "family": "v4",
+            "authority": "helper_observed_peer",
+            "outcome": "succeeded",
+            "elapsedMs": 50,
+            "grantedLeaseSec": null,
+            "cleanup": null,
+            "protocolError": null,
+            "errorClass": null,
+            "proofDigest": "sha256:ba38059098aaf62c9ad89d8c0703075a94d0252a7af7b0caaacc8f93b55d868b"
+          },
+          {
+            "stage": "relay_control",
+            "method": "pair",
+            "transport": "relay_control",
+            "family": "v4",
+            "authority": "helper_observed_peer",
+            "outcome": "succeeded",
+            "elapsedMs": 50,
+            "grantedLeaseSec": null,
+            "cleanup": null,
+            "protocolError": null,
+            "errorClass": null,
+            "proofDigest": "sha256:8e5e24adc2e1bd42b10b18d45c14fbea7f2bac036b438aec1869a8ce9a2dcb29"
+          }
+        ],
+        "proofs": [
+          {
+            "kind": "prober_receipt",
+            "receipt": {
+              "version": 1,
+              "transcript": {
+                "version": 1,
+                "domain": "proof.liskov.network-traversal-endpoint-registration.v1",
+                "descriptorDigest": "sha256:7303dd901eb49abfbfcee1c281a9ff01572cea6229d1876541ab182a66c630cc",
+                "runId": "01010101010101010101010101010101",
+                "pairId": "02020202020202020202020202020202",
+                "participantRole": "first",
+                "authority": "prober_observed_registration",
+                "stage": "endpoint_registration",
+                "method": "pair",
+                "transport": "udp",
+                "family": "v4",
+                "challenge": "0909090909090909090909090909090909090909090909090909090909090909",
+                "peerChallenge": null,
+                "expiresAtMs": 1775000120000,
+                "outcome": "succeeded",
+                "elapsedMs": 50,
+                "grantedLeaseSec": null,
+                "cleanup": null,
+                "protocolError": null,
+                "errorClass": null
+              },
+              "deviceSignature": "0xabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab",
+              "mac": "fd11b3234bc55913be8b93ca2a1922280d4fdb4e7fe4c27be3ad8176bbba7d28"
+            }
+          },
+          {
+            "kind": "device_signature",
+            "transcript": {
+              "version": 1,
+              "domain": "proof.liskov.network-traversal-helper-direct.v1",
+              "descriptorDigest": "sha256:7303dd901eb49abfbfcee1c281a9ff01572cea6229d1876541ab182a66c630cc",
+              "runId": "01010101010101010101010101010101",
+              "pairId": "02020202020202020202020202020202",
+              "participantRole": "first",
+              "authority": "helper_observed_peer",
+              "stage": "direct",
+              "method": "pair",
+              "transport": "udp",
+              "family": "v4",
+              "challenge": "0909090909090909090909090909090909090909090909090909090909090909",
+              "peerChallenge": "0808080808080808080808080808080808080808080808080808080808080808",
+              "expiresAtMs": 1775000120000,
+              "outcome": "succeeded",
+              "elapsedMs": 50,
+              "grantedLeaseSec": null,
+              "cleanup": null,
+              "protocolError": null,
+              "errorClass": null
+            },
+            "signature": "0xabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab"
+          },
+          {
+            "kind": "device_signature",
+            "transcript": {
+              "version": 1,
+              "domain": "proof.liskov.network-traversal-helper-relay.v1",
+              "descriptorDigest": "sha256:7303dd901eb49abfbfcee1c281a9ff01572cea6229d1876541ab182a66c630cc",
+              "runId": "01010101010101010101010101010101",
+              "pairId": "02020202020202020202020202020202",
+              "participantRole": "first",
+              "authority": "helper_observed_peer",
+              "stage": "relay_control",
+              "method": "pair",
+              "transport": "relay_control",
+              "family": "v4",
+              "challenge": "0909090909090909090909090909090909090909090909090909090909090909",
+              "peerChallenge": "0808080808080808080808080808080808080808080808080808080808080808",
+              "expiresAtMs": 1775000120000,
+              "outcome": "succeeded",
+              "elapsedMs": 50,
+              "grantedLeaseSec": null,
+              "cleanup": null,
+              "protocolError": null,
+              "errorClass": null
+            },
+            "signature": "0xabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab"
+          }
+        ]
+      }
+    }
+  ],
+  "coverageResult": {
+    "domain": "proof.liskov.processor-coverage-result.v1",
+    "applicationId": "app-1",
+    "policyVersionId": "policy-version-5",
+    "policyDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "artifactDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "cycleId": "coverage-cycle-2026-08-13",
+    "target": {
+      "targetId": "acurast-js-source",
+      "provider": "acurast",
+      "runtime": "javascript",
+      "release": "source"
+    },
+    "deploymentId": "deployment-1",
+    "jobId": "job-7",
+    "processorId": "processor-acurast-1",
+    "probeVersion": "probe-v3",
+    "profileVersion": "profile-v2",
+    "sequence": 4,
+    "issuedAtMs": 1775000000000,
+    "expiresAtMs": 1775000060000,
+    "outcomes": [
+      {
+        "probeId": "runtime-bootstrap",
+        "status": "succeeded",
+        "region": "europe-west",
+        "startedAtMs": 1775000001000,
+        "completedAtMs": 1775000002250,
+        "durationMs": 1250,
+        "bytesSent": 384,
+        "bytesReceived": 2048,
+        "errors": []
+      },
+      {
+        "probeId": "provider-egress",
+        "status": "failed",
+        "region": "europe-west",
+        "startedAtMs": 1775000003000,
+        "completedAtMs": 1775000003500,
+        "durationMs": 500,
+        "bytesSent": 96,
+        "bytesReceived": 0,
+        "errors": [
+          {
+            "code": "coverage_target_unreachable",
+            "message": "The target refused the bounded coverage probe."
+          }
+        ]
+      }
+    ],
+    "normalizedMetricDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "challenge": "0x01020304",
+    "replaySubject": "coverage:coverage-cycle-2026-08-13:job-7:4",
+    "networkTraversal": {
+      "version": 1,
+      "descriptorDigest": "sha256:f7e65486dc0f3c5881a4d281bce1411a4f1ca33f619193713ebdfe0d06516511",
+      "runId": "01010101010101010101010101010101",
+      "mode": "observe",
+      "startedAtMs": 1775000001000,
+      "durationMs": 1000,
+      "phases": [
+        {
+          "stage": "baseline",
+          "method": "unassisted",
+          "transport": "tcp",
+          "family": "v4",
+          "authority": "external_path",
+          "outcome": "succeeded",
+          "elapsedMs": 50,
+          "grantedLeaseSec": null,
+          "cleanup": null,
+          "protocolError": null,
+          "errorClass": null,
+          "proofDigest": "sha256:13a94307c9b86681eb8a17e03297442e6e7200e0943f1750a2d36192be342129"
+        },
+        {
+          "stage": "mapping_behaviour",
+          "method": "udp_mapping",
+          "transport": "udp",
+          "family": "v4",
+          "authority": "prober_observed_behaviour",
+          "outcome": "endpoint_independent",
+          "elapsedMs": 50,
+          "grantedLeaseSec": null,
+          "cleanup": null,
+          "protocolError": null,
+          "errorClass": null,
+          "proofDigest": "sha256:5f0c3e64a778e4141d530f3714254511c6585a33466aa729a7425bcd59e4b09f"
+        }
+      ],
+      "proofs": [
+        {
+          "kind": "prober_receipt",
+          "receipt": {
+            "version": 1,
+            "transcript": {
+              "version": 1,
+              "domain": "proof.liskov.network-traversal-external-path.v1",
+              "descriptorDigest": "sha256:f7e65486dc0f3c5881a4d281bce1411a4f1ca33f619193713ebdfe0d06516511",
+              "runId": "01010101010101010101010101010101",
+              "pairId": null,
+              "participantRole": null,
+              "authority": "external_path",
+              "stage": "baseline",
+              "method": "unassisted",
+              "transport": "tcp",
+              "family": "v4",
+              "challenge": "0909090909090909090909090909090909090909090909090909090909090909",
+              "peerChallenge": null,
+              "expiresAtMs": 1775000120000,
+              "outcome": "succeeded",
+              "elapsedMs": 50,
+              "grantedLeaseSec": null,
+              "cleanup": null,
+              "protocolError": null,
+              "errorClass": null
+            },
+            "deviceSignature": "0xabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab",
+            "mac": "6af2722bba36b122947ebe7f06a0bac79bb7b3bc462713f2d8dc42a3a5df2c78"
+          }
+        },
+        {
+          "kind": "prober_receipt",
+          "receipt": {
+            "version": 1,
+            "transcript": {
+              "version": 1,
+              "domain": "proof.liskov.network-traversal-observed-behaviour.v1",
+              "descriptorDigest": "sha256:f7e65486dc0f3c5881a4d281bce1411a4f1ca33f619193713ebdfe0d06516511",
+              "runId": "01010101010101010101010101010101",
+              "pairId": null,
+              "participantRole": null,
+              "authority": "prober_observed_behaviour",
+              "stage": "mapping_behaviour",
+              "method": "udp_mapping",
+              "transport": "udp",
+              "family": "v4",
+              "challenge": "0909090909090909090909090909090909090909090909090909090909090909",
+              "peerChallenge": null,
+              "expiresAtMs": 1775000120000,
+              "outcome": "endpoint_independent",
+              "elapsedMs": 50,
+              "grantedLeaseSec": null,
+              "cleanup": null,
+              "protocolError": null,
+              "errorClass": null
+            },
+            "deviceSignature": "0xabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab",
+            "mac": "33397cd36c9a2355453f8d5eeaf72753c11adfa28e459d11493993a8e1de2bbc"
+          }
+        }
+      ]
+    }
+  },
+  "canonicalCoverageSigningPayload": "{\"applicationId\":\"app-1\",\"artifactDigest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"challenge\":\"0x01020304\",\"cycleId\":\"coverage-cycle-2026-08-13\",\"deploymentId\":\"deployment-1\",\"domain\":\"proof.liskov.processor-coverage-result.v1\",\"expiresAtMs\":1775000060000,\"issuedAtMs\":1775000000000,\"jobId\":\"job-7\",\"networkTraversal\":{\"descriptorDigest\":\"sha256:f7e65486dc0f3c5881a4d281bce1411a4f1ca33f619193713ebdfe0d06516511\",\"durationMs\":1000,\"mode\":\"observe\",\"phases\":[{\"authority\":\"external_path\",\"cleanup\":null,\"elapsedMs\":50,\"errorClass\":null,\"family\":\"v4\",\"grantedLeaseSec\":null,\"method\":\"unassisted\",\"outcome\":\"succeeded\",\"proofDigest\":\"sha256:13a94307c9b86681eb8a17e03297442e6e7200e0943f1750a2d36192be342129\",\"protocolError\":null,\"stage\":\"baseline\",\"transport\":\"tcp\"},{\"authority\":\"prober_observed_behaviour\",\"cleanup\":null,\"elapsedMs\":50,\"errorClass\":null,\"family\":\"v4\",\"grantedLeaseSec\":null,\"method\":\"udp_mapping\",\"outcome\":\"endpoint_independent\",\"proofDigest\":\"sha256:5f0c3e64a778e4141d530f3714254511c6585a33466aa729a7425bcd59e4b09f\",\"protocolError\":null,\"stage\":\"mapping_behaviour\",\"transport\":\"udp\"}],\"proofs\":[{\"kind\":\"prober_receipt\",\"receipt\":{\"deviceSignature\":\"0xabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab\",\"mac\":\"6af2722bba36b122947ebe7f06a0bac79bb7b3bc462713f2d8dc42a3a5df2c78\",\"transcript\":{\"authority\":\"external_path\",\"challenge\":\"0909090909090909090909090909090909090909090909090909090909090909\",\"cleanup\":null,\"descriptorDigest\":\"sha256:f7e65486dc0f3c5881a4d281bce1411a4f1ca33f619193713ebdfe0d06516511\",\"domain\":\"proof.liskov.network-traversal-external-path.v1\",\"elapsedMs\":50,\"errorClass\":null,\"expiresAtMs\":1775000120000,\"family\":\"v4\",\"grantedLeaseSec\":null,\"method\":\"unassisted\",\"outcome\":\"succeeded\",\"pairId\":null,\"participantRole\":null,\"peerChallenge\":null,\"protocolError\":null,\"runId\":\"01010101010101010101010101010101\",\"stage\":\"baseline\",\"transport\":\"tcp\",\"version\":1},\"version\":1}},{\"kind\":\"prober_receipt\",\"receipt\":{\"deviceSignature\":\"0xabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab\",\"mac\":\"33397cd36c9a2355453f8d5eeaf72753c11adfa28e459d11493993a8e1de2bbc\",\"transcript\":{\"authority\":\"prober_observed_behaviour\",\"challenge\":\"0909090909090909090909090909090909090909090909090909090909090909\",\"cleanup\":null,\"descriptorDigest\":\"sha256:f7e65486dc0f3c5881a4d281bce1411a4f1ca33f619193713ebdfe0d06516511\",\"domain\":\"proof.liskov.network-traversal-observed-behaviour.v1\",\"elapsedMs\":50,\"errorClass\":null,\"expiresAtMs\":1775000120000,\"family\":\"v4\",\"grantedLeaseSec\":null,\"method\":\"udp_mapping\",\"outcome\":\"endpoint_independent\",\"pairId\":null,\"participantRole\":null,\"peerChallenge\":null,\"protocolError\":null,\"runId\":\"01010101010101010101010101010101\",\"stage\":\"mapping_behaviour\",\"transport\":\"udp\",\"version\":1},\"version\":1}}],\"runId\":\"01010101010101010101010101010101\",\"startedAtMs\":1775000001000,\"version\":1},\"normalizedMetricDigest\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"outcomes\":[{\"bytesReceived\":2048,\"bytesSent\":384,\"completedAtMs\":1775000002250,\"durationMs\":1250,\"errors\":[],\"probeId\":\"runtime-bootstrap\",\"region\":\"europe-west\",\"startedAtMs\":1775000001000,\"status\":\"succeeded\"},{\"bytesReceived\":0,\"bytesSent\":96,\"completedAtMs\":1775000003500,\"durationMs\":500,\"errors\":[{\"code\":\"coverage_target_unreachable\",\"message\":\"The target refused the bounded coverage probe.\"}],\"probeId\":\"provider-egress\",\"region\":\"europe-west\",\"startedAtMs\":1775000003000,\"status\":\"failed\"}],\"policyDigest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"policyVersionId\":\"policy-version-5\",\"probeVersion\":\"probe-v3\",\"processorId\":\"processor-acurast-1\",\"profileVersion\":\"profile-v2\",\"replaySubject\":\"coverage:coverage-cycle-2026-08-13:job-7:4\",\"sequence\":4,\"target\":{\"provider\":\"acurast\",\"release\":\"source\",\"runtime\":\"javascript\",\"targetId\":\"acurast-js-source\"}}"
+}
