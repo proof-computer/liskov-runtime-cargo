@@ -568,7 +568,9 @@ where
                 return effect;
             }
             let mut effect = adopt_or_refuse(effect, parts, parsed, gateway, transport, cancelled);
-            effect.gateway_rebooted = gateway_rebooted;
+            // A delete of an overlong grant can observe a reboot the create
+            // reply did not. Keep that observation.
+            effect.gateway_rebooted |= gateway_rebooted;
             effect
         }
     }
@@ -711,12 +713,21 @@ fn send_delete(
         effect.error = Some(TraversalErrorClass::CleanupFailed);
         return effect;
     };
+    // Confirmed deletion requires a MAP response for this mapping. A wrong
+    // version, a missing response bit, or another protocol is a mismatch:
+    // the grant's expiry stays unknown.
     let matches = match handle.protocol {
         RouterProtocol::Pcp => {
-            parsed.nonce == handle.nonce && parsed.internal_port == handle.internal_port
+            parsed.version_ok
+                && parsed.opcode_ok
+                && parsed.nonce == handle.nonce
+                && parsed.internal_port == handle.internal_port
+                && parsed.protocol == handle.port_protocol.pcp()
         }
         RouterProtocol::NatPmp => {
-            parsed.internal_port == handle.internal_port
+            parsed.version_ok
+                && parsed.opcode_ok
+                && parsed.internal_port == handle.internal_port
                 && MappedPortProtocol::from_natpmp(parsed.protocol) == Some(handle.port_protocol)
         }
         RouterProtocol::UpnpIgd => false,
@@ -1162,6 +1173,15 @@ mod tests {
         packet
     }
 
+    fn assert_delete_unconfirmed(deleted: &MappingEffect) {
+        assert_eq!(deleted.cleanup, TraversalCleanup::ExpiryUnknown);
+        assert_eq!(deleted.outcome, TraversalOutcome::ExpiryUnknown);
+        assert_eq!(deleted.error, Some(TraversalErrorClass::CleanupFailed));
+        assert_eq!(deleted.refusal, Some(MappingRefusal::AmbiguousOwnership));
+        assert!(!deleted.gateway_rebooted);
+        assert_ne!(deleted.cleanup, TraversalCleanup::ConfirmedDeleted);
+    }
+
     fn assert_gateway_only(fake: &Fake, gateway: &SelectedGateway) {
         assert!(!fake.sent.is_empty());
         for (destination, _) in &fake.sent {
@@ -1585,6 +1605,93 @@ mod tests {
         assert_eq!(effect.cleanup, TraversalCleanup::ConfirmedDeleted);
         assert_eq!(fake.sent.len(), 2);
         assert_eq!(lifetime_of(RouterProtocol::Pcp, &fake.sent[1].1), 0);
+    }
+
+    #[test]
+    fn a_delete_reply_that_is_not_a_map_response_is_not_confirmed() {
+        let gateway = gateway();
+        let reservation = reservation_for(&gateway);
+        let mut created = Fake::new(vec![Ok(pcp_response(0, 60, 10, 40_000, 40_000, nonce()))]);
+        let handle = map_pcp(&gateway, &pcp(None, None), &mut created, &never)
+            .handle
+            .unwrap();
+
+        let mut wrong_version = pcp_response(0, 0, 11, 40_000, 0, nonce());
+        wrong_version[0] = 1;
+        let mut fake = Fake::new(vec![Ok(wrong_version)]);
+        let deleted = delete_owned_mapping(&gateway, &handle, None, Some(10), &mut fake, &never);
+        assert_delete_unconfirmed(&deleted);
+
+        let mut missing_response = pcp_response(0, 0, 11, 40_000, 0, nonce());
+        missing_response[1] = PCP_MAP_OPCODE;
+        let mut fake = Fake::new(vec![Ok(missing_response)]);
+        let deleted = delete_owned_mapping(&gateway, &handle, None, Some(10), &mut fake, &never);
+        assert_delete_unconfirmed(&deleted);
+
+        let mut wrong_protocol = pcp_response(0, 0, 11, 40_000, 0, nonce());
+        wrong_protocol[36] = MappedPortProtocol::Tcp.pcp();
+        let mut fake = Fake::new(vec![Ok(wrong_protocol)]);
+        let deleted = delete_owned_mapping(&gateway, &handle, None, Some(10), &mut fake, &never);
+        assert_delete_unconfirmed(&deleted);
+
+        let mut nat_created = Fake::new(vec![Ok(nat_response(
+            0, 60, 10, 40_000, 40_000, NATPMP_UDP,
+        ))]);
+        let nat_handle = map_nat_pmp(
+            &gateway,
+            &nat(Some(&reservation), None),
+            &mut nat_created,
+            &never,
+        )
+        .handle
+        .unwrap();
+
+        let mut nat_version = nat_response(0, 0, 11, 40_000, 0, NATPMP_UDP);
+        nat_version[0] = 7;
+        let mut fake = Fake::new(vec![Ok(nat_version)]);
+        let deleted = delete_owned_mapping(
+            &gateway,
+            &nat_handle,
+            Some(&reservation),
+            Some(10),
+            &mut fake,
+            &never,
+        );
+        assert_delete_unconfirmed(&deleted);
+
+        let mut nat_request = nat_response(0, 0, 11, 40_000, 0, NATPMP_UDP);
+        nat_request[1] = NATPMP_UDP;
+        let mut fake = Fake::new(vec![Ok(nat_request)]);
+        let deleted = delete_owned_mapping(
+            &gateway,
+            &nat_handle,
+            Some(&reservation),
+            Some(10),
+            &mut fake,
+            &never,
+        );
+        assert_delete_unconfirmed(&deleted);
+    }
+
+    #[test]
+    fn an_overlong_delete_that_shows_a_reboot_keeps_the_flag() {
+        let gateway = gateway();
+        let reservation = reservation_for(&gateway);
+        let mut fake = Fake::new(vec![
+            Ok(pcp_response(0, u32::MAX, 100, 40_000, 40_000, nonce())),
+            Ok(pcp_response(0, 0, 5, 40_000, 0, nonce())),
+        ]);
+        let effect = map_pcp(
+            &gateway,
+            &pcp(Some(&reservation), Some(50)),
+            &mut fake,
+            &never,
+        );
+        assert!(effect.gateway_rebooted);
+        assert_eq!(effect.refusal, Some(MappingRefusal::Rebooted));
+        assert_eq!(effect.cleanup, TraversalCleanup::ExpiryUnknown);
+        assert_eq!(effect.outcome, TraversalOutcome::ExpiryUnknown);
+        assert_eq!(fake.sent.len(), 2);
     }
 
     #[test]
