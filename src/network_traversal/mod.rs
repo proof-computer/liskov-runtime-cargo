@@ -10,6 +10,7 @@
 mod auth;
 mod descriptor;
 mod gateway;
+mod igd;
 mod mapping;
 mod proof;
 mod reserve;
@@ -18,6 +19,7 @@ mod result;
 pub use auth::*;
 pub use descriptor::*;
 pub use gateway::*;
+pub use igd::*;
 pub use mapping::*;
 pub use proof::*;
 pub use reserve::*;

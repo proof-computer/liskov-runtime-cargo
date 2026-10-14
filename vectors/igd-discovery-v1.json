@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "ssdpAddress": "239.255.255.250",
+  "ssdpPort": 1900,
+  "ssdpMaxBytes": 1100,
+  "ssdpMaxReplies": 4,
+  "xmlMaxBytes": 16384,
+  "xmlMaxDepth": 16,
+  "controlUrlMaxBytes": 512,
+  "maxServiceCandidates": 4,
+  "maxDocumentFetches": 2,
+  "searchBudgetMs": 1000,
+  "httpBudgetMs": 1000
+}

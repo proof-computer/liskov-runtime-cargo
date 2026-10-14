@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<!DOCTYPE lolz [
+  <!ENTITY lol "lol">
+  <!ENTITY lol2 "&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;">
+  <!ENTITY xxe SYSTEM "file:///etc/passwd">
+]>
+<root>
+  <device>
+    <friendlyName>&xxe;&lol2;</friendlyName>
+    <serviceList>
+      <service>
+        <serviceType>urn:schemas-upnp-org:service:WANIPConnection:1</serviceType>
+        <controlURL>http://192.0.2.1/ctl</controlURL>
+      </service>
+    </serviceList>
+  </device>
+</root>
