@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<root>
+  <device>
+    <serviceList>
+      <service>
+        <serviceType>urn:schemas-upnp-org:service:WANIPConnection:1</serviceType>
+        <controlURL>http://198.51.100.9/ctl/IPConn</controlURL>
+      </service>
+      <service>
+        <serviceType>urn:schemas-upnp-org:service:WANIPConnection:1</serviceType>
+        <controlURL>http://10.0.0.50/printer</controlURL>
+      </service>
+      <service>
+        <serviceType>urn:schemas-upnp-org:service:WANIPConnection:1</serviceType>
+        <controlURL>http://user:secret@192.0.2.1/ctl</controlURL>
+      </service>
+      <service>
+        <serviceType>urn:schemas-upnp-org:service:WANIPConnection:1</serviceType>
+        <controlURL>http://192.0.2.1:99999/ctl</controlURL>
+      </service>
+    </serviceList>
+  </device>
+</root>
