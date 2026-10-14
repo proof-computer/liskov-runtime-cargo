@@ -124,18 +124,18 @@ static int route_fixtures(void) {
     struct fixture_route invalid;
     struct fixture_route too_many[ROUTE_MAX_RECORDS + 1];
     uint32_t selected = 0;
+    enum route_result got;
     size_t index;
 
-    if (expect_route("missing", select_routes(NULL, 0, 0, &selected), ROUTE_UNSUPPORTED, selected, 0) != 0) {
+    /* `selected` is an output of select_routes. Read it only after that call
+     * returns: argument evaluation order is unspecified. */
+    got = select_routes(NULL, 0, 0, &selected);
+    if (expect_route("missing", got, ROUTE_UNSUPPORTED, selected, 0) != 0) {
         return -1;
     }
     selected = 0xffffffffu;
-    if (expect_route(
-            "on-link",
-            select_routes(&on_link, 1, 0, &selected),
-            ROUTE_UNSUPPORTED,
-            0,
-            0) != 0 ||
+    got = select_routes(&on_link, 1, 0, &selected);
+    if (expect_route("on-link", got, ROUTE_UNSUPPORTED, 0, 0) != 0 ||
         selected == 0x0a010201u) {
         fprintf(stderr, "route fixture on-link invented a gateway\n");
         return -1;
@@ -159,53 +159,33 @@ static int route_fixtures(void) {
         .interface_index = 1,
     };
     selected = 0;
-    if (expect_route(
-            "multiple",
-            select_routes(defaults, 3, 0, &selected),
-            ROUTE_SELECTED,
-            selected,
-            0xc0a80001u) != 0) {
+    got = select_routes(defaults, 3, 0, &selected);
+    if (expect_route("multiple", got, ROUTE_SELECTED, selected, 0xc0a80001u) != 0) {
         return -1;
     }
     tie[0] = defaults[2];
     tie[1] = defaults[1];
     tie[1].metric = 100;
-    if (expect_route(
-            "tie",
-            select_routes(tie, 2, 0, &selected),
-            ROUTE_UNSUPPORTED,
-            0,
-            0) != 0) {
+    got = select_routes(tie, 2, 0, &selected);
+    if (expect_route("tie", got, ROUTE_UNSUPPORTED, 0, 0) != 0) {
         return -1;
     }
     invalid = defaults[2];
     invalid.gateway = 0;
-    if (expect_route(
-            "invalid",
-            select_routes(&invalid, 1, 0, &selected),
-            ROUTE_INVALID,
-            0,
-            0) != 0) {
+    got = select_routes(&invalid, 1, 0, &selected);
+    if (expect_route("invalid", got, ROUTE_INVALID, 0, 0) != 0) {
         return -1;
     }
-    if (expect_route(
-            "cancelled",
-            select_routes(defaults, 3, 1, &selected),
-            ROUTE_CANCELLED,
-            0,
-            0) != 0) {
+    got = select_routes(defaults, 3, 1, &selected);
+    if (expect_route("cancelled", got, ROUTE_CANCELLED, 0, 0) != 0) {
         return -1;
     }
     for (index = 0; index < ROUTE_MAX_RECORDS + 1; index += 1) {
         too_many[index] = defaults[2];
         too_many[index].metric = (uint32_t)index;
     }
-    if (expect_route(
-            "bounded-records",
-            select_routes(too_many, ROUTE_MAX_RECORDS + 1, 0, &selected),
-            ROUTE_BOUNDED,
-            0,
-            0) != 0) {
+    got = select_routes(too_many, ROUTE_MAX_RECORDS + 1, 0, &selected);
+    if (expect_route("bounded-records", got, ROUTE_BOUNDED, 0, 0) != 0) {
         return -1;
     }
     return 0;

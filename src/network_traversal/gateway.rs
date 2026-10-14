@@ -7,9 +7,10 @@
 //! address.
 //!
 //! Permitted route sources are a bounded `/proc/net/route` read and, only when
-//! that file is unavailable, a bounded IPv4 netlink dump. Neither `getifaddrs`
-//! nor `AF_NETLINK` is required. When every permitted source is unavailable the
-//! result is [`GatewayDiscovery::Unsupported`].
+//! that file is unavailable, a bounded IPv4 netlink dump. The dump keeps
+//! unicast routes from the main table only, which is the table `/proc/net/route`
+//! lists. Neither `getifaddrs` nor `AF_NETLINK` is required. When every
+//! permitted source is unavailable the result is [`GatewayDiscovery::Unsupported`].
 
 use std::fs::File;
 use std::io::Read;
@@ -26,6 +27,9 @@ pub const ROUTER_CONTROL_PORT: u16 = 5351;
 
 const INTERFACE_NAME_MAX: usize = 15;
 const RTF_GATEWAY: u32 = 0x0002;
+/// `NLMSG_GOODSIZE` on a kernel with 16 KiB pages. A smaller buffer truncates
+/// a dump datagram and splices the next one at a misaligned offset.
+const NETLINK_RECV_BYTES: usize = 8192;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RouteRecord {
@@ -65,12 +69,22 @@ impl RouteRecord {
 }
 
 /// Gateway and interface chosen for this call. Drop it when the call ends.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// `Debug` redacts the gateway: the address is not a log field.
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct SelectedGateway {
     gateway: Ipv4Addr,
     interface_index: u32,
     interface_name: [u8; INTERFACE_NAME_MAX],
     interface_name_len: u8,
+}
+
+impl std::fmt::Debug for SelectedGateway {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SelectedGateway")
+            .field("gateway", &"<redacted>")
+            .finish()
+    }
 }
 
 impl SelectedGateway {
@@ -155,7 +169,10 @@ pub trait ControlTransport {
     ) -> Result<usize, ControlRefusal>;
 }
 
-pub fn discover_loaded(routes: &[RouteRecord], cancelled: &dyn Fn() -> bool) -> GatewayDiscovery {
+pub(crate) fn discover_loaded(
+    routes: &[RouteRecord],
+    cancelled: &dyn Fn() -> bool,
+) -> GatewayDiscovery {
     if cancelled() {
         return GatewayDiscovery::Cancelled;
     }
@@ -167,7 +184,7 @@ pub fn discover_loaded(routes: &[RouteRecord], cancelled: &dyn Fn() -> bool) -> 
 
 /// Read `proc_path` first. Netlink runs only when that read is unavailable or
 /// malformed, and only through `netlink`. Neither source is assumed to exist.
-pub fn discover_with_sources(
+pub(crate) fn discover_with_sources(
     proc_routes: Result<Vec<RouteRecord>, RouteReadError>,
     netlink: &mut dyn FnMut() -> Result<Vec<RouteRecord>, RouteReadError>,
     cancelled: &dyn Fn() -> bool,
@@ -453,14 +470,22 @@ fn dump_netlink(cancelled: &dyn Fn() -> bool) -> Result<Vec<u8>, RouteReadError>
         return Err(RouteReadError::Unavailable);
     }
     let mut accumulated = Vec::new();
-    let mut buffer = [0u8; 4096];
+    let mut buffer = [0u8; NETLINK_RECV_BYTES];
     for _ in 0..8 {
         if cancelled() {
             return Err(RouteReadError::Cancelled);
         }
         // SAFETY: `socket` owns the descriptor. `buffer` is writable for its
-        // full length. recv does not retain the pointer.
-        let received = unsafe { libc::recv(socket.0, buffer.as_mut_ptr().cast(), buffer.len(), 0) };
+        // full length. `MSG_TRUNC` makes recv return the real datagram length
+        // without retaining `buffer`.
+        let received = unsafe {
+            libc::recv(
+                socket.0,
+                buffer.as_mut_ptr().cast(),
+                buffer.len(),
+                libc::MSG_TRUNC,
+            )
+        };
         if received < 0 {
             return Err(RouteReadError::Unavailable);
         }
@@ -468,6 +493,9 @@ fn dump_netlink(cancelled: &dyn Fn() -> bool) -> Result<Vec<u8>, RouteReadError>
             break;
         }
         let received = received as usize;
+        if received > buffer.len() {
+            return Err(RouteReadError::Malformed);
+        }
         if accumulated.len().saturating_add(received) > ROUTE_TABLE_MAX_BYTES {
             return Err(RouteReadError::Bounded);
         }
@@ -572,11 +600,17 @@ fn parse_route_message(body: &[u8]) -> Option<RouteRecord> {
     if prefix_len > 32 {
         return None;
     }
+    // `/proc/net/route` lists the main table. A dump of every table would let
+    // a lower-metric policy route replace that gateway.
+    if body[7] != libc::RTN_UNICAST {
+        return None;
+    }
     let mut destination = Ipv4Addr::UNSPECIFIED;
     let mut gateway = Ipv4Addr::UNSPECIFIED;
     let mut has_gateway = false;
     let mut interface_index = 0;
     let mut metric = 0;
+    let mut table_from_attr = None;
     let mut cursor = align4(12);
     while cursor + 4 <= body.len() {
         let attr_len = u16::from_ne_bytes(body[cursor..cursor + 2].try_into().ok()?) as usize;
@@ -594,8 +628,18 @@ fn parse_route_message(body: &[u8]) -> Option<RouteRecord> {
             interface_index = u32::from_ne_bytes(data.try_into().ok()?);
         } else if attr_type == libc::RTA_PRIORITY && data.len() == 4 {
             metric = u32::from_ne_bytes(data.try_into().ok()?);
+        } else if attr_type == libc::RTA_TABLE && data.len() == 4 {
+            table_from_attr = Some(u32::from_ne_bytes(data.try_into().ok()?));
         }
         cursor = cursor.saturating_add(align4(attr_len));
+    }
+    let table = if body[4] == libc::RT_TABLE_COMPAT {
+        table_from_attr?
+    } else {
+        u32::from(body[4])
+    };
+    if table != u32::from(libc::RT_TABLE_MAIN) {
+        return None;
     }
     if prefix_len == 0 {
         destination = Ipv4Addr::UNSPECIFIED;
@@ -1001,6 +1045,89 @@ eth0\t00000000\t0100A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0
     }
 
     #[test]
+    fn netlink_keeps_the_main_unicast_default_and_ignores_other_tables() {
+        let mut policy = sample_route(
+            0,
+            Ipv4Addr::UNSPECIFIED,
+            Some(Ipv4Addr::new(10, 0, 0, 1)),
+            2,
+            0,
+        );
+        policy.table = 100;
+        let mut wide = sample_route(
+            0,
+            Ipv4Addr::UNSPECIFIED,
+            Some(Ipv4Addr::new(10, 1, 0, 1)),
+            3,
+            0,
+        );
+        wide.table = 1000;
+        wide.table_attribute = true;
+        let mut local = sample_route(
+            0,
+            Ipv4Addr::UNSPECIFIED,
+            Some(Ipv4Addr::new(10, 2, 0, 1)),
+            4,
+            0,
+        );
+        local.route_type = libc::RTN_LOCAL;
+        let main = sample_route(
+            0,
+            Ipv4Addr::UNSPECIFIED,
+            Some(Ipv4Addr::new(192, 168, 0, 1)),
+            1,
+            100,
+        );
+        let routes = parse_netlink_route_dump(&sample_dump(&[policy, wide, local, main])).unwrap();
+        assert_eq!(
+            selected(discover_loaded(&routes, &never)).gateway(),
+            Ipv4Addr::new(192, 168, 0, 1)
+        );
+        let mut only_policy = sample_route(
+            0,
+            Ipv4Addr::UNSPECIFIED,
+            Some(Ipv4Addr::new(10, 0, 0, 1)),
+            2,
+            0,
+        );
+        only_policy.table = 100;
+        let ignored = parse_netlink_route_dump(&sample_dump(&[only_policy])).unwrap();
+        assert_eq!(
+            discover_loaded(&ignored, &never),
+            GatewayDiscovery::Unsupported
+        );
+    }
+
+    #[test]
+    fn missing_proc_file_uses_the_real_netlink_socket() {
+        let discovery = discover_at_path(Path::new("/no/such/liskov-proc-net-route"), &never);
+        assert_ne!(discovery, GatewayDiscovery::Cancelled);
+        assert_ne!(discovery, GatewayDiscovery::Bounded);
+        if af_netlink_denied() {
+            assert_eq!(discovery, GatewayDiscovery::Unsupported);
+        }
+    }
+
+    #[test]
+    fn malformed_proc_file_does_not_become_a_selected_gateway() {
+        let text = "not-a-route-table\neth0 00000000 0100A8C0\n";
+        assert_eq!(parse_proc_net_route(text), Err(RouteReadError::Malformed));
+        let dir =
+            std::env::temp_dir().join(format!("liskov-gateway-malformed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("route");
+        std::fs::write(&path, text).unwrap();
+        let discovery = discover_at_path(&path, &never);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_ne!(discovery, GatewayDiscovery::Cancelled);
+        assert_ne!(discovery, GatewayDiscovery::Bounded);
+        if af_netlink_denied() {
+            assert_eq!(discovery, GatewayDiscovery::Unsupported);
+        }
+    }
+
+    #[test]
     fn control_exchange_reaches_only_the_selected_gateway() {
         let gateway = selected(discover_loaded(
             &[route(
@@ -1244,6 +1371,9 @@ eth0\t00000000\t0100A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0
         gateway: Option<Ipv4Addr>,
         interface_index: u32,
         metric: u32,
+        table: u32,
+        route_type: u8,
+        table_attribute: bool,
     }
 
     fn sample_route(
@@ -1259,7 +1389,25 @@ eth0\t00000000\t0100A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0
             gateway,
             interface_index,
             metric,
+            table: u32::from(libc::RT_TABLE_MAIN),
+            route_type: libc::RTN_UNICAST,
+            table_attribute: false,
         }
+    }
+
+    fn af_netlink_denied() -> bool {
+        let fd = unsafe {
+            libc::socket(
+                libc::AF_NETLINK,
+                libc::SOCK_RAW | libc::SOCK_CLOEXEC,
+                libc::NETLINK_ROUTE,
+            )
+        };
+        if fd >= 0 {
+            unsafe { libc::close(fd) };
+            return false;
+        }
+        std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
     }
 
     fn sample_dump(routes: &[SampleRoute]) -> Vec<u8> {
@@ -1282,7 +1430,22 @@ eth0\t00000000\t0100A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0
                 libc::RTA_PRIORITY,
                 &route.metric.to_ne_bytes(),
             );
-            let mut body = vec![libc::AF_INET as u8, route.prefix, 0, 0, 0, 0, 0, 1];
+            let table_byte = if route.table_attribute || route.table > u32::from(u8::MAX) {
+                push_attr(&mut attributes, libc::RTA_TABLE, &route.table.to_ne_bytes());
+                libc::RT_TABLE_COMPAT
+            } else {
+                route.table as u8
+            };
+            let mut body = vec![
+                libc::AF_INET as u8,
+                route.prefix,
+                0,
+                0,
+                table_byte,
+                0,
+                0,
+                route.route_type,
+            ];
             body.extend_from_slice(&0u32.to_ne_bytes());
             body.extend_from_slice(&attributes);
             push_nlmsg(&mut dump, libc::RTM_NEWROUTE, &body);
