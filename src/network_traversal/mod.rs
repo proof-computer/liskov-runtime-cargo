@@ -3,11 +3,14 @@
 //! Issuance stays with the API. Grant checks reserve collector time and do not
 //! discover a gateway, open an experiment socket, resolve DNS, or attach a
 //! traversal block to a live submission. Gateway selection and router-control
-//! adapters live in `gateway` and run only when a caller invokes them.
+//! adapters live in `gateway` and run only when a caller invokes them. Finite
+//! PCP and NAT-PMP mapping codecs live in `mapping` and run only when a caller
+//! invokes them.
 
 mod auth;
 mod descriptor;
 mod gateway;
+mod mapping;
 mod proof;
 mod reserve;
 mod result;
@@ -15,6 +18,7 @@ mod result;
 pub use auth::*;
 pub use descriptor::*;
 pub use gateway::*;
+pub use mapping::*;
 pub use proof::*;
 pub use reserve::*;
 pub use result::*;
