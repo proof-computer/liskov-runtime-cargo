@@ -692,6 +692,20 @@ pub fn exchange_with_gateway(
     Ok(response[..received].to_vec())
 }
 
+/// Whether [`exchange_upnp_soap`] handed the request to `transport`.
+///
+/// [`UpnpSoapReply::Refused`] is a local check: an empty or oversize body,
+/// cancellation, or a control URL that is not the selected gateway. Nothing
+/// was sent. [`UpnpSoapReply::Exchanged`] means `transport.exchange` was
+/// called. An error in that arm is a lost reply, including when the transport
+/// reports [`ControlRefusal::Unsupported`], [`ControlRefusal::Oversize`], or
+/// [`ControlRefusal::WrongTarget`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum UpnpSoapReply {
+    Refused(ControlRefusal),
+    Exchanged(Result<Vec<u8>, ControlRefusal>),
+}
+
 /// SOAP bytes for the descriptor's control URL. The destination is the
 /// selected gateway or the call fails before `transport` is used. Redirects
 /// are not followed: this function exchanges one buffer and returns it.
@@ -701,29 +715,36 @@ pub(crate) fn exchange_upnp_soap(
     request: &[u8],
     transport: &mut dyn ControlTransport,
     cancelled: &dyn Fn() -> bool,
-) -> Result<Vec<u8>, ControlRefusal> {
+) -> UpnpSoapReply {
     if request.is_empty() {
-        return Err(ControlRefusal::Unsupported);
+        return UpnpSoapReply::Refused(ControlRefusal::Unsupported);
     }
     if request.len() > UPNP_SOAP_MAX_BYTES {
-        return Err(ControlRefusal::Oversize);
+        return UpnpSoapReply::Refused(ControlRefusal::Oversize);
     }
     // Already cancelled: do not hand the request to the transport.
     if cancelled() {
-        return Err(ControlRefusal::Cancelled);
+        return UpnpSoapReply::Refused(ControlRefusal::Cancelled);
     }
-    let destination = control_destination(gateway, RouterProtocol::UpnpIgd, Some(location))?;
+    let destination = match control_destination(gateway, RouterProtocol::UpnpIgd, Some(location)) {
+        Ok(destination) => destination,
+        Err(refusal) => return UpnpSoapReply::Refused(refusal),
+    };
     let mut response = [0u8; UPNP_SOAP_MAX_BYTES];
-    let received = transport.exchange(destination, request, &mut response)?;
+    let received = match transport.exchange(destination, request, &mut response) {
+        Ok(received) => received,
+        // The request was handed off. The router may already have applied it.
+        Err(refusal) => return UpnpSoapReply::Exchanged(Err(refusal)),
+    };
     // A completed read is kept even if cancellation became true while the
     // gateway was answering. Dropping that body would hide an overlong grant.
     // Callers check `cancelled` again before the next mutation.
     // A full buffer is treated as truncated. A complete SOAP reply fits under
     // the cap, so filling it is not a successful read.
     if received >= UPNP_SOAP_MAX_BYTES {
-        return Err(ControlRefusal::Bounded);
+        return UpnpSoapReply::Exchanged(Err(ControlRefusal::Bounded));
     }
-    Ok(response[..received].to_vec())
+    UpnpSoapReply::Exchanged(Ok(response[..received].to_vec()))
 }
 
 fn control_destination(
@@ -1403,9 +1424,8 @@ eth0\t00000000\t0100A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0
             b"<e/>",
             &mut transport,
             &never,
-        )
-        .unwrap();
-        assert_eq!(response, b"ok");
+        );
+        assert_eq!(response, UpnpSoapReply::Exchanged(Ok(b"ok".to_vec())));
         assert_eq!(
             transport.calls[0].0,
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 52869)
@@ -1419,7 +1439,7 @@ eth0\t00000000\t0100A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0
                 &mut transport,
                 &never,
             ),
-            Err(ControlRefusal::WrongTarget)
+            UpnpSoapReply::Refused(ControlRefusal::WrongTarget)
         );
         assert!(transport.calls.is_empty());
         assert_eq!(
@@ -1430,9 +1450,21 @@ eth0\t00000000\t0100A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0
                 &mut transport,
                 &never,
             ),
-            Err(ControlRefusal::Oversize)
+            UpnpSoapReply::Refused(ControlRefusal::Oversize)
         );
         assert!(transport.calls.is_empty());
+        transport.fail = Some(ControlRefusal::Unsupported);
+        assert_eq!(
+            exchange_upnp_soap(
+                &gateway,
+                "http://192.0.2.1:52869/ctl",
+                b"<e/>",
+                &mut transport,
+                &never,
+            ),
+            UpnpSoapReply::Exchanged(Err(ControlRefusal::Unsupported))
+        );
+        assert_eq!(transport.calls.len(), 1);
     }
 
     struct RecordingTransport {

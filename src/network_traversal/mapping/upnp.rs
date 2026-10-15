@@ -21,7 +21,7 @@ use std::net::Ipv4Addr;
 
 use sha2::{Digest, Sha256};
 
-use super::super::gateway::{UPNP_SOAP_MAX_BYTES, exchange_upnp_soap};
+use super::super::gateway::{UPNP_SOAP_MAX_BYTES, UpnpSoapReply, exchange_upnp_soap};
 use super::super::{
     ControlRefusal, ControlTransport, IGD_XML_MAX_DEPTH, IgdControlDescriptor, IgdServiceKind,
     SelectedGateway, TraversalCleanup, TraversalErrorClass, TraversalOutcome,
@@ -406,6 +406,9 @@ fn attempt(
         Ok(request) => request,
         Err(refusal) => return Attempt::NotSent(refusal),
     };
+    // A refusal is local: the transport was not called. Once the request is
+    // exchanged, every transport error is a lost reply. Unsupported, Oversize,
+    // and WrongTarget from the transport are not proof that nothing was sent.
     match exchange_upnp_soap(
         gateway,
         &descriptor.control_target(),
@@ -413,14 +416,15 @@ fn attempt(
         transport,
         cancelled,
     ) {
-        Ok(body) => Attempt::Body(body),
-        Err(ControlRefusal::WrongTarget) => {
+        UpnpSoapReply::Exchanged(Ok(body)) => Attempt::Body(body),
+        UpnpSoapReply::Refused(ControlRefusal::WrongTarget) => {
             Attempt::NotSent(MappingRefusal::ReservationGatewayMismatch)
         }
-        Err(ControlRefusal::Oversize | ControlRefusal::Unsupported) => {
+        UpnpSoapReply::Refused(ControlRefusal::Oversize | ControlRefusal::Unsupported) => {
             Attempt::NotSent(MappingRefusal::Malformed)
         }
-        Err(error) => Attempt::Sent(
+        UpnpSoapReply::Refused(error) => Attempt::NotSent(super::transport_refusal(error)),
+        UpnpSoapReply::Exchanged(Err(error)) => Attempt::Sent(
             super::transport_refusal(error),
             super::transport_error(error),
         ),
@@ -462,12 +466,6 @@ fn transmit_delete(
 fn interpret_delete(bytes: &[u8]) -> DeleteAttempt {
     let view = match read_soap(bytes) {
         Ok(view) => view,
-        Err(ReadFault::Redirect) => {
-            return DeleteAttempt::Unknown {
-                refusal: MappingRefusal::Malformed,
-                error: TraversalErrorClass::CleanupFailed,
-            };
-        }
         Err(_) => {
             return DeleteAttempt::Unknown {
                 refusal: MappingRefusal::Malformed,
@@ -1668,6 +1666,48 @@ mod tests {
         assert_eq!(someone.outcome, TraversalOutcome::CreationOutcomeUnknown);
         assert_eq!(someone.refusal, Some(MappingRefusal::AmbiguousOwnership));
         assert_eq!(actions(&someone_fake), ["get", "add", "get"]);
+    }
+
+    #[test]
+    fn a_transport_error_after_add_is_a_lost_create() {
+        for (error, refusal) in [
+            (ControlRefusal::Unsupported, MappingRefusal::LostResponse),
+            (ControlRefusal::WrongTarget, MappingRefusal::LostResponse),
+            (ControlRefusal::Oversize, MappingRefusal::Malformed),
+        ] {
+            let (lost, lost_fake, _) = run(vec![fault_body(ABSENT), Err(error)], None);
+            assert_eq!(lost.outcome, TraversalOutcome::CreationOutcomeUnknown);
+            assert_eq!(lost.cleanup, TraversalCleanup::CreationOutcomeUnknown);
+            assert_ne!(lost.cleanup, TraversalCleanup::NotCreated);
+            assert_eq!(lost.refusal, Some(refusal));
+            assert!(lost.handle.is_none());
+            assert_eq!(lost.requests_sent, 2);
+            assert_eq!(actions(&lost_fake), ["get", "add"]);
+        }
+
+        let (probe, probe_fake, _) = run(vec![Err(ControlRefusal::Unsupported)], None);
+        assert_eq!(probe.outcome, TraversalOutcome::UnsupportedSafeOwnership);
+        assert_eq!(probe.cleanup, TraversalCleanup::NotCreated);
+        assert_eq!(probe.requests_sent, 1);
+        assert_eq!(actions(&probe_fake), ["get"]);
+
+        let (created, _, fixture) = run(
+            vec![fault_body(ABSENT), ok_body(ADD_OK), ok_body(GRANT)],
+            None,
+        );
+        let mut fake = Fake::new(vec![Err(ControlRefusal::Unsupported)]);
+        let deleted = delete_owned(
+            &fixture.gateway,
+            &created.handle.unwrap(),
+            Some(&fixture.descriptor),
+            &mut fake,
+            &never,
+        );
+        assert_eq!(deleted.outcome, TraversalOutcome::ExpiryUnknown);
+        assert_eq!(deleted.cleanup, TraversalCleanup::ExpiryUnknown);
+        assert_eq!(deleted.refusal, Some(MappingRefusal::LostResponse));
+        assert_eq!(deleted.requests_sent, 1);
+        assert_eq!(actions(&fake), ["delete"]);
     }
 
     #[test]
