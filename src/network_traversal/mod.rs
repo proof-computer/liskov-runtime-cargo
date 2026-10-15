@@ -4,8 +4,8 @@
 //! discover a gateway, open an experiment socket, resolve DNS, or attach a
 //! traversal block to a live submission. Gateway selection and router-control
 //! adapters live in `gateway` and run only when a caller invokes them. Finite
-//! PCP and NAT-PMP mapping codecs live in `mapping` and run only when a caller
-//! invokes them.
+//! PCP, NAT-PMP, and UPnP IGD mapping codecs live in `mapping` and run only
+//! when a caller invokes them.
 
 mod auth;
 mod descriptor;

@@ -1,9 +1,11 @@
-//! Finite PCP (RFC 6887) and NAT-PMP (RFC 6886) MAP codecs.
+//! Finite PCP (RFC 6887), NAT-PMP (RFC 6886), and UPnP IGD MAP codecs.
 //!
-//! Both speak through [`exchange_with_gateway`]. There is no scheduler and no
-//! lease renewal. A create always asks for 60 seconds. A granted lifetime of
-//! zero, or one past the caller's ceiling (at most 120 seconds), is refused.
-//! Nothing retries that refusal with lifetime zero or with a longer lease.
+//! PCP and NAT-PMP speak through [`exchange_with_gateway`]. UPnP speaks SOAP
+//! through [`exchange_upnp_soap`](super::gateway::exchange_upnp_soap) and does
+//! not rediscover the gateway. There is no scheduler and no lease renewal. A
+//! create always asks for 60 seconds. A granted lifetime of zero, or one past
+//! the caller's ceiling (at most 120 seconds), is refused. Nothing retries
+//! that refusal with lifetime zero or with a longer lease.
 //!
 //! NAT-PMP will refresh a mapping it did not create. No NAT-PMP packet is sent
 //! unless the caller holds an [`ExclusiveReservation`] for this gateway.
@@ -18,6 +20,10 @@ use super::{
     ControlRefusal, ControlTransport, RouterProtocol, SelectedGateway, TraversalCleanup,
     TraversalErrorClass, TraversalOutcome, exchange_with_gateway,
 };
+
+mod upnp;
+
+pub use upnp::{UpnpMap, map_upnp};
 
 pub const MAPPING_REQUESTED_LEASE_SEC: u32 = 60;
 pub const MAPPING_MAXIMUM_LEASE_SEC: u32 = 120;
@@ -378,6 +384,7 @@ pub fn delete_owned_mapping(
     previous_epoch: Option<u32>,
     transport: &mut dyn ControlTransport,
     cancelled: &dyn Fn() -> bool,
+    control: Option<&super::IgdControlDescriptor>,
 ) -> MappingEffect {
     if !delete_allowed(handle, gateway, reservation) {
         let mut effect = blank(handle.protocol);
@@ -388,10 +395,7 @@ pub fn delete_owned_mapping(
         return effect;
     }
     if handle.protocol == RouterProtocol::UpnpIgd {
-        let mut effect = blank(handle.protocol);
-        effect.refusal = Some(MappingRefusal::ProtocolUnsupported);
-        effect.handle = Some(*handle);
-        return effect;
+        return upnp::delete_owned(gateway, handle, control, transport, cancelled);
     }
     let request = delete_packet(handle);
     send_delete(
@@ -414,10 +418,11 @@ fn delete_allowed(
         return false;
     }
     match (handle.protocol, handle.reservation_digest) {
-        (RouterProtocol::NatPmp, Some(digest)) | (RouterProtocol::Pcp, Some(digest)) => reservation
-            .is_some_and(|reservation| {
-                reservation.authorizes(gateway) && reservation.digest == digest
-            }),
+        (RouterProtocol::NatPmp, Some(digest))
+        | (RouterProtocol::Pcp, Some(digest))
+        | (RouterProtocol::UpnpIgd, Some(digest)) => reservation.is_some_and(|reservation| {
+            reservation.authorizes(gateway) && reservation.digest == digest
+        }),
         (RouterProtocol::Pcp, None) => true,
         _ => false,
     }
@@ -1391,7 +1396,8 @@ mod tests {
         assert!(!effect.handle.unwrap().cleanup_authorized());
         let handle = effect.handle.unwrap();
         let mut retry = Fake::new(vec![Ok(pcp_response(0, 0, 11, 40_000, 0, nonce()))]);
-        let deleted = delete_owned_mapping(&gateway, &handle, None, Some(10), &mut retry, &never);
+        let deleted =
+            delete_owned_mapping(&gateway, &handle, None, Some(10), &mut retry, &never, None);
         assert!(retry.sent.is_empty());
         assert_eq!(deleted.refusal, Some(MappingRefusal::AmbiguousOwnership));
     }
@@ -1481,6 +1487,7 @@ mod tests {
             Some(10),
             &mut failed,
             &never,
+            None,
         );
         assert_eq!(deleted.cleanup, TraversalCleanup::DeleteFailed);
         assert_eq!(deleted.error, Some(TraversalErrorClass::CleanupFailed));
@@ -1496,8 +1503,15 @@ mod tests {
         let created = map_pcp(&gateway, &pcp(None, None), &mut pcp_created, &never);
         let handle = created.handle.unwrap();
         let mut pcp_failed = Fake::new(vec![Ok(pcp_response(7, 60, 11, 40_000, 40_000, nonce()))]);
-        let deleted =
-            delete_owned_mapping(&gateway, &handle, None, Some(10), &mut pcp_failed, &never);
+        let deleted = delete_owned_mapping(
+            &gateway,
+            &handle,
+            None,
+            Some(10),
+            &mut pcp_failed,
+            &never,
+            None,
+        );
         assert_eq!(deleted.cleanup, TraversalCleanup::DeleteFailed);
         assert_eq!(deleted.handle.unwrap().nonce(), Some(nonce()));
         assert_eq!(pcp_failed.sent.len(), 1);
@@ -1560,8 +1574,15 @@ mod tests {
             handle.external_port(),
             nonce(),
         ))]);
-        let deleted =
-            delete_owned_mapping(&gateway, &handle, None, Some(10), &mut refreshed, &never);
+        let deleted = delete_owned_mapping(
+            &gateway,
+            &handle,
+            None,
+            Some(10),
+            &mut refreshed,
+            &never,
+            None,
+        );
         assert_eq!(deleted.cleanup, TraversalCleanup::DeleteFailed);
         assert_ne!(deleted.cleanup, TraversalCleanup::ConfirmedDeleted);
         assert_eq!(deleted.error, Some(TraversalErrorClass::CleanupFailed));
@@ -1578,7 +1599,8 @@ mod tests {
         let created = map_pcp(&gateway, &pcp(None, None), &mut created, &never);
         let handle = created.handle.unwrap();
         let mut fake = Fake::new(vec![]);
-        let deleted = delete_owned_mapping(&gateway, &handle, None, Some(10), &mut fake, &|| true);
+        let deleted =
+            delete_owned_mapping(&gateway, &handle, None, Some(10), &mut fake, &|| true, None);
         assert!(fake.sent.is_empty());
         assert_eq!(deleted.cleanup, TraversalCleanup::LeaseExpiryPending);
         assert_eq!(deleted.refusal, Some(MappingRefusal::Cancelled));
@@ -1619,19 +1641,22 @@ mod tests {
         let mut wrong_version = pcp_response(0, 0, 11, 40_000, 0, nonce());
         wrong_version[0] = 1;
         let mut fake = Fake::new(vec![Ok(wrong_version)]);
-        let deleted = delete_owned_mapping(&gateway, &handle, None, Some(10), &mut fake, &never);
+        let deleted =
+            delete_owned_mapping(&gateway, &handle, None, Some(10), &mut fake, &never, None);
         assert_delete_unconfirmed(&deleted);
 
         let mut missing_response = pcp_response(0, 0, 11, 40_000, 0, nonce());
         missing_response[1] = PCP_MAP_OPCODE;
         let mut fake = Fake::new(vec![Ok(missing_response)]);
-        let deleted = delete_owned_mapping(&gateway, &handle, None, Some(10), &mut fake, &never);
+        let deleted =
+            delete_owned_mapping(&gateway, &handle, None, Some(10), &mut fake, &never, None);
         assert_delete_unconfirmed(&deleted);
 
         let mut wrong_protocol = pcp_response(0, 0, 11, 40_000, 0, nonce());
         wrong_protocol[36] = MappedPortProtocol::Tcp.pcp();
         let mut fake = Fake::new(vec![Ok(wrong_protocol)]);
-        let deleted = delete_owned_mapping(&gateway, &handle, None, Some(10), &mut fake, &never);
+        let deleted =
+            delete_owned_mapping(&gateway, &handle, None, Some(10), &mut fake, &never, None);
         assert_delete_unconfirmed(&deleted);
 
         let mut nat_created = Fake::new(vec![Ok(nat_response(
@@ -1656,6 +1681,7 @@ mod tests {
             Some(10),
             &mut fake,
             &never,
+            None,
         );
         assert_delete_unconfirmed(&deleted);
 
@@ -1669,6 +1695,7 @@ mod tests {
             Some(10),
             &mut fake,
             &never,
+            None,
         );
         assert_delete_unconfirmed(&deleted);
     }
