@@ -46,6 +46,13 @@ invented handle: creation_outcome_unknown and expiry_unknown survive, and no
 later method runs. Pre-existing/static mappings are never deleted merely for
 having a zero or overlong lease.
 
+The router adapter transport treats any exchange error as a possibly sent
+request. If cancellation or the deadline arrives between the lifecycle's
+pre-create check and the transport's send fence, creation is conservatively
+reported as creation_outcome_unknown with expiry_unknown even though the fence
+sent nothing. Later methods remain suppressed and operator resolution is
+required; local refusal never becomes a claim that a mapping was not created.
+
 The crash fixture interrupts after create and proves that dropping the listener
 is not router cleanup. There is no native post-crash report: the issued run
 without a terminal result remains outcome unknown at the API owner. A requested

@@ -736,13 +736,15 @@ pub fn run_mapping_lifecycle(
                 &|| false,
                 gateway.igd,
             );
-            row.expiry_unknown = deleted.cleanup == TraversalCleanup::ExpiryUnknown;
             row.cleanup = match deleted.cleanup {
                 TraversalCleanup::ConfirmedDeleted => TraversalCleanup::ConfirmedDeleted,
                 _ if accounting.control_requests == cleanup_requests_before => {
                     TraversalCleanup::LeaseExpiryPending
                 }
-                _ => TraversalCleanup::DeleteFailed,
+                _ => {
+                    row.expiry_unknown = deleted.cleanup == TraversalCleanup::ExpiryUnknown;
+                    TraversalCleanup::DeleteFailed
+                }
             };
         }
         row.expiry_unknown |= matches!(

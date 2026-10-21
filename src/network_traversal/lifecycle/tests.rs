@@ -332,6 +332,17 @@ impl MappingRuntime for Fixture {
                 include_str!("../../../vectors/upnp-igd-grant-finite.xml")
                     .replace("192.0.2.10", "10.0.0.2")
                     .replace(
+                        "<NewProtocol>UDP</NewProtocol>",
+                        if request
+                            .windows(b"<NewProtocol>TCP</NewProtocol>".len())
+                            .any(|w| w == b"<NewProtocol>TCP</NewProtocol>")
+                        {
+                            "<NewProtocol>TCP</NewProtocol>"
+                        } else {
+                            "<NewProtocol>UDP</NewProtocol>"
+                        },
+                    )
+                    .replace(
                         "<NewLeaseDuration>60",
                         &format!("<NewLeaseDuration>{}", self.lease),
                     )
@@ -588,6 +599,7 @@ fn unknown_creation_or_cleanup_suppresses_all_later_methods() {
         } else {
             assert!(f.events.contains(&"delete"));
             assert_ne!(r.methods[0].cleanup, TraversalCleanup::ConfirmedDeleted);
+            assert_eq!(r.methods[0].expiry_unknown, fault == 1);
         }
     }
 }
@@ -800,6 +812,65 @@ fn igd_descriptor(gateway: &SelectedGateway) -> IgdControlDescriptor {
 }
 
 #[test]
+fn per_method_request_counts_match_the_reserved_protocol_and_transport_costs() {
+    for (protocol, authorized, controls, router_datagrams) in [
+        (RouterProtocol::Pcp, TraversalRouterProtocol::Pcp, 6, 2),
+        (
+            RouterProtocol::NatPmp,
+            TraversalRouterProtocol::NatPmp,
+            6,
+            2,
+        ),
+        (
+            RouterProtocol::UpnpIgd,
+            TraversalRouterProtocol::UpnpIgd,
+            8,
+            0,
+        ),
+    ] {
+        for transport in [MappedPortProtocol::Tcp, MappedPortProtocol::Udp] {
+            let mut d = descriptor();
+            authorize(&mut d, &[authorized]);
+            let mut f = Fixture::new(&d);
+            let g = selected();
+            let reservation = ExclusiveReservation::new(g.gateway(), [0x55; 32]).unwrap();
+            let igd = igd_descriptor(&g);
+            let r = run_mapping_lifecycle(
+                session(&d),
+                &[MappingMethodPlan {
+                    protocol,
+                    transport,
+                }],
+                MappingGateway {
+                    gateway: &g,
+                    reservation: &reservation,
+                    local_address: Ipv4Addr::new(10, 0, 0, 2),
+                    external_address: Some(f.observed_address()),
+                    igd: Some(&igd),
+                    discovery_datagrams: 0,
+                    discovery_control_requests: 0,
+                },
+                &mut f,
+            );
+            assert_eq!(r.stopped, None, "{protocol:?} {transport:?}");
+            assert_eq!(r.methods[0].cleanup, TraversalCleanup::ConfirmedDeleted);
+            assert_eq!(r.control_requests, controls, "{protocol:?} {transport:?}");
+            assert_eq!(
+                r.sent_datagrams,
+                router_datagrams
+                    + if transport == MappedPortProtocol::Udp {
+                        2
+                    } else {
+                        0
+                    },
+                "{protocol:?} {transport:?}"
+            );
+            assert_eq!(r.external_dialbacks, 2);
+        }
+    }
+}
+
+#[test]
 fn upnp_lifecycle_uses_real_inspection_create_confirm_and_delete_codecs() {
     for existing in [false, true] {
         for lease in [60, 121] {
@@ -895,6 +966,7 @@ fn an_expired_cleanup_deadline_never_becomes_confirmed_deletion() {
     f.exhaust_cleanup_time = true;
     let r = f.run(&[plan(RouterProtocol::Pcp)]);
     assert_eq!(r.methods[0].cleanup, TraversalCleanup::LeaseExpiryPending);
+    assert!(!r.methods[0].expiry_unknown);
     assert!(f.created);
     assert!(!f.events.contains(&"delete"));
     assert_eq!(r.stopped, Some(MappingStop::Deadline));
