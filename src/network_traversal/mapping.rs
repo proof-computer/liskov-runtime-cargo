@@ -106,6 +106,7 @@ pub struct OwnedMappingHandle {
     nonce: Option<[u8; 12]>,
     reservation_digest: Option<[u8; 32]>,
     cleanup_authorized: bool,
+    external_address: Option<Ipv4Addr>,
 }
 
 impl std::fmt::Debug for OwnedMappingHandle {
@@ -117,6 +118,7 @@ impl std::fmt::Debug for OwnedMappingHandle {
             .field("internal_port", &self.internal_port)
             .field("external_port", &self.external_port)
             .field("client", &"<redacted>")
+            .field("external_address", &"<redacted>")
             .field("granted_lifetime_sec", &self.granted_lifetime_sec)
             .field("epoch", &self.epoch)
             .field("cleanup_authorized", &self.cleanup_authorized)
@@ -130,6 +132,10 @@ impl std::fmt::Debug for OwnedMappingHandle {
 }
 
 impl OwnedMappingHandle {
+    /// Transient router response, never a verifier destination or a log field.
+    pub fn external_address(self) -> Option<Ipv4Addr> {
+        self.external_address
+    }
     pub fn protocol(self) -> RouterProtocol {
         self.protocol
     }
@@ -183,6 +189,9 @@ impl std::fmt::Debug for ExclusiveReservation {
 }
 
 impl ExclusiveReservation {
+    pub(crate) fn matches_binding(self, gateway: &SelectedGateway, digest: &str) -> bool {
+        self.authorizes(gateway) && digest == format!("sha256:{}", hex::encode(self.digest))
+    }
     pub fn new(gateway: Ipv4Addr, digest: [u8; 32]) -> Option<Self> {
         if !usable_ipv4(gateway) || digest == [0; 32] {
             return None;
@@ -637,13 +646,14 @@ fn adopt_or_refuse(
             effect.requests_sent,
         );
     }
-    let handle = correlated_handle(
+    let mut handle = correlated_handle(
         parts,
         parsed.assigned_port,
         parsed.lifetime,
         parsed.epoch,
         true,
     );
+    handle.external_address = parsed.assigned_ip;
     effect.outcome = TraversalOutcome::Succeeded;
     effect.cleanup = TraversalCleanup::LeaseExpiryPending;
     effect.refusal = None;
@@ -813,6 +823,7 @@ fn correlated_handle(
         nonce: parts.nonce,
         reservation_digest: parts.digest,
         cleanup_authorized,
+        external_address: None,
     }
 }
 

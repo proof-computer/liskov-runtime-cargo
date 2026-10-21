@@ -301,6 +301,7 @@ fn owned_handle(
         nonce: Some(control_fingerprint(input.descriptor)),
         reservation_digest: Some(reservation.digest),
         cleanup_authorized,
+        external_address: None,
     }
 }
 
