@@ -8,6 +8,7 @@
 //! when a caller invokes them.
 
 mod auth;
+mod behaviour;
 mod descriptor;
 mod gateway;
 mod igd;
@@ -17,6 +18,7 @@ mod reserve;
 mod result;
 
 pub use auth::*;
+pub use behaviour::*;
 pub use descriptor::*;
 pub use gateway::*;
 pub use igd::*;
