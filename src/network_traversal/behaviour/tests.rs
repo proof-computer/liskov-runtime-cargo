@@ -52,6 +52,7 @@ enum Mode {
 #[derive(Default)]
 struct Faults {
     blocked: bool,
+    dropped_alternate_challenges: u8,
     noise: bool,
     flood: bool,
     rebind_mapping: bool,
@@ -141,6 +142,9 @@ impl BehaviourSocket for Socket {
             0
         };
         let proof = packet[4] == 2;
+        if !proof && packet[5] & s.faults.dropped_alternate_challenges != 0 {
+            return Ok(());
+        }
         if proof && ingress == 0 && s.first_pin.is_none() {
             s.first_pin = Some(self.id);
         }
@@ -311,17 +315,57 @@ fn duplicate_reordered_spoofed_epoch_transaction_and_cookie_frames_are_ignored()
 }
 
 #[test]
+fn missing_ap_challenges_are_not_alternate_source_filtering_evidence() {
+    // Lose B:p's challenge, both alternate challenges, or A:q's challenge when
+    // B:p is actually filtered. None distinguishes the dependent classes.
+    for (filtering, dropped) in [
+        (Mode::Independent, 2),
+        (Mode::Independent, 3),
+        (Mode::Port, 1),
+    ] {
+        let mut network = Network::new(Mode::Independent, filtering);
+        network.0.borrow_mut().faults.dropped_alternate_challenges = dropped;
+        let report = run(&descriptor(), &topology(), &mut network);
+        assert_eq!(
+            report.filtering,
+            BehaviourSummary::unknown(BehaviourFailure::ChallengeTimeout),
+            "{report:?}"
+        );
+        assert_eq!(
+            report.mapping.outcome,
+            TraversalOutcome::EndpointIndependent
+        );
+        for (selector, result) in [(1, report.filtering_aq), (2, report.filtering_bp)] {
+            if dropped & selector != 0 {
+                assert_eq!(result, Err(BehaviourFailure::ChallengeTimeout));
+                let state = network.0.borrow();
+                assert!(
+                    state
+                        .sends
+                        .contains(&(1, topology().ap.address, 0, selector))
+                );
+                assert!(
+                    !state
+                        .sends
+                        .contains(&(1, topology().ap.address, 2, selector))
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn blocked_udp_is_unknown_and_never_cgnat_or_relay_requirement() {
     let mut network = Network::new(Mode::Independent, Mode::Independent);
     network.0.borrow_mut().faults.blocked = true;
     let report = run(&descriptor(), &topology(), &mut network);
     assert_eq!(
         report.mapping,
-        BehaviourSummary::unknown(BehaviourFailure::Timeout)
+        BehaviourSummary::unknown(BehaviourFailure::ChallengeTimeout)
     );
     assert_eq!(
         report.filtering,
-        BehaviourSummary::unknown(BehaviourFailure::Timeout)
+        BehaviourSummary::unknown(BehaviourFailure::ChallengeTimeout)
     );
     assert_eq!(report.sent_datagrams, 2);
 }

@@ -72,6 +72,9 @@ pub enum BehaviourFailure {
     UnsupportedTopology,
     NotStarted,
     NotAuthorized,
+    /// No challenge arrived from the contacted endpoint; not filtering evidence.
+    ChallengeTimeout,
+    /// The observation receive timed out after sending the challenge proof.
     Timeout,
     InvalidResponse,
     Rebinding,
@@ -329,7 +332,12 @@ impl Experiment<'_> {
         request[8..24].copy_from_slice(&self.session);
         request[24..40].copy_from_slice(&tx);
         self.send(socket, &request, destination)?;
-        let challenge = self.receive(socket, &request, destination, ingress, ingress, 1)?;
+        let challenge = self
+            .receive(socket, &request, destination, ingress, ingress, 1)
+            .map_err(|error| match error {
+                BehaviourFailure::Timeout => BehaviourFailure::ChallengeTimeout,
+                other => other,
+            })?;
         request[4] = 2;
         request[40..72].copy_from_slice(&challenge[40..72]);
         self.send(socket, &request, destination)?;
@@ -546,6 +554,11 @@ fn filtering(
     {
         return BehaviourSummary::unknown(BehaviourFailure::Rebinding);
     }
+    // Only a missing observation after sending its proof can indicate filtering.
+    // The challenge comes from the already-contacted A:p, so its loss cannot.
+    // Each observation has one bounded attempt: loss or a silent proof refusal
+    // can still resemble filtering. These finite results do not establish its
+    // cause; no retransmission/loss-discounting guarantee is made.
     match (*bp, *aq) {
         (Ok(()), _) => BehaviourSummary::classified(TraversalOutcome::EndpointIndependent),
         (Err(BehaviourFailure::Timeout), Ok(())) => {
