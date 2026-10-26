@@ -236,7 +236,12 @@ impl Drop for Directory {
     fn drop(&mut self) {
         // Cleanup touches only known entries of the owned descriptor, even when
         // the exported path has been substituted. Never recursively adopt a tree.
-        for name in ["advertisement.json", "directory.json", "next-direct.json"] {
+        for name in [
+            "advertisement.json",
+            "directory.json",
+            "next-direct.json",
+            super::APPLICATION_READY_BASENAME,
+        ] {
             let _ = unlink_at(
                 &self.directory,
                 &basename(name).expect("constant basename"),

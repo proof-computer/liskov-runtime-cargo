@@ -50,6 +50,7 @@ pub struct DiagnosticReporter {
     sequence: u64,
     discovery: Option<Arc<crate::discovery::DiscoveryFile>>,
     direct_peer: Option<Arc<crate::discovery::direct::DirectPeerDiscovery>>,
+    application_ready: Option<Arc<crate::application_ready::ApplicationReady>>,
 }
 
 impl DiagnosticReporter {
@@ -82,6 +83,7 @@ impl DiagnosticReporter {
             sequence: 0,
             discovery: None,
             direct_peer: None,
+            application_ready: None,
         })
     }
 
@@ -102,6 +104,9 @@ impl DiagnosticReporter {
             }
             if let Some(peer) = &self.direct_peer {
                 direct_request = peer.request_attrs(&mut attrs);
+            }
+            if let Some(ready) = &self.application_ready {
+                ready.write_attr(&mut attrs);
             }
         }
         let sequence = self.sequence;
@@ -204,6 +209,7 @@ pub(crate) enum DiagnosticWork {
 pub struct AsyncDiagnosticReporter {
     sender: Option<SyncSender<DiagnosticWork>>,
     direct_peer: Option<Arc<crate::discovery::direct::DirectPeerDiscovery>>,
+    application_ready: Option<Arc<crate::application_ready::ApplicationReady>>,
 }
 
 impl AsyncDiagnosticReporter {
@@ -221,7 +227,7 @@ impl AsyncDiagnosticReporter {
         http: Arc<dyn HttpClient>,
         discovery: Option<Arc<crate::discovery::DiscoveryFile>>,
     ) -> Option<Self> {
-        Self::spawn_with_direct_peer(bootstrap, bridge, http, discovery, None)
+        Self::spawn_with_direct_peer(bootstrap, bridge, http, discovery, None, None)
     }
 
     pub fn spawn_with_direct_peer(
@@ -230,12 +236,14 @@ impl AsyncDiagnosticReporter {
         http: Arc<dyn HttpClient>,
         discovery: Option<Arc<crate::discovery::DiscoveryFile>>,
         direct_peer: Option<Arc<crate::discovery::direct::DirectPeerDiscovery>>,
+        application_ready: Option<Arc<crate::application_ready::ApplicationReady>>,
     ) -> Option<Self> {
         // Validate the endpoint before starting a thread. The worker owns all
         // signing and HTTP state and is the sole sequence authority.
         DiagnosticReporter::new(bootstrap, bridge.clone(), http.clone())?;
         let bootstrap = bootstrap.clone();
         let worker_peer = direct_peer.clone();
+        let worker_ready = application_ready.clone();
         let (sender, receiver) = sync_channel(DIAGNOSTIC_QUEUE_CAPACITY);
         thread::Builder::new()
             .name("liskov-cargo-diagnostics".into())
@@ -245,6 +253,7 @@ impl AsyncDiagnosticReporter {
                 };
                 reporter.discovery = discovery;
                 reporter.direct_peer = worker_peer;
+                reporter.application_ready = worker_ready;
                 while let Ok(work) = receiver.recv() {
                     match work {
                         DiagnosticWork::Observation {
@@ -264,6 +273,7 @@ impl AsyncDiagnosticReporter {
         Some(Self {
             sender: Some(sender),
             direct_peer,
+            application_ready,
         })
     }
 
@@ -272,6 +282,9 @@ impl AsyncDiagnosticReporter {
             if peer.begin_child().is_err() {
                 eprintln!("liskov direct discovery child reset failed");
             }
+        }
+        if let Some(ready) = &self.application_ready {
+            ready.begin_child();
         }
     }
 

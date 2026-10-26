@@ -502,3 +502,22 @@ cannot renew it.
 `discoveryLastSuccessAtMs` retains the v1 meaning: it is the server's
 `observedAtMs` on the last accepted snapshot, rather than a local receive
 timestamp. The helper uses that value to reject delayed snapshots.
+
+### Application readiness
+
+A manifest opts in with the signed runtime-env literal
+`LISKOV_APPLICATION_READINESS=v1`. The helper reads that name only from the
+signed map. Any other value, including the same name in the inherited
+processor environment, leaves health beats and the child environment unchanged.
+
+When the literal matches, the helper gives the child
+`LISKOV_APPLICATION_READY_FILE`: an absolute path in the same private `0700`
+directory as `LISKOV_PEER_ADVERTISEMENT_FILE`. A forged ready-file path in the
+signed map is replaced by that path. The child creates the file when it can
+serve. The helper removes it before each supervised child start, so a
+restarted child is pending until it writes the file again.
+
+Every `runtime.health` then carries one scalar, `applicationReadiness`. The
+value is `pending` until a regular file of at most 4 KiB is at that path, and
+`ready` after. The helper ignores the bytes. A missing file, a symlink, a
+FIFO, or an oversized file stays `pending`, and a symlink is not followed.

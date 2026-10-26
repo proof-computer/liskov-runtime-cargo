@@ -179,12 +179,28 @@ pub fn supervise_with_environment_access_and_processor_facts(
             MAX_DIAGNOSTIC_RESPONSE_BYTES
         },
     ));
+    let application_ready = match (
+        crate::application_ready::opted_in(runtime_environment),
+        &direct_peer,
+    ) {
+        (true, Some(peer)) => Some(Arc::new(crate::application_ready::ApplicationReady::bind(
+            peer.clone(),
+        ))),
+        (true, None) => {
+            eprintln!("liskov application readiness setup failed");
+            Some(Arc::new(
+                crate::application_ready::ApplicationReady::unavailable(),
+            ))
+        }
+        (false, _) => None,
+    };
     let mut reporter = AsyncDiagnosticReporter::spawn_with_direct_peer(
         bootstrap,
         bridge.clone(),
         http,
         discovery.clone(),
         direct_peer.clone(),
+        application_ready.clone(),
     );
     let mut detached_fact_tasks = Vec::new();
     if let Some(run) = processor_fact_authorization.and_then(|authorization| {
@@ -327,6 +343,7 @@ pub fn supervise_with_environment_access_and_processor_facts(
         discovery.as_deref(),
         direct_peer.as_deref(),
         access_session.as_ref().and_then(AccessSession::peer_proxy),
+        application_ready.as_deref(),
     );
     let result = supervise_with_reporter_and_environment(
         command,
@@ -395,12 +412,15 @@ fn discovery_environment(
     discovery: Option<&crate::discovery::DiscoveryFile>,
     direct_peer: Option<&crate::discovery::direct::DirectPeerDiscovery>,
     peer_proxy: Option<&str>,
+    application_ready: Option<&crate::application_ready::ApplicationReady>,
 ) -> BTreeMap<String, String> {
     let mut environment = runtime_environment.clone();
     environment.remove(crate::discovery::DISCOVERY_FILE_ENV);
     environment.remove(crate::discovery::PEER_PROXY_ENV);
     environment.remove(crate::discovery::direct::ADVERTISEMENT_FILE_ENV);
     environment.remove(crate::discovery::direct::DIRECTORY_FILE_ENV);
+    environment.remove(crate::application_ready::OPT_IN_ENV);
+    environment.remove(crate::application_ready::READY_FILE_ENV);
     environment.insert(
         "LISKOV_RUNTIME_INSTANCE_ID".into(),
         bootstrap.runtime_instance_id.clone(),
@@ -423,6 +443,16 @@ fn discovery_environment(
     }
     if let Some(proxy) = peer_proxy {
         environment.insert(crate::discovery::PEER_PROXY_ENV.into(), proxy.into());
+    }
+    if let Some(ready) = application_ready.and_then(|ready| ready.path()) {
+        environment.insert(
+            crate::application_ready::OPT_IN_ENV.into(),
+            crate::application_ready::OPT_IN_VALUE.into(),
+        );
+        environment.insert(
+            crate::application_ready::READY_FILE_ENV.into(),
+            ready.to_string_lossy().into_owned(),
+        );
     }
     environment
 }
@@ -1189,6 +1219,8 @@ fn customer_environment(
                     | "LISKOV_PEER_ADVERTISEMENT_FILE"
                     | "LISKOV_PEER_DIRECTORY_FILE"
                     | "LISKOV_RUNTIME_INSTANCE_ID"
+                    | crate::application_ready::OPT_IN_ENV
+                    | crate::application_ready::READY_FILE_ENV
             )
         )
     });
@@ -1511,6 +1543,8 @@ pub(crate) mod tests {
     /// processes must not overlap — including the access-module command tests.
     pub(crate) static PROCESS_TEST_LOCK: Mutex<()> = Mutex::new(());
 
+    #[path = "application_ready_guest.rs"]
+    mod application_ready_guest;
     #[path = "guest_direct_handoff.rs"]
     mod guest_direct_handoff;
 
@@ -1571,7 +1605,7 @@ pub(crate) mod tests {
                 "socks5h://forged".into(),
             ),
         ]);
-        let env = discovery_environment(&inherited, &bootstrap, None, Some(&direct), None);
+        let env = discovery_environment(&inherited, &bootstrap, None, Some(&direct), None, None);
         assert_eq!(
             env["LISKOV_RUNTIME_INSTANCE_ID"],
             bootstrap.runtime_instance_id
@@ -1622,6 +1656,7 @@ pub(crate) mod tests {
             Some(&legacy),
             Some(&direct),
             Some("socks5h://127.0.0.1:1234"),
+            None,
         );
         assert_eq!(
             legacy_env[crate::discovery::DISCOVERY_FILE_ENV],
@@ -1631,6 +1666,93 @@ pub(crate) mod tests {
             legacy_env[crate::discovery::PEER_PROXY_ENV],
             "socks5h://127.0.0.1:1234"
         );
+    }
+
+    #[test]
+    fn application_readiness_names_come_only_from_a_signed_opt_in() {
+        let bootstrap = bootstrap(json!({}));
+        let peer = std::sync::Arc::new(
+            crate::discovery::direct::DirectPeerDiscovery::create(
+                &std::env::temp_dir(),
+                &bootstrap.application_uid,
+                &bootstrap.job_id,
+                &bootstrap.runtime_instance_id,
+                false,
+            )
+            .unwrap(),
+        );
+        let ready = crate::application_ready::ApplicationReady::bind(peer.clone());
+        let signed = BTreeMap::from([
+            (
+                crate::application_ready::OPT_IN_ENV.into(),
+                crate::application_ready::OPT_IN_VALUE.into(),
+            ),
+            (
+                crate::application_ready::READY_FILE_ENV.into(),
+                "/forged/ready".into(),
+            ),
+            ("CUSTOMER_VALUE".into(), "kept".into()),
+        ]);
+        let env = discovery_environment(&signed, &bootstrap, None, Some(&peer), None, Some(&ready));
+        assert_eq!(
+            env[crate::application_ready::OPT_IN_ENV],
+            crate::application_ready::OPT_IN_VALUE
+        );
+        assert_eq!(
+            env[crate::application_ready::READY_FILE_ENV],
+            ready.path().unwrap().to_string_lossy()
+        );
+        assert_eq!(env["CUSTOMER_VALUE"], "kept");
+        let inherited = [
+            (
+                OsString::from(crate::application_ready::OPT_IN_ENV),
+                OsString::from("v1"),
+            ),
+            (
+                OsString::from(crate::application_ready::READY_FILE_ENV),
+                OsString::from("/inherited/ready"),
+            ),
+            (OsString::from("PATH"), OsString::from("/bin")),
+        ];
+        let (child, _) = customer_environment(inherited, &env, &ProcessFilesystem);
+        let child = env_map(child);
+        assert_eq!(
+            child[crate::application_ready::READY_FILE_ENV],
+            env[crate::application_ready::READY_FILE_ENV]
+        );
+        assert_eq!(child[crate::application_ready::OPT_IN_ENV], "v1");
+
+        let not_opted_in = BTreeMap::from([
+            (crate::application_ready::OPT_IN_ENV.into(), "no".into()),
+            (
+                crate::application_ready::READY_FILE_ENV.into(),
+                "/forged/ready".into(),
+            ),
+        ]);
+        let plain = discovery_environment(&not_opted_in, &bootstrap, None, Some(&peer), None, None);
+        assert!(!plain.contains_key(crate::application_ready::OPT_IN_ENV));
+        assert!(!plain.contains_key(crate::application_ready::READY_FILE_ENV));
+        let inherited_only = [
+            (
+                OsString::from(crate::application_ready::OPT_IN_ENV),
+                OsString::from("v1"),
+            ),
+            (
+                OsString::from(crate::application_ready::READY_FILE_ENV),
+                OsString::from("/inherited/ready"),
+            ),
+        ];
+        let (child, _) = customer_environment(inherited_only, &plain, &ProcessFilesystem);
+        let child = env_map(child);
+        assert!(!child.contains_key(crate::application_ready::OPT_IN_ENV));
+        assert!(!child.contains_key(crate::application_ready::READY_FILE_ENV));
+    }
+
+    fn env_map(values: Vec<(OsString, OsString)>) -> BTreeMap<String, String> {
+        values
+            .into_iter()
+            .map(|(name, value)| (name.into_string().unwrap(), value.into_string().unwrap()))
+            .collect()
     }
 
     #[test]

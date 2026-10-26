@@ -17,6 +17,10 @@ mod private_parent;
 
 pub const ADVERTISEMENT_FILE_ENV: &str = "LISKOV_PEER_ADVERTISEMENT_FILE";
 pub const DIRECTORY_FILE_ENV: &str = "LISKOV_PEER_DIRECTORY_FILE";
+/// Sibling of the discovery files. Application readiness owns the contract;
+/// this directory only stores the basename so custody can open, remove, and
+/// drop it with the advertisement.
+pub const APPLICATION_READY_BASENAME: &str = "application-ready";
 pub const MAX_ADVERTISEMENT_BYTES: usize = 4 * 1024;
 const MAX_PEERS: usize = 256;
 const MAX_SNAPSHOT_LIFETIME_MS: i64 = 90_000;
@@ -122,6 +126,18 @@ impl DirectPeerDiscovery {
 
     pub fn directory_path(&self) -> PathBuf {
         self.root.join("directory.json")
+    }
+
+    pub fn application_ready_path(&self) -> PathBuf {
+        self.root.join(APPLICATION_READY_BASENAME)
+    }
+
+    pub fn remove_application_ready(&self) -> io::Result<()> {
+        self.custody.remove(APPLICATION_READY_BASENAME)
+    }
+
+    pub fn open_application_ready(&self) -> io::Result<File> {
+        self.custody.read(APPLICATION_READY_BASENAME)
     }
 
     /// A new child must establish a fresh advertisement. A previous process's

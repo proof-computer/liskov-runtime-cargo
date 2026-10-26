@@ -92,7 +92,7 @@ fn guest_private_startup_handoff_and_signed_advertisement() {
             "/forged/directory".into(),
         ),
     ]);
-    let environment = discovery_environment(&signed, &bound, None, Some(&peer), None);
+    let environment = discovery_environment(&signed, &bound, None, Some(&peer), None, None);
     let signer = Arc::new(Signer::default());
     let core = Arc::new(Core::default());
     let mut reporter = AsyncDiagnosticReporter::spawn_with_direct_peer(
@@ -101,6 +101,7 @@ fn guest_private_startup_handoff_and_signed_advertisement() {
         core.clone(),
         None,
         Some(peer.clone()),
+        None,
     )
     .unwrap();
     let child = r#"set -eu
@@ -156,6 +157,17 @@ fn guest_private_startup_handoff_and_signed_advertisement() {
     assert!(
         !peer.advertisement_path().exists(),
         "exit ends old advertisement authority"
+    );
+    // Same custody race as the application-ready guest: the diagnostic worker
+    // can still hold the directory after drop(reporter) returns.
+    let release_deadline = Instant::now() + Duration::from_secs(5);
+    while Arc::strong_count(&peer) > 1 && Instant::now() < release_deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(
+        Arc::strong_count(&peer),
+        1,
+        "diagnostic worker released private custody"
     );
     drop(peer);
     assert!(
