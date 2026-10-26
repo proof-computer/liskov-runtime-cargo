@@ -1,6 +1,7 @@
 //! Native first contact for Liskov-managed Acurast Cargo/PRoot workloads.
 
 pub mod access;
+pub mod application_ready;
 pub mod bridge;
 pub mod contact;
 pub mod coverage;

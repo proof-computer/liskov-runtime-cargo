@@ -92,7 +92,7 @@ fn guest_private_startup_handoff_and_signed_advertisement() {
             "/forged/directory".into(),
         ),
     ]);
-    let environment = discovery_environment(&signed, &bound, None, Some(&peer), None);
+    let environment = discovery_environment(&signed, &bound, None, Some(&peer), None, None);
     let signer = Arc::new(Signer::default());
     let core = Arc::new(Core::default());
     let mut reporter = AsyncDiagnosticReporter::spawn_with_direct_peer(
@@ -101,6 +101,7 @@ fn guest_private_startup_handoff_and_signed_advertisement() {
         core.clone(),
         None,
         Some(peer.clone()),
+        None,
     )
     .unwrap();
     let child = r#"set -eu
