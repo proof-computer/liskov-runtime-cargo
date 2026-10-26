@@ -241,10 +241,28 @@ fn guest_reports_pending_then_ready_and_pending_again_after_restart() {
             .any(|bytes| bytes == &canonical)
     );
     drop(ready);
+    // Shutdown acknowledges the worker before that thread drops its custody
+    // clones, and the grace is 250ms. A loaded suite can leave the directory
+    // alive past this test's own drops. The creating boundary still removes it
+    // once the worker is the one that lets go.
+    let release_deadline = Instant::now() + Duration::from_secs(5);
+    while Arc::strong_count(&peer) > 1 && Instant::now() < release_deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(
+        Arc::strong_count(&peer),
+        1,
+        "diagnostic worker released private custody"
+    );
     drop(peer);
+    let left = fs::read_dir(&root).map(|entries| {
+        entries
+            .filter_map(|entry| entry.ok().map(|entry| entry.file_name()))
+            .collect::<Vec<_>>()
+    });
     assert!(
         !root.exists(),
-        "private state is cleaned through its creating boundary"
+        "private state is cleaned through its creating boundary; left {left:?}"
     );
 }
 

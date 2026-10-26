@@ -158,6 +158,17 @@ fn guest_private_startup_handoff_and_signed_advertisement() {
         !peer.advertisement_path().exists(),
         "exit ends old advertisement authority"
     );
+    // Same custody race as the application-ready guest: the diagnostic worker
+    // can still hold the directory after drop(reporter) returns.
+    let release_deadline = Instant::now() + Duration::from_secs(5);
+    while Arc::strong_count(&peer) > 1 && Instant::now() < release_deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(
+        Arc::strong_count(&peer),
+        1,
+        "diagnostic worker released private custody"
+    );
     drop(peer);
     assert!(
         !root.exists(),
