@@ -58,6 +58,7 @@ impl HttpClient for Core {
 
 #[test]
 fn guest_private_startup_handoff_and_signed_advertisement() {
+    let _lock = PROCESS_TEST_LOCK.lock().unwrap();
     if std::env::var_os(FIXTURE).is_none() {
         let status = Command::new(std::env::current_exe().unwrap())
             .args(["--exact", TEST_NAME, "--nocapture"])
@@ -68,7 +69,6 @@ fn guest_private_startup_handoff_and_signed_advertisement() {
         assert!(status.success());
         return;
     }
-    let _lock = PROCESS_TEST_LOCK.lock().unwrap();
     assert_eq!(std::env::var("TMPDIR").unwrap(), HOST_TMP);
     assert!(!Path::new(HOST_TMP).exists());
     let mut bound = bootstrap(json!({"mode":"never","serverTimeMs":1,"scheduleEndMs":60_001}));

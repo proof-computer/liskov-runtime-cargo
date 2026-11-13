@@ -63,6 +63,7 @@ impl HttpClient for Core {
 
 #[test]
 fn guest_reports_pending_then_ready_and_pending_again_after_restart() {
+    let _lock = PROCESS_TEST_LOCK.lock().unwrap();
     if std::env::var_os(FIXTURE).is_none() {
         let status = Command::new(std::env::current_exe().unwrap())
             .args(["--exact", TEST_NAME, "--nocapture"])
@@ -73,7 +74,6 @@ fn guest_reports_pending_then_ready_and_pending_again_after_restart() {
         assert!(status.success());
         return;
     }
-    let _lock = PROCESS_TEST_LOCK.lock().unwrap();
     let pid = std::process::id();
     let pending = format!("/tmp/liskov-app-ready-{pid}-pending");
     let ready_signal = format!("/tmp/liskov-app-ready-{pid}-ready");
