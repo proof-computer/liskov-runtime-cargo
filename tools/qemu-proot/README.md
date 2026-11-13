@@ -47,3 +47,72 @@ PR_GET_CHILD_SUBREAPER/PR_SET_CHILD_SUBREAPER calls; upstream 9.2 implements
 both. This emulator companion lets the offline fixture exercise the real
 process authority and child handoff. It does not change the deployed helper's
 syscall policy, the PRoot base, the pinned guest image, or the fault profiles.
+
+## GitHub Actions runner evidence
+
+Run the local, unregistered check on demand:
+
+```sh
+scripts/test-actions-runner-qemu-proot.sh --self-test
+scripts/test-actions-runner-qemu-proot.sh
+```
+
+The harness pins the official [actions/runner v2.338.2 release](https://github.com/actions/runner/releases/tag/v2.338.2)
+linux-arm64 archive to SHA-256
+`670adb2f268fe21dcbb58b3db0e0aa9d5b3bddfe2c651481336e561ff86de945`.
+It downloads once into `.cache/qemu-proot/<digest>.tar.gz` beside the rootfs
+cache and verifies the digest on every use, before starting Docker. Use
+`--runner-archive FILE` to verify a supplied copy; `--self-test` proves that a
+corrupt copy and a JIT file with mode other than 0600 are refused before Docker.
+The 140 MB download is why this evidence harness runs locally on demand rather
+than in CI.
+
+For each of `processor-like` and `netlink-denied`, the archive and guest script
+are staged in a private, read-only workspace. The guest extracts an unmodified
+runner into a disposable writable `/root/actions-runner.*`, including `_diag`
+and `_work`. It records `ldd`'s missing libraries for native `bin` executables
+and shared objects, `/etc/os-release`, `uname -m`, `HOME`, and the .NET ICU
+setting. It requires `bin/Runner.Listener --version` to succeed with the pinned
+version, then requires a different, nonzero malformed-JIT refusal from
+`bin/Runner.Listener run`. A timeout, signal, loader failure, ICU startup
+failure, or root-wrapper refusal fails the check. The host compares the two
+profiles' version, refusal status, missing-library list and ICU setting.
+Calling the Listener directly preserves its actual status; the upstream shell
+wrappers map some failures to success and impose their own root check.
+
+Execution on p620, 2026-11-13, with maintained rootfs `v0.1.0-rc.12`:
+
+- `/etc/os-release` identified Debian GNU/Linux 13 (trixie), version 13.6;
+  `uname -m` was `aarch64` and `HOME` was `/root`.
+- ICU was absent. The harness supplied
+  `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1` without changing the image or any
+  runner file. `ldd` reported `liblttng-ust.so.0` missing; that optional tracing
+  dependency did not prevent the Listener from starting.
+- Both profiles printed `2.338.2` with status 0 and rejected the malformed JIT
+  configuration with status 1: “The input is not a valid Base-64 string”.
+
+This proves local .NET startup and option parsing. It does not prove GitHub
+registration, job execution, action dependencies, network throughput, Android
+capabilities or the paid Cargo canary. No emulator capability failure was
+observed in these two local controls. Image additions belong to
+BKLG-20260822-z07p; live feasibility evidence belongs to BKLG-20260822-ujy1 in
+EPIC-20260822-u36q.
+
+For an authorized live run, provide a single-use JIT configuration in a regular,
+non-symlink host file of mode 0600:
+
+```sh
+scripts/test-actions-runner-qemu-proot.sh \
+  --jitconfig-file /protected/path/jitconfig --profile processor-like
+# Repeat with a fresh JIT configuration and --profile netlink-denied.
+```
+
+The default live profile is `processor-like`. The harness copies the file into
+its private stage with mode 0600. The guest supplies it through the runner's
+`ACTIONS_RUNNER_INPUT_JITCONFIG` environment input, never argv. Runner logs and
+`_diag` stay in the disposable guest and are deleted there; they are never
+printed or copied to the host. Output contains only startup evidence, observed
+wall-clock seconds from Listener start to `Listening for Jobs`, start to job
+completion, listening to job completion, and final exit status. Milestones are
+sampled once per second. A missing milestone or nonzero Listener exit fails
+the live run. This packet did not run live mode or register a runner.

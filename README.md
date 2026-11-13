@@ -293,7 +293,7 @@ scripts/run-qemu-proot-runtime.sh --no-shim -- \
 ```
 
 The wrapper bind-mounts the invocation directory read-only at `/workspace` and
-caches only the digest-verified rootfs under `.cache/qemu-proot/`. It runs the
+caches the digest-verified rootfs under `.cache/qemu-proot/`. It runs the
 container as the invoking non-root UID, keeps privileged-port binding disabled,
 disables container SELinux relabeling so source files stay unchanged, and gives
 the container only `SYS_PTRACE`, which PRoot needs. The inner command
@@ -333,6 +333,18 @@ uses stock OpenSSH through a local byte relay with a pinned host key. It
 performs no package-manager operation inside the maintained runtime image. The
 stock client bundle is not a release asset. The smoke also confirms killing the
 access sidecar does not change an independently running customer's exact exit.
+
+The on-demand GitHub Actions runner evidence harness checks the pinned,
+unmodified ARM64 Listener under both profiles:
+
+```sh
+scripts/test-actions-runner-qemu-proot.sh
+```
+
+It caches the digest-verified runner archive beside the rootfs. See
+[`tools/qemu-proot/README.md`](tools/qemu-proot/README.md#github-actions-runner-evidence)
+for the observed rootfs requirements, negative controls, and the separate
+mode-0600 `--jitconfig-file` live mode.
 
 ### Opt-in Tailscale SaaS Runtime SSH gate
 
