@@ -281,6 +281,7 @@ Liskov Debian rootfs without installing QEMU or PRoot on the workstation:
 scripts/run-qemu-proot-runtime.sh --self-test
 scripts/run-qemu-proot-runtime.sh -- /workspace/path/to/aarch64-candidate --version
 scripts/run-qemu-proot-runtime.sh --profile netlink-denied --self-test
+scripts/test-actions-runner-qemu-proot.sh
 scripts/run-qemu-proot-runtime.sh --no-shim -- \
   /workspace/tools/qemu-proot/managed-access-smoke.sh \
   /workspace/candidate/liskov-dropbear \
@@ -291,6 +292,12 @@ scripts/run-qemu-proot-runtime.sh --no-shim -- \
   /workspace/candidate/test-ssh-keygen \
   /workspace/candidate/test-nc
 ```
+
+The Actions runner command checks a digest-pinned official ARM64 runner under
+both profiles without registering with GitHub. It reports missing libraries,
+the required .NET environment, the runner version and its malformed-JIT refusal.
+See [the local harness notes](tools/qemu-proot/README.md#github-actions-runner)
+for findings and the separate credential-file mode for a person's live run.
 
 The wrapper bind-mounts the invocation directory read-only at `/workspace` and
 caches only the digest-verified rootfs under `.cache/qemu-proot/`. It runs the
