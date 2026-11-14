@@ -47,3 +47,71 @@ PR_GET_CHILD_SUBREAPER/PR_SET_CHILD_SUBREAPER calls; upstream 9.2 implements
 both. This emulator companion lets the offline fixture exercise the real
 process authority and child handoff. It does not change the deployed helper's
 syscall policy, the PRoot base, the pinned guest image, or the fault profiles.
+
+## GitHub Actions runner
+
+Run the local evidence harness on a Docker host:
+
+```sh
+scripts/test-actions-runner-qemu-proot.sh
+scripts/test-actions-runner-qemu-proot.sh --self-test-inputs
+```
+
+The host script pins the official `actions/runner` linux-arm64 v2.338.2 archive
+and SHA-256 `670adb2f268fe21dcbb58b3db0e0aa9d5b3bddfe2c651481336e561ff86de945`.
+It downloads about 140 MB once and caches it by digest beside the rootfs in
+`.cache/qemu-proot/`. `--runner-archive FILE` accepts a pre-downloaded copy with
+the same digest. Every run verifies the staged archive before starting Docker.
+The read-only workspace contains the archive and guest script; extraction,
+`_diag` and `_work` live in a private writable guest directory, removed by the
+guest before the container exits. No runner file is patched.
+
+Without credentials, each profile runs `bin/Runner.Listener --version` and
+`bin/Runner.Listener run` with deliberately malformed JIT input. The guest
+reports `/etc/os-release`, architecture, HOME, missing native ELF dependencies
+in `bin/` and `externals/`, and its globalization setting. It requires the exact
+pinned version, a nonzero normal malformed-input exit and a JIT parsing error;
+loader, ICU, wrapper, timeout and .NET startup failures fail the proof. The host
+requires both profile summaries to agree. `--self-test-inputs` checks a known
+digest mismatch and a non-0600 credential file, asserting that neither starts
+Docker. `bash -n` checks both host and guest scripts. This on-demand harness is
+not part of CI and does not register a runner or execute a GitHub job.
+
+Observed on p620, 2026-11-14, using the rootfs pin above and QEMU 9.2.0:
+
+| Observation | `processor-like` | `netlink-denied` |
+| --- | --- | --- |
+| Image identity | Debian 13.6 (trixie), `aarch64`, `HOME=/root` | Same |
+| Missing dependency | `bin/libcoreclrtraceptprovider.so`: `liblttng-ust.so.0` | Same |
+| Required environment | `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1` (ICU absent) | Same |
+| Listener `--version` | `2.338.2`, status 0 | Same |
+| Malformed JIT | Base-64 parsing refusal, status 1 | Same |
+
+Both profiles refused with: “The input is not a valid Base-64 string as it
+contains a non-base 64 character, more than two padding characters, or an
+illegal character among the padding characters.” The tracing provider's
+missing library did not prevent these commands from starting. Installing ICU
+or tracing libraries in a future runner image belongs to BKLG-20260822-z07p.
+These observations prove .NET startup and local JIT parsing, not registration,
+job execution, Docker/service-container support, or connectivity on a processor.
+Neither profile exposed a PRoot capability failure in the exercised commands.
+
+A person with a JIT configuration can run one real ephemeral runner:
+
+```sh
+chmod 0600 /private/path/jitconfig
+scripts/test-actions-runner-qemu-proot.sh --jitconfig-file /private/path/jitconfig
+scripts/test-actions-runner-qemu-proot.sh --profile netlink-denied \
+  --jitconfig-file /private/path/fresh-jitconfig
+```
+
+Use a fresh JIT configuration for each run. The host requires a nonempty,
+regular, nonsymlink mode-0600 file and copies it into the private stage with
+mode 0600. The guest supplies `ACTIONS_RUNNER_INPUT_JITCONFIG` directly to the
+Listener through its environment; the value never enters a command argument
+or harness output. Runner logs stay inside the disposable guest. Output is
+limited to the environment summary, start-to-`Listening for Jobs` time,
+start-to-job-completion time, job runtime when observed, and final status.
+A successful live result requires listening, completion and status 0. This
+mode was not used for the offline proof. BKLG-20260822-ujy1 owns the live GitHub
+and paid Cargo canary measurements; this harness creates no credentials.
