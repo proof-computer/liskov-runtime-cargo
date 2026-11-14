@@ -281,6 +281,7 @@ Liskov Debian rootfs without installing QEMU or PRoot on the workstation:
 scripts/run-qemu-proot-runtime.sh --self-test
 scripts/run-qemu-proot-runtime.sh -- /workspace/path/to/aarch64-candidate --version
 scripts/run-qemu-proot-runtime.sh --profile netlink-denied --self-test
+scripts/test-actions-runner-qemu-proot.sh
 scripts/run-qemu-proot-runtime.sh --no-shim -- \
   /workspace/tools/qemu-proot/managed-access-smoke.sh \
   /workspace/candidate/liskov-dropbear \
@@ -324,6 +325,12 @@ services, Android interfaces, or Acurast's outbound connect interceptor. The
 final processor canary remains required. Do not put auth keys in argv; provide
 a mode-0600 file below the selected workspace and let the candidate consume the
 file.
+
+`scripts/test-actions-runner-qemu-proot.sh` downloads and verifies a pinned
+official Linux ARM64 GitHub Actions runner, then proves its version and
+malformed-JIT refusal under both profiles without registering it. See the
+[runner harness evidence and live-mode instructions](tools/qemu-proot/README.md#github-actions-runner-harness)
+for the observed rootfs requirements and the mode-0600 JIT file interface.
 
 The managed-access smoke injects the same pinned static Dropbear and keygen
 companions as the release bundle plus the native ARM runner's test-only stock

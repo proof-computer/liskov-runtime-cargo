@@ -47,3 +47,78 @@ PR_GET_CHILD_SUBREAPER/PR_SET_CHILD_SUBREAPER calls; upstream 9.2 implements
 both. This emulator companion lets the offline fixture exercise the real
 process authority and child handoff. It does not change the deployed helper's
 syscall policy, the PRoot base, the pinned guest image, or the fault profiles.
+
+## GitHub Actions runner harness
+
+Run this local evidence harness for EPIC-20260822-u36q from the repository:
+
+```sh
+scripts/test-actions-runner-qemu-proot.sh
+```
+
+It verifies the official `actions/runner` Linux ARM64 v2.338.2 archive against
+the SHA-256 pinned in the host script before starting a guest. The verified
+archive is cached beside the rootfs at `.cache/qemu-proot/<digest>.tar.gz`;
+`--runner-archive FILE` selects a local copy, subject to the same check. A
+failed digest check refuses before extraction or guest startup. The harness
+stages the archive and guest script in a temporary read-only workspace and
+extracts a fresh, unpatched runner in a writable guest directory, including
+`_diag` and `_work`. Guest cleanup runs through PRoot; host cleanup removes
+only the host-created stage. No runner or rootfs modification is retained.
+
+Each offline run inventories missing shared libraries with `ldd` across the
+Listener, Worker, PluginHost, native .NET libraries and bundled Node binaries,
+prints `/etc/os-release`, `uname -m` and `HOME`, and records the .NET environment
+adjustment. It calls `bin/Runner.Listener` directly for both `--version` and
+`run` with deliberately malformed JIT input. The latter must fail with a
+Base64 parsing error and a non-signal exit status; a missing library, .NET
+startup error, timeout, successful malformed run or identical outputs fails
+the proof. The host compares both profiles' needs, version and refusal
+summaries. Runner shell wrappers are not used: `run.sh` can hide Listener
+failures, and its uid-0 guard needs `RUNNER_ALLOW_RUNASROOT=1` under PRoot.
+
+Observed on p620 on 2026-11-14 with the pinned
+`liskov-runtime-image-debian-trixie-aarch64` v0.1.0-rc.12 rootfs:
+
+- `/etc/os-release` was present: Debian GNU/Linux 13 (trixie), version 13.6.
+- `uname -m` was `aarch64`; `HOME` was `/root`.
+- ICU was absent. `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1` allowed .NET to
+  start without adding libraries to the image.
+- `ldd` reported `liblttng-ust.so.0` missing from the optional .NET trace
+  provider. Neither the version nor malformed-JIT control required it.
+- Both `processor-like` and `netlink-denied` produced the same summary:
+
+```text
+needs: missing-libraries=liblttng-ust.so.0 environment=DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1
+version: 2.338.2 status=0
+refusal: malformed-JIT Base-64 parsing status=1
+```
+
+The runner's refusal was: “The input is not a valid Base-64 string as it
+contains a non-base 64 character, more than two padding characters, or an
+illegal character among the padding characters.” No PRoot capability or
+QEMU failure was observed for these controls. They prove startup and JIT
+parsing; GitHub registration, executing a job, networking under a job load
+and a real Cargo processor remain BKLG-20260822-ujy1's live evidence.
+Image dependency changes belong to BKLG-20260822-z07p.
+
+For the authorized operator's single-job live run, supply the encoded JIT
+configuration in a regular, non-symlink host file of mode 0600:
+
+```sh
+scripts/test-actions-runner-qemu-proot.sh --jitconfig-file /private/runner-jitconfig
+scripts/test-actions-runner-qemu-proot.sh --profile netlink-denied \
+  --jitconfig-file /private/another-single-use-jitconfig
+```
+
+The host rejects other modes before starting a guest and copies the file to
+its temporary stage with mode 0600. The guest reads it into the Listener's
+`ACTIONS_RUNNER_INPUT_JITCONFIG` environment input; no argv contains it. It
+runs `bin/Runner.Listener run --once` and prints elapsed wall-clock seconds
+from Listener start to `Listening for Jobs`, from start to job completion,
+and the Listener exit status. Raw live runner output is consumed privately;
+only those fixed timing/status markers are printed. Missing listening or
+completion markers, or a nonzero Listener exit, fail the live run. The
+disposable guest owns diagnostics and generated runner credentials; keep
+the source JIT file private and discard it after use. Live mode was not run
+with credentials for this packet. This on-demand harness is not added to CI.
