@@ -127,7 +127,7 @@ jobs:
 
   qemu-proot:
     name: QEMU/PRoot maintained-image smoke
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: aarch64-static
     steps:
       - uses: actions/checkout@v4
