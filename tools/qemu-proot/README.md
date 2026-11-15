@@ -47,3 +47,86 @@ PR_GET_CHILD_SUBREAPER/PR_SET_CHILD_SUBREAPER calls; upstream 9.2 implements
 both. This emulator companion lets the offline fixture exercise the real
 process authority and child handoff. It does not change the deployed helper's
 syscall policy, the PRoot base, the pinned guest image, or the fault profiles.
+
+## GitHub Actions runner evidence
+
+Run the local, credential-free proof with Docker:
+
+```sh
+scripts/test-actions-runner-qemu-proot.sh
+scripts/test-actions-runner-harness.sh # offline input-refusal regression checks
+scripts/test-actions-runner-harness.sh --guest # synthetic live-output check, no GitHub credential
+```
+
+The harness downloads the official `actions/runner` linux-arm64 v2.338.2
+archive, verifies SHA-256
+`670adb2f268fe21dcbb58b3db0e0aa9d5b3bddfe2c651481336e561ff86de945`, and
+caches it under `.cache/qemu-proot/<sha256>.tar.gz` beside the rootfs cache.
+Every use verifies the cached archive and the staged copy before guest startup.
+`--runner-archive FILE` verifies an existing copy against the same pin; a
+corrupted copy fails before extraction or guest execution. The rootfs pin stays
+v0.1.0-rc.12, SHA-256
+`0639e88db6b46cef6091acafe35dfb1b59c5e354463d969f1a9509451d118377`.
+This on-demand evidence harness for EPIC-20260822-u36q is outside CI; the runner
+archive alone is about 140 MB.
+
+For each of `processor-like` and `netlink-denied`, the archive and guest script
+are staged in a private temporary workspace bound read-only at `/workspace`.
+The unmodified runner is extracted into a private writable directory below
+`/root`, including writable `_diag` and `_work`. The guest prints OS-release
+content, architecture, HOME, missing shared libraries (including .NET and
+bundled Node binaries), any startup environment adjustment, the version, and
+the malformed-JIT refusal and status. The harness compares both profiles'
+version, missing libraries, required environment, refusal text and status. It requires
+the exact pinned version with status 0, then a distinct JIT parsing refusal
+with status 1–127, rejecting loader, ICU, root-wrapper and .NET host failures.
+It calls `bin/Runner.Listener` directly; the runner's shell wrappers can mask
+failure status. No runner file is patched and no packages are installed.
+
+Observed on p620, 2026-11-15, with the pins above:
+
+| Evidence | processor-like | netlink-denied |
+| --- | --- | --- |
+| `uname -m`, HOME | `aarch64`, `/root` | `aarch64`, `/root` |
+| `/etc/os-release` | Debian GNU/Linux 13 (trixie), full version 13.6 | same |
+| Missing shared library reported by `ldd` | `liblttng-ust.so.0` | same |
+| Required startup environment | `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1` | same |
+| Listener `--version` | `2.338.2`, status 0 | same |
+| Malformed JIT | Base-64 parsing refusal, status 1 | same |
+
+Without invariant globalization, .NET aborts because the pinned image has no
+valid ICU package. The guest retries only this diagnosed case with the .NET
+invariant setting; it prints that requirement. The absent LTTng library did
+not prevent version startup or JIT parsing; the dependency inventory does not
+assume every optional library blocks startup. The image lane
+(BKLG-20260822-z07p) owns adding dependencies to a runner rootfs.
+
+This run proves the .NET host starts and reaches JIT parsing under both
+profiles. It does not prove GitHub registration, job execution, containers or
+services, job dependency downloads, or processor performance. No PRoot
+capability refusal was observed in these offline checks. The live Cargo
+canary and measurements belong to BKLG-20260822-ujy1.
+
+A person with a separately authorized disposable GitHub job can run one live
+JIT runner, choosing one profile per invocation:
+
+```sh
+chmod 0600 /protected/path/jitconfig
+scripts/test-actions-runner-qemu-proot.sh \
+  --jitconfig-file /protected/path/jitconfig --profile processor-like
+# Mint a fresh single-use JIT configuration before trying netlink-denied.
+```
+
+The file contains the encoded JIT configuration, not a JSON response or shell
+assignment. A missing, empty or non-0600 file is refused before downloading or
+starting a guest. The harness copies it into the private stage with mode 0600;
+the guest supplies `ACTIONS_RUNNER_INPUT_JITCONFIG` to the direct Listener
+process. The configuration never enters argv or harness output. Raw live
+output and runner diagnostics remain in disposable guest storage; only fixed
+state markers, Listener exit status, and wall-clock seconds from Listener
+start to `Listening for Jobs` and job completion are printed. A successful
+harness exit requires both events and Listener status 0; the job's own result
+is available in GitHub. Guest files are removed through PRoot and the host stage
+is removed on exit. The caller retains ownership of the original credential
+file and any GitHub-side registration. Live mode has not been exercised by
+this packet's credential-free proof.
