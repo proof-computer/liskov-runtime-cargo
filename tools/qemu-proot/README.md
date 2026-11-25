@@ -164,3 +164,105 @@ A successful run writes `candidate-manifest.json` and `transcript.json` under
 `target/traversal-evidence/<source-sha>/`. The manifest records the source SHA,
 protocol version, scenario, entrypoint and SHA-256 digests of the input,
 transcript and each exercised helper and fact-probe binary.
+
+### Version 2 external loopback fixture
+
+Build the host binary with the command above, and spawn it as
+`target/debug/liskov-fact-probe --traversal-external`. For a static ARM64
+candidate, build with the AArch64 musl target.
+
+```sh
+cargo build --release --locked --target aarch64-unknown-linux-musl --features fact-probe --bin liskov-fact-probe
+```
+
+Connect the child's stdin and stdout to the fixture. Send a UTF-8 request as
+one newline-terminated JSON object of at most 65,536 bytes before the newline.
+Objects have closed fields and reject duplicate keys and trailing values.
+Every request includes the following fields.
+
+| Field | Value |
+| --- | --- |
+| `version`, `scenario` | `2`, `"external-loopback"` |
+| `collector` | `"udp-behaviour"`, `"mapping"`, or `"pair"` |
+| `originMs` | Fixture time in Unix milliseconds at collector start. The probe adds monotonic elapsed time. |
+| `grant` | `capability` is the fixture-minted v1 traversal capability object with `domain`, `descriptor` and `mac`. Supply its independently bound `artifactDigest`, `claimAuthorityDigest` and the fixture job's `jobExpiresAtMs`. |
+| `endpoints` | Collector-specific object described below. Socket tuples are JSON strings with a numeric IP and a nonzero port, for example `"127.0.0.1:5000"` or `"[::1]:5000"`. |
+
+Mint the descriptor for the selected collector with helper version
+`cargo-helper-traversal-1` and helper digest `sha256:` followed by 64
+`3` characters (the probe's `FIXTURE_HELPER`). The artifact digest is the
+fixture's separate artifact binding. The grant and fixture job must leave
+room for the chosen experiment including cleanup, plus the existing
+40-second delivery reserve. This channel supplies authenticated test
+inputs, so the probe checks grant shape and bindings while the fixture
+holds and verifies its capability MAC key.
+
+- **UDP behaviour** takes an enrolled nonzero `session` of 32 lowercase hexadecimal digits
+  and `endpoints` with `revision` (the descriptor endpoint revision), `ap`,
+  and optional `aq` and `bp`. Each endpoint has `address`,
+  `mappingQualified`, and `filteringQualified`. The existing behaviour
+  collector's LNT1 comparison requires IPv4 topology. It binds one socket
+  for filtering and a second socket for mapping.
+- **Mapping** takes `method` (`"pcp"` or `"nat-pmp"`), `transport` (`"udp"`),
+  `signerSeed` (64 lowercase hex digits for a 32-byte Ed25519 seed), and
+  `consent` with `consentReference`, `processorAllowlistDigest`, and
+  `exclusiveReservationDigest`. Mint the same consent into the capability,
+  scoped to this method. The reservation digest binds the fixture's
+  synthetic gateway. Set `endpoints.router` to the router's UDP tuple,
+  `pathSource` to the IPv4 address that sends dialbacks, and
+  `observedAddress` to the IPv4 address reported by fixture control. Supply
+  `externalAddress` for NAT-PMP when discovery established an address.
+  PCP uses the external address in its MAP response. The synthetic
+  gateway and client are `10.0.0.1` and `10.0.0.2` in the collector's
+  route and router protocol. Socket traffic stays on the loopback router
+  and listener. The fixture translates each requested dialback port to
+  its loopback destination and echoes through the probe's listener.
+- **Pair** takes `signerSeed` in the same format, and `endpoints` with the
+  `coordinator` UDP tuple and `revision`. Mint one capability per role,
+  bind its participant to that role's seed-derived `0x`-prefixed Ed25519
+  public key, and pass each capability to a separate process. Both roles
+  use the same pair intent. The probe uses its registration socket for
+  direct punching and relay control.
+
+Every fixture endpoint is in `127.0.0.0/8` or is `::1`. Behaviour and pair
+can name an optional `natIngress` loopback UDP tuple. Framed endpoints,
+including pair candidates returned by the fixture, must use that ingress's
+address family. The probe sends framed datagrams to the ingress, and
+accepts framed replies only from its exact tuple. A frame starts with
+`0x01` and four IPv4 address bytes or `0x02` and sixteen IPv6 address bytes,
+then a two-byte big-endian port and up to 512 body bytes. Outbound frames
+carry the destination. Inbound frames carry the source. Malformed frames
+and frames from other sources are discarded. Mapping router and dialback
+traffic is unframed.
+
+For pair and mapping, each outbound control line has the shape
+`{"type":"control","path":"/v1/traversal/…","body":"<base64>"}`. The fixture
+replies in order with `{"type":"response","status":200,"body":"<base64>"}`,
+using a numeric 16-bit status and standard padded Base64 of the exact
+body bytes. Paths are `/v1/traversal/pair/enroll`,
+`/v1/traversal/pair/control`, `/v1/traversal/path/check`, and
+`/v1/traversal/path/receipt`. On a path check, send the 32-byte challenge
+and wait for its echo before returning a successful observation. The
+receipt request includes that observation and its `deviceSignature` over
+the canonical traversal transcript. Return the corresponding receipt
+with the identical transcript and signature. This control channel uses
+stdio and opens no HTTP or TCP connections.
+
+The final line is a `type: "transcript"` record with `version: 2`, the
+`collector` name, `result`, `refusal` (a closed code or null), and
+`sockets`. The result is the collector's signed `NetworkTraversalV1` for
+pair, classifications with reasons, comparisons and datagram count for
+behaviour, or the mapping run's discovery, stop, totals and per-method
+baseline, create, lease, verification, cleanup, stop and `expiryUnknown`.
+The socket ledger lists `index` (zero-based open order), `seam`
+(`behaviour`, `pair`, `mapping-listener`, or `router-client`), `local`,
+`sentDatagrams`, `sentBytes`, `receivedDatagrams`, and `receivedBytes`.
+Counts describe actual UDP I/O, including framing bytes and dropped
+incoming datagrams. Socket rows carry only loopback tuples and counters.
+The transcript carries no signer seed or raw proof secret.
+
+SIGTERM cancels ordinary work and allows the mapping lifecycle to send
+its owned delete. Keep the fixture channels open to receive the final
+transcript and answer cleanup on the router. A malformed or incomplete
+request, including cancellation before the terminating newline, emits
+a closed refusal code on stderr, no stdout record, and a nonzero exit.

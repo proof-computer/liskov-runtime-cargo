@@ -3,14 +3,14 @@ use std::net::SocketAddr;
 use super::super::{TraversalParticipantRole, lower_hex};
 use serde::{Deserialize, Serialize};
 
-pub(super) const ENROLL_PATH: &str = "/v1/traversal/pair/enroll";
-pub(super) const CONTROL_PATH: &str = "/v1/traversal/pair/control";
+pub(in crate::network_traversal) const ENROLL_PATH: &str = "/v1/traversal/pair/enroll";
+pub(in crate::network_traversal) const CONTROL_PATH: &str = "/v1/traversal/pair/control";
 pub(super) const COOKIE_PADDING: &str =
     "0000000000000000000000000000000000000000000000000000000000000000";
 pub(super) const RELAY_DOMAIN: &str = "liskov.network-traversal-relay-control.v1";
 pub(super) const DIRECT_DOMAIN: &str = "liskov.network-traversal-pair-direct-udp.v1";
-pub(super) const DATAGRAM_MAX: usize = 512;
-pub(super) const CONTROL_RESPONSE_MAX: usize = 1024;
+pub(in crate::network_traversal) const DATAGRAM_MAX: usize = 512;
+pub(in crate::network_traversal) const CONTROL_RESPONSE_MAX: usize = 1024;
 
 pub(super) fn valid_nonce(value: &str) -> bool {
     lower_hex(value, 16) && value.bytes().any(|b| b != b'0')

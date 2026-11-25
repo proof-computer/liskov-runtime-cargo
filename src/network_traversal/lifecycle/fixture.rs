@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 
 use super::*;
 
-const ROUTER: Ipv4Addr = Ipv4Addr::new(10, 0, 0, 1);
-const CLIENT: Ipv4Addr = Ipv4Addr::new(10, 0, 0, 2);
+pub(in crate::network_traversal) const ROUTER: Ipv4Addr = Ipv4Addr::new(10, 0, 0, 1);
+pub(in crate::network_traversal) const CLIENT: Ipv4Addr = Ipv4Addr::new(10, 0, 0, 2);
 // Addresses in the fixture's path observations are synthetic. Socket I/O uses loopback.
 const OBSERVED: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 20);
 const NONCE: [u8; 12] = [9; 12];
@@ -225,15 +225,18 @@ impl MappingRuntime for Fixture<'_> {
     }
 }
 
+pub(in crate::network_traversal) fn selected_gateway() -> Option<SelectedGateway> {
+    let route = RouteRecord::new(Ipv4Addr::UNSPECIFIED, 0, ROUTER, true, 0);
+    match super::super::gateway::discover_loaded(&[route], &|| false) {
+        GatewayDiscovery::Selected(gateway) => Some(gateway),
+        _ => None,
+    }
+}
+
 pub(in crate::network_traversal) fn run() -> Option<MappingRunReport> {
     let descriptor = super::super::fixture_descriptor("mapping")?;
     let consent = descriptor.mapping.as_ref()?;
-    let route = RouteRecord::new(Ipv4Addr::UNSPECIFIED, 0, ROUTER, true, 0);
-    let GatewayDiscovery::Selected(gateway) =
-        super::super::gateway::discover_loaded(&[route], &|| false)
-    else {
-        return None;
-    };
+    let gateway = selected_gateway()?;
     let reservation = ExclusiveReservation::new(ROUTER, [0x55; 32])?;
     let session = MappingSession::from_authenticated_bootstrap(
         descriptor.clone(),

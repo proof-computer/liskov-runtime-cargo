@@ -68,6 +68,11 @@ impl BehaviourSession {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "fact-probe",
+    derive(serde::Serialize),
+    serde(rename_all = "snake_case")
+)]
 pub enum BehaviourFailure {
     UnsupportedTopology,
     NotStarted,
@@ -87,6 +92,11 @@ pub enum BehaviourFailure {
 /// These are transient local summaries, not signed prober receipts. In
 /// particular they must not be inserted into NetworkTraversalV1 as proofs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "fact-probe",
+    derive(serde::Serialize),
+    serde(rename_all = "camelCase")
+)]
 pub struct BehaviourSummary {
     pub outcome: TraversalOutcome,
     pub reason: Option<BehaviourFailure>,
@@ -114,12 +124,22 @@ impl BehaviourSummary {
 
 /// A validated comparison without retaining either address/port tuple.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "fact-probe",
+    derive(serde::Serialize),
+    serde(rename_all = "snake_case")
+)]
 pub enum MappingComparison {
     Unchanged,
     Changed,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "fact-probe",
+    derive(serde::Serialize),
+    serde(rename_all = "camelCase")
+)]
 pub struct UdpBehaviourReport {
     pub mapping: BehaviourSummary,
     pub filtering: BehaviourSummary,

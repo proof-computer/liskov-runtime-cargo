@@ -42,6 +42,11 @@ const NATPMP_TCP: u8 = 2;
 const NATPMP_RESPONSE_BIT: u8 = 0x80;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "fact-probe",
+    derive(serde::Serialize),
+    serde(rename_all = "snake_case")
+)]
 pub enum MappedPortProtocol {
     Tcp,
     Udp,

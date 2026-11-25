@@ -1,7 +1,9 @@
 use std::io;
 use std::process::ExitCode;
 
-use liskov_runtime_cargo::network_traversal::run_offline_traversal_scenario;
+use liskov_runtime_cargo::network_traversal::{
+    run_external_traversal, run_offline_traversal_scenario,
+};
 use liskov_runtime_cargo::processor_facts::run_fact_probe_self_test;
 
 fn main() -> ExitCode {
@@ -20,7 +22,16 @@ fn main() -> ExitCode {
             run_offline_traversal_scenario(io::stdin().lock())
                 .map(|transcript| println!("{transcript}"))
         }
-        _ => Err("usage: liskov-fact-probe [--traversal-scenario]"),
+        (Some(flag), None) if flag == "--traversal-external" => {
+            return match run_external_traversal() {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(code) => {
+                    eprintln!("{code}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
+        _ => Err("usage: liskov-fact-probe [--traversal-scenario | --traversal-external]"),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

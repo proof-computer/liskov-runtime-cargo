@@ -165,3 +165,22 @@ fn public_endpoint(address: SocketAddr) -> bool {
             }
         }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn https_adapter_rejects_plaintext_control_and_loopback_datagrams() {
+        for (origin, datagram) in [
+            ("http://example.com", "8.8.8.8:5351"),
+            ("https://example.com", "127.0.0.1:5351"),
+            ("https://example.com", "[::1]:5351"),
+        ] {
+            assert!(matches!(
+                HttpsPairNetwork::new(origin, datagram.parse().unwrap(), "revision", 0, &|| false),
+                Err(TraversalRefusal::InvalidBinding)
+            ));
+        }
+    }
+}
