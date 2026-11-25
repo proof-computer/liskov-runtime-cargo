@@ -311,8 +311,8 @@ impl TraversalDescriptorV1 {
     }
 }
 
-/// Pair halves must agree on the entire frozen experiment except their own
-/// claim/role. Neither a guessable pair id nor matching profile alone is enough.
+/// Pair halves must agree on the entire frozen experiment. Run ID, issuance,
+/// deadline, claim authority and participant role belong to each grant.
 pub fn validate_traversal_pair(
     first: &TraversalDescriptorV1,
     second: &TraversalDescriptorV1,
@@ -325,9 +325,14 @@ pub fn validate_traversal_pair(
     {
         return Err(TraversalRefusal::InvalidPair);
     }
-    let mut counterpart = first.clone();
-    counterpart.participant_role = second.participant_role;
-    counterpart.claim_authority_digest = second.claim_authority_digest.clone();
+    let counterpart = TraversalDescriptorV1 {
+        run_id: second.run_id.clone(),
+        issued_at_ms: second.issued_at_ms,
+        deadline_ms: second.deadline_ms,
+        claim_authority_digest: second.claim_authority_digest.clone(),
+        participant_role: second.participant_role,
+        ..first.clone()
+    };
     if counterpart != *second {
         return Err(TraversalRefusal::InvalidPair);
     }
