@@ -158,7 +158,8 @@ AArch64 musl Rust target and C toolchain, Docker, and `readelf` available.
 The script builds the host and static guest binaries from that checkout.
 It checks that the normal runtime helper refuses the scenario argument, runs
 the same request on the host and on both maintained QEMU/PRoot profiles,
-and compares their stdout byte for byte. Run artifacts are cleaned on exit.
+and compares their stdout byte for byte. The emulator prints checksum
+verification to stderr. Run artifacts are cleaned on exit.
 A successful run writes `candidate-manifest.json` and `transcript.json` under
 `target/traversal-evidence/<source-sha>/`. The manifest records the source SHA,
 protocol version, scenario, entrypoint and SHA-256 digests of the input,

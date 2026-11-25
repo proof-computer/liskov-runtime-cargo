@@ -77,7 +77,7 @@ if [[ -z "${rootfs_archive}" ]]; then
       --output "${download_partial}" \
       "${rootfs_url}"
     printf '%s  %s\n' "${rootfs_sha256}" "${download_partial}" |
-      sha256sum --check --strict
+      sha256sum --check --strict >&2
     mv "${download_partial}" "${rootfs_archive}"
     download_partial=
   fi
@@ -87,7 +87,7 @@ fi
   exit 2
 }
 printf '%s  %s\n' "${rootfs_sha256}" "${rootfs_archive}" |
-  sha256sum --check --strict
+  sha256sum --check --strict >&2
 
 tar --exclude="${rootfs_name}/dev/*" -xJf "${rootfs_archive}" -C "${emulator_root}"
 rootfs="${emulator_root}/${rootfs_name}"
