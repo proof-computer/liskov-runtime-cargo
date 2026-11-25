@@ -7,7 +7,7 @@
 mod fixture;
 mod run;
 mod transport;
-mod wire;
+pub(super) mod wire;
 
 pub use transport::{HttpsPairNetwork, PairIoError, PairNetwork};
 

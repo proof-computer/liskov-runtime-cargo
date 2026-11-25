@@ -20,6 +20,11 @@ use crate::inbound_reachability_contract::{INBOUND_PORT_MAX, INBOUND_PORT_MIN};
 const METHOD_WINDOW_MS: u64 = 8_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "fact-probe",
+    derive(serde::Serialize),
+    serde(rename_all = "snake_case")
+)]
 pub enum MappingStop {
     Cancelled,
     Expired,
@@ -90,6 +95,11 @@ impl MappingSession {
 
 /// Each entry gets a fresh dedicated listener and its own mapping state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "fact-probe",
+    derive(serde::Serialize),
+    serde(rename_all = "camelCase")
+)]
 pub struct MappingMethodPlan {
     pub protocol: RouterProtocol,
     pub transport: MappedPortProtocol,
@@ -194,6 +204,11 @@ pub trait MappingRuntime {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "fact-probe",
+    derive(serde::Serialize),
+    serde(rename_all = "camelCase")
+)]
 pub struct MappingPathSummary {
     pub stage: TraversalStage,
     pub outcome: TraversalOutcome,
@@ -201,6 +216,11 @@ pub struct MappingPathSummary {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "fact-probe",
+    derive(serde::Serialize),
+    serde(rename_all = "camelCase")
+)]
 pub struct MappingMethodReport {
     pub plan: MappingMethodPlan,
     pub baseline: Option<MappingPathSummary>,
@@ -216,6 +236,11 @@ pub struct MappingMethodReport {
 /// Tuple/token/nonce-free summaries only. Retrying delivery of this value has
 /// no route back into the consumed MappingSession or any router operation.
 #[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "fact-probe",
+    derive(serde::Serialize),
+    serde(rename_all = "camelCase")
+)]
 pub struct MappingRunReport {
     /// The selected gateway is already a bounded discovery output. This field
     /// is separate from create/lease/path/cleanup and asserts no router support.

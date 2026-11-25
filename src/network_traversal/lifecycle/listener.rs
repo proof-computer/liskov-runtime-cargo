@@ -29,6 +29,14 @@ impl NativeMappingListener {
         Self::bind_fresh_at(protocol, Ipv4Addr::LOCALHOST)
     }
 
+    #[cfg(feature = "fact-probe")]
+    pub(in crate::network_traversal) fn bind_loopback_udp() -> Result<UdpSocket, MappingStop> {
+        match Self::bind_loopback(MappedPortProtocol::Udp)?.socket {
+            Socket::Udp(socket) => Ok(socket),
+            Socket::Tcp(_) => Err(MappingStop::Unsupported),
+        }
+    }
+
     fn bind_fresh_at(protocol: MappedPortProtocol, address: Ipv4Addr) -> Result<Self, MappingStop> {
         for _ in 0..16 {
             let mut seed = [0; 2];

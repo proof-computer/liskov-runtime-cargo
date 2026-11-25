@@ -129,3 +129,8 @@ fn fixture_descriptor(name: &str) -> Option<TraversalDescriptorV1> {
         .find(|entry| entry["name"] == name)?;
     serde_json::from_value(entry["descriptor"].clone()).ok()
 }
+
+#[cfg(feature = "fact-probe")]
+mod external;
+#[cfg(feature = "fact-probe")]
+pub use external::run_external_traversal;

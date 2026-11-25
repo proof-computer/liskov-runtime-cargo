@@ -136,6 +136,11 @@ pub enum GatewayDiscovery {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "fact-probe",
+    derive(serde::Serialize),
+    serde(rename_all = "snake_case")
+)]
 pub enum RouterProtocol {
     Pcp,
     NatPmp,
