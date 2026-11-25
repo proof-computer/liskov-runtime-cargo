@@ -377,7 +377,8 @@ pub(crate) fn phase_operation(
 }
 
 /// Validate corroborating halves after independently verifying both runtime
-/// signatures. This is helper-observed evidence, never a prober direct-path claim.
+/// signatures. Each transcript binds to its own grant for the shared experiment.
+/// This is helper-observed evidence, never a prober direct-path claim.
 pub fn validate_pair_transcripts(
     first_descriptor: &TraversalDescriptorV1,
     second_descriptor: &TraversalDescriptorV1,
