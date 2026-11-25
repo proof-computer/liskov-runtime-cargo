@@ -120,3 +120,47 @@ its result. Temporary host credentials and guest state are removed on exit;
 the original host JIT file remains the operator's responsibility. No shell
 wrapper is used, so the wrapper's uid-0 check and exit-status mapping cannot
 masquerade as managed-runner evidence.
+
+## Offline traversal scenario
+
+Build and run the existing fact probe on the host:
+
+```sh
+cargo build --locked --features fact-probe --bin liskov-fact-probe
+target/debug/liskov-fact-probe --traversal-scenario < tools/qemu-proot/traversal-scenario-v1.json
+```
+
+The probe reads one UTF-8 JSON object from stdin through EOF, including
+when stdin is redirected from a file. The complete input is limited to
+256 bytes. Version 1 accepts exactly two fields:
+
+```json
+{"version":1,"scenario":"traversal-smoke"}
+```
+
+Missing or duplicate fields, unknown versions or scenarios, extra fields,
+trailing values and oversized inputs fail before any fixture socket opens.
+The fixture owns its loopback endpoints and picks their ports. The request
+cannot supply addresses, grants, clocks or gateway configuration. There is
+no scenario command on `liskov-runtime-contact`. The fact probe's no-argument
+smoke also runs this scenario and prints the existing status line.
+
+The versioned [transcript](traversal-transcript-v1.json) is one compact JSON
+line with the correlated UDP mapping and filtering classifications, the
+PCP UDP baseline, create, verification, finite lease and confirmed delete,
+and the separately corroborated pair direct and relay results. The prober-side
+fixtures check the actual UDP source tuples, the two-socket behaviour trace
+and the router's packet-derived lease state. The transcript omits addresses,
+ports, secrets, proofs and timing. It describes these loopback fixtures.
+
+From a clean checkout, run `scripts/test-traversal-scenario.sh` with the
+AArch64 musl Rust target and C toolchain, Docker, and `readelf` available.
+The script builds the host and static guest binaries from that checkout.
+It checks that the normal runtime helper refuses the scenario argument, runs
+the same request on the host and on both maintained QEMU/PRoot profiles,
+and compares their stdout byte for byte. The emulator prints checksum
+verification to stderr. Run artifacts are cleaned on exit.
+A successful run writes `candidate-manifest.json` and `transcript.json` under
+`target/traversal-evidence/<source-sha>/`. The manifest records the source SHA,
+protocol version, scenario, entrypoint and SHA-256 digests of the input,
+transcript and each exercised helper and fact-probe binary.

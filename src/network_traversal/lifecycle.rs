@@ -772,3 +772,6 @@ pub fn run_mapping_lifecycle(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(feature = "fact-probe")]
+pub(super) mod fixture;

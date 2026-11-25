@@ -5,9 +5,7 @@ use std::rc::Rc;
 
 const NOW: u64 = 1_775_000_001_000;
 fn descriptor() -> TraversalDescriptorV1 {
-    let vector: serde_json::Value =
-        serde_json::from_str(include_str!("../../../vectors/network-traversal-v1.json")).unwrap();
-    serde_json::from_value(vector["descriptors"][0]["descriptor"].clone()).unwrap()
+    super::super::fixture_descriptor("observe").unwrap()
 }
 fn reservation(d: &TraversalDescriptorV1) -> Reservation {
     Reservation {
@@ -636,115 +634,5 @@ fn owner_transport_golden_vector_decodes_without_changing_wire_bytes() {
 
 #[test]
 fn actual_local_sockets_accept_alternate_sources_without_opening_them_in_filtering() {
-    use std::sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    };
-    let ap = UdpSocket::bind("127.0.0.1:0").unwrap();
-    let aq = UdpSocket::bind("127.0.0.1:0").unwrap();
-    let bp =
-        UdpSocket::bind((Ipv4Addr::new(127, 0, 0, 2), ap.local_addr().unwrap().port())).unwrap();
-    let addresses = [
-        ap.local_addr().unwrap(),
-        aq.local_addr().unwrap(),
-        bp.local_addr().unwrap(),
-    ];
-    let sockets = Arc::new([ap, aq, bp]);
-    let stop = Arc::new(AtomicBool::new(false));
-    let trace = Arc::new(Mutex::new(Vec::new()));
-    let workers = (0..3)
-        .map(|ingress| {
-            let sockets = sockets.clone();
-            let stop = stop.clone();
-            let trace = trace.clone();
-            std::thread::spawn(move || {
-                sockets[ingress]
-                    .set_read_timeout(Some(Duration::from_millis(50)))
-                    .unwrap();
-                while !stop.load(Ordering::Relaxed) {
-                    let mut packet = [0; 513];
-                    let (n, peer) = match sockets[ingress].recv_from(&mut packet) {
-                        Ok(v) => v,
-                        Err(e)
-                            if e.kind() == std::io::ErrorKind::WouldBlock
-                                || e.kind() == std::io::ErrorKind::TimedOut =>
-                        {
-                            continue;
-                        }
-                        Err(e) => panic!("{e}"),
-                    };
-                    assert_eq!(n, 96);
-                    trace.lock().unwrap().push((ingress, peer));
-                    let proof = packet[4] == 2;
-                    let outgoing = if proof && packet[5] != 0 {
-                        usize::from(packet[5])
-                    } else {
-                        ingress
-                    };
-                    let mut reply = packet[..n].to_vec();
-                    reply[4] = if proof { 3 } else { 1 };
-                    reply[6] = ingress as u8;
-                    reply[7] = outgoing as u8;
-                    reply[40..72].fill(0x71);
-                    if proof {
-                        reply.resize(128, 0);
-                        reply[96] = 4;
-                        let IpAddr::V4(ip) = peer.ip() else {
-                            unreachable!()
-                        };
-                        reply[97..101].copy_from_slice(&ip.octets());
-                        reply[113..115].copy_from_slice(&peer.port().to_be_bytes());
-                        // A byte-perfect response from the wrong actual sender is
-                        // queued first; a connected client would then lose the real one.
-                        if outgoing != ingress {
-                            sockets[ingress].send_to(&reply, peer).unwrap();
-                        }
-                    }
-                    sockets[outgoing].send_to(&reply, peer).unwrap();
-                }
-            })
-        })
-        .collect::<Vec<_>>();
-    let qualified = |address| BehaviourEndpoint {
-        address,
-        mapping_qualified: true,
-        filtering_qualified: true,
-    };
-    let topology = BehaviourTopology {
-        revision: "a-p-a-q-b-p-1".into(),
-        ap: qualified(addresses[0]),
-        aq: Some(qualified(addresses[1])),
-        bp: Some(qualified(addresses[2])),
-    };
-    let result = run(&descriptor(), &topology, &mut UdpBehaviourNetwork::new(NOW));
-    stop.store(true, Ordering::Relaxed);
-    for worker in workers {
-        worker.join().unwrap();
-    }
-    assert_eq!(
-        result.mapping.outcome,
-        TraversalOutcome::EndpointIndependent,
-        "{result:?}"
-    );
-    assert_eq!(
-        result.filtering.outcome,
-        TraversalOutcome::EndpointIndependent,
-        "{result:?}"
-    );
-    let trace = trace.lock().unwrap();
-    assert_eq!(trace.len(), 20);
-    let filtering_socket = trace[0].1;
-    assert!(
-        trace[..8]
-            .iter()
-            .all(|(ingress, peer)| *ingress == 0 && *peer == filtering_socket)
-    );
-    let mapping_socket = trace[8].1;
-    assert_ne!(filtering_socket, mapping_socket);
-    assert!(trace[8..].iter().all(|(_, peer)| *peer == mapping_socket));
-    assert!(
-        [0, 1, 2]
-            .iter()
-            .all(|i| trace[8..].iter().any(|(ingress, _)| ingress == i))
-    );
+    assert!(super::fixture::run().is_some());
 }

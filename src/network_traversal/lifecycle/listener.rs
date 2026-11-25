@@ -21,18 +21,23 @@ pub struct NativeMappingListener {
 }
 impl NativeMappingListener {
     pub fn bind_fresh(protocol: MappedPortProtocol) -> Result<Self, MappingStop> {
+        Self::bind_fresh_at(protocol, Ipv4Addr::UNSPECIFIED)
+    }
+
+    #[cfg(feature = "fact-probe")]
+    pub(super) fn bind_loopback(protocol: MappedPortProtocol) -> Result<Self, MappingStop> {
+        Self::bind_fresh_at(protocol, Ipv4Addr::LOCALHOST)
+    }
+
+    fn bind_fresh_at(protocol: MappedPortProtocol, address: Ipv4Addr) -> Result<Self, MappingStop> {
         for _ in 0..16 {
             let mut seed = [0; 2];
             getrandom::fill(&mut seed).map_err(|_| MappingStop::Unsupported)?;
             let port = INBOUND_PORT_MIN
                 + u16::from_be_bytes(seed) % (INBOUND_PORT_MAX - INBOUND_PORT_MIN + 1);
             let socket = match protocol {
-                MappedPortProtocol::Tcp => {
-                    TcpListener::bind((Ipv4Addr::UNSPECIFIED, port)).map(Socket::Tcp)
-                }
-                MappedPortProtocol::Udp => {
-                    UdpSocket::bind((Ipv4Addr::UNSPECIFIED, port)).map(Socket::Udp)
-                }
+                MappedPortProtocol::Tcp => TcpListener::bind((address, port)).map(Socket::Tcp),
+                MappedPortProtocol::Udp => UdpSocket::bind((address, port)).map(Socket::Udp),
             };
             if let Ok(socket) = socket {
                 return Ok(Self {

@@ -107,3 +107,25 @@ pub(crate) fn bounded<T: Serialize>(value: &T, limit: usize) -> Result<(), Trave
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(feature = "fact-probe")]
+mod scenario;
+#[cfg(feature = "fact-probe")]
+pub use scenario::run_offline_traversal_scenario;
+
+#[cfg(any(test, feature = "fact-probe"))]
+const FIXTURE_HELPER: TraversalHelperIdentity = TraversalHelperIdentity {
+    version: "cargo-helper-traversal-1",
+    digest: "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+};
+
+#[cfg(any(test, feature = "fact-probe"))]
+fn fixture_descriptor(name: &str) -> Option<TraversalDescriptorV1> {
+    let vectors: serde_json::Value =
+        serde_json::from_str(include_str!("../../vectors/network-traversal-v1.json")).ok()?;
+    let entry = vectors["descriptors"]
+        .as_array()?
+        .iter()
+        .find(|entry| entry["name"] == name)?;
+    serde_json::from_value(entry["descriptor"].clone()).ok()
+}
