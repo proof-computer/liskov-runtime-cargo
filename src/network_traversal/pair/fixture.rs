@@ -16,11 +16,6 @@ use crate::http::HttpResponse;
 use crate::processor_facts::FactSigner;
 
 const FIXTURE_KEY: [u8; 32] = [7; 32];
-const HELPER: TraversalHelperIdentity = TraversalHelperIdentity {
-    version: "cargo-helper-traversal-1",
-    digest: "sha256:3333333333333333333333333333333333333333333333333333333333333333",
-};
-
 #[derive(Clone, Copy)]
 pub(super) enum Topology {
     Direct,
@@ -55,11 +50,8 @@ impl FactSigner for Signature {
 }
 
 pub(super) fn fixture_descriptor(role: usize, experiment_ms: u64) -> TraversalDescriptorV1 {
-    let source: Value =
-        serde_json::from_str(include_str!("../../../vectors/network-traversal-v1.json")).unwrap();
-    let entry = &source["descriptors"][2 + role];
-    let mut descriptor: TraversalDescriptorV1 =
-        serde_json::from_value(entry["descriptor"].clone()).unwrap();
+    let name = ["pair_first", "pair_second"][role];
+    let mut descriptor = super::super::fixture_descriptor(name).unwrap();
     let pair = descriptor.pair.as_mut().unwrap();
     for (role, participant) in pair.participants.iter_mut().enumerate() {
         participant.runtime_signer = Signature::new(role).public_key();
@@ -152,7 +144,7 @@ impl Oracle {
             PairBindings {
                 claim_authority_digest: &descriptor.claim_authority_digest,
                 artifact_digest: &descriptor.artifact_digest,
-                helper: &HELPER,
+                helper: &FIXTURE_HELPER,
                 runtime_signer: &signer.public_key(),
             },
             self.now(),

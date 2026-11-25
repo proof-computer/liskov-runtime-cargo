@@ -3,21 +3,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 fn descriptor() -> TraversalDescriptorV1 {
-    {
-        let v: serde_json::Value =
-            serde_json::from_str(include_str!("../../../vectors/network-traversal-v1.json"))
-                .unwrap();
-        serde_json::from_value(
-            v["descriptors"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|v| v["name"] == "mapping")
-                .unwrap()["descriptor"]
-                .clone(),
-        )
-        .unwrap()
-    }
+    super::super::fixture_descriptor("mapping").unwrap()
 }
 fn session(d: &TraversalDescriptorV1) -> MappingSession {
     let c = d.mapping.as_ref().unwrap();
@@ -26,10 +12,7 @@ fn session(d: &TraversalDescriptorV1) -> MappingSession {
         MappingBindings {
             claim_authority_digest: &d.claim_authority_digest,
             artifact_digest: &d.artifact_digest,
-            helper: &TraversalHelperIdentity {
-                version: "cargo-helper-traversal-1",
-                digest: "sha256:3333333333333333333333333333333333333333333333333333333333333333",
-            },
+            helper: &FIXTURE_HELPER,
             consent_reference: &c.consent_reference,
             processor_allowlist_digest: &c.processor_allowlist_digest,
             exclusive_reservation_digest: &c.exclusive_reservation_digest,
@@ -428,10 +411,7 @@ fn scope_and_independent_consent_bindings_refuse_before_any_effect() {
                 MappingBindings {
                     claim_authority_digest: &original.claim_authority_digest,
                     artifact_digest: &original.artifact_digest,
-                    helper: &TraversalHelperIdentity {
-                        version: "cargo-helper-traversal-1",
-                        digest: "sha256:3333333333333333333333333333333333333333333333333333333333333333"
-                    },
+                    helper: &FIXTURE_HELPER,
                     consent_reference: &c.consent_reference,
                     processor_allowlist_digest: &c.processor_allowlist_digest,
                     exclusive_reservation_digest: &c.exclusive_reservation_digest

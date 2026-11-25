@@ -639,3 +639,6 @@ fn mapping(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(any(test, feature = "fact-probe"))]
+pub(super) mod fixture;
